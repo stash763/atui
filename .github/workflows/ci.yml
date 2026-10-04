@@ -1,0 +1,41 @@
+name: atui-ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install required dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake g++ libncursesw-dev
+
+      - name: Install optional dependencies (best effort)
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libgpm-dev libcurl4-openssl-dev || true
+
+      - name: Configure
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DATUI_BUILD_TESTS=ON \
+            -DATUI_HAVE_NETWORK=OFF
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Self-test
+        run: ./build/atui --self-test
+
+      - name: Version
+        run: ./build/atui --version
