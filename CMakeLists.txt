@@ -32,6 +32,7 @@ set(ATUI_SOURCES
     "${ATUI_SRC_DIR}/main.cpp"
     "${ATUI_SRC_DIR}/tui/app.cpp"
     "${ATUI_SRC_DIR}/core/string.cpp"
+    "${ATUI_SRC_DIR}/core/ai.cpp"
 )
 if(ATUI_BUILD_TESTS)
     list(APPEND ATUI_SOURCES
