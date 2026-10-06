@@ -31,13 +31,36 @@ set(ATUI_TESTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 set(ATUI_SOURCES
     "${ATUI_SRC_DIR}/main.cpp"
     "${ATUI_SRC_DIR}/tui/app.cpp"
+    "${ATUI_SRC_DIR}/tui/theme.cpp"
     "${ATUI_SRC_DIR}/core/string.cpp"
     "${ATUI_SRC_DIR}/core/ai.cpp"
+    # Settings persistence: INI helper + glue. Always built so provider/theme
+    # settings survive across runs.
+    "${ATUI_SRC_DIR}/settings/ini.cpp"
+    "${ATUI_SRC_DIR}/settings/settings.cpp"
+    # Tools exposed to the model. Network-independent (pure local functions);
+    # the chat model renders them into the request's "tools" array.
+    "${ATUI_SRC_DIR}/tools/tool_registry.cpp"
+    "${ATUI_SRC_DIR}/tools/time_tool.cpp"
+    # Provider settings singleton: no libcurl dependency, always built so the
+    # Options > Providers dialog works regardless of the network transport.
+    "${ATUI_SRC_DIR}/net/provider.cpp"
 )
+if(ATUI_HAVE_NETWORK)
+    list(APPEND ATUI_SOURCES
+        "${ATUI_SRC_DIR}/net/oai_client.cpp"
+        "${ATUI_SRC_DIR}/net/oai_chat_model.cpp"
+        "${ATUI_SRC_DIR}/net/json_extract.cpp"
+        "${ATUI_SRC_DIR}/net/token_queue.cpp"
+        "${ATUI_SRC_DIR}/net/dbg.cpp"
+    )
+    add_compile_definitions(ATUI_HAVE_NETWORK=1)
+endif()
 if(ATUI_BUILD_TESTS)
     list(APPEND ATUI_SOURCES
         "${ATUI_TESTS_DIR}/runner.cpp"
         "${ATUI_TESTS_DIR}/selftest.cpp"
+        "${ATUI_TESTS_DIR}/oai_mock_test.cpp"
     )
 endif()
 

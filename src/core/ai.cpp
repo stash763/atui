@@ -1,17 +1,13 @@
-// Definitions for the AI chat backend interface + M1 stub.
+// Definitions for the core AI stub (M1).
 #include "ai.h"
 
 namespace atui {
 namespace core {
 
-IChatModel::~IChatModel() {}
-
-String ChatModelStub::ask( const String& userMessage, const String& history )
+String ChatModelStub::ask( const String &userMessage, const String &history )
 {
-    (void)history;
-    String out;
-    out += userMessage;
-    return out;
+    ( void )history;
+    return userMessage;
 }
 
 } // namespace atui::core

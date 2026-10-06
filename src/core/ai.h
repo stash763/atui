@@ -1,31 +1,22 @@
-// AI chat backend interface + M1 stub.
+// AI backend interface for the portable core (C++98).
 //
-// C++98, no <string>, no exceptions: the core must compile on older
-// compilers (Borland C++ 4.52 / Open Watcom) for the DOS build.
+// The core keeps a minimal, C++98-safe interface (the M1 stub). The real
+// streaming backend lives in the net module (C++14) and is not part of this
+// interface so the core stays portable to Borland/Open Watcom.
 #ifndef ATUI_CORE_AI_H
 #define ATUI_CORE_AI_H
 
-#include "string.h"
+#include "core/string.h"
 
 namespace atui {
 namespace core {
 
-// Interface for an AI chat model.
-class IChatModel {
+// M0/M1 stub: returns the user message as the "reply" so the TUI flow can be
+// verified without a backend.
+class ChatModelStub
+{
 public:
-    virtual ~IChatModel();
-
-    // Returns the assistant's reply to `userMessage`, given the prior
-    // `history` transcript (already formatted). Synchronous.
-    virtual String ask( const String& userMessage, const String& history ) = 0;
-};
-
-// A non-network stub: echoes the user's message so the TUI chat flow can be
-// built and tested without a backend. M2 replaces this with a real
-// OpenAI-compatible transport (libcurl + SSE, via ATUI_HAVE_NETWORK).
-class ChatModelStub : public IChatModel {
-public:
-    String ask( const String& userMessage, const String& history );
+    String ask( const String &userMessage, const String &history );
 };
 
 } // namespace atui::core
