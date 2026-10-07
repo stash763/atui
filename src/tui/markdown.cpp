@@ -679,9 +679,19 @@ void emitCode( const std::vector<std::string> &lines, size_t &i, size_t to,
     {
         std::vector<Span> sp;
         highlightLine( lang, code[k], st, sp );
+        size_t start = out.size();
         Layout lay( ctx, prefix, prefix, rNormal, rNormal, out );
         lay.codeSpans( sp );
         lay.finish();
+        // A blank line inside a fence produces no spans, so Layout emits no
+        // row; add an empty one so the blank line is preserved (and gets the
+        // code background below) instead of collapsing the block.
+        if( out.size() == start )
+            out.push_back( Line() );
+        // Mark every row this code line produced (wrapping may add rows) with
+        // the code background so the whole row reads as code, edge-to-edge.
+        for( size_t r = start; r < out.size(); ++r )
+            out[r].bg = rCode;
     }
 }
 

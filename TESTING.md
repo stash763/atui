@@ -6,7 +6,7 @@ which needs a real terminal (pty) to exercise.
 ## Build & unit tests
 
     cmake --build build          # from repo root
-    ./build/atui --self-test     # unit + integration tests (51/51 PASS, network build)
+    ./build/atui --self-test     # unit + integration tests (52/52 PASS, network build)
 
 Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
 `src/settings/settings.cpp`):
@@ -188,7 +188,7 @@ teardown. Coverage (`--self-test`, network build):
 
 These register via `atui_test::init_network_tests()` (called from
 `selftest.cpp` under `#ifdef ATUI_HAVE_NETWORK`); the file compiles to nothing
-in non-network builds (verified: 33/33 there, 51/51 with network).
+in non-network builds (verified: 34/34 there, 52/52 with network).
 
 
 ## Model picker (Providers dialog)
@@ -253,19 +253,26 @@ Modules (all network-independent, always built):
 
 Notes: width math is byte-based (1 byte = 1 column), so borders use ASCII
 (`|`, `-`) rather than box-drawing glyphs. Indented (4-space) code is treated as
-prose, not code (only fenced blocks are highlighted).
+prose, not code (only fenced blocks are highlighted). Each laid-out `Line`
+carries a `bg` role; code rows use `rCode` so `TranscriptView` fills the code
+background across the **full row width** (edge-to-edge), which keeps short and
+blank lines inside a fence reading as one solid block instead of patchy.
 
 **Verified live** (mock SSE server serving a markdown answer, coloured
 screenshot via `tui-test screenshot`): heading colour + bold, `**bold**` /
 `*italic*` / `` `code` `` styling, underlined link with the URL hidden, bullet +
 nested + ordered list markers, blockquote bar, an aligned GFM table, and a
 python code block with keyword / function / comment / number / operator colours
-on the darker code background.
+on the darker code background. The code background was confirmed to fill every
+row of the block to the full widget width (including a blank line inside the
+fence and a short `x` line), while inline code stays a small chip on a normal
+background row and prose keeps the normal background.
 
-Self-tests (15, in `tests/markdown_test.cpp`, run in **both** configs): heading,
+Self-tests (16, in `tests/markdown_test.cpp`, run in **both** configs): heading,
 strong/em/code, link, bullet / nested / ordered lists, blockquote, wrapping,
-table, cpp + python code-fence highlighting, unclosed fence, `detectLang`,
-block-comment state carry-over, and JSON key colouring.
+table, cpp + python code-fence highlighting, unclosed fence, code-background
+role + blank-line preservation, `detectLang`, block-comment state carry-over,
+and JSON key colouring.
 
 
 ## Reasoning / "thinking" display

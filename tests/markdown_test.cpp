@@ -169,6 +169,37 @@ int test_md_unclosed_fence()
     return 0;
 }
 
+int test_md_code_bg_and_blank_lines()
+{
+    // Code rows must carry the code background role (so the fill spans the
+    // whole row), a blank line inside a fence must be preserved as a row, and
+    // prose around the fence must keep the normal background.
+    std::vector<Line> ls = render(
+        "intro\n\n```python\ndef f():\n\n    return 1\n```\n\nout\n", 40 );
+
+    int codeRows = 0, blankCodeRows = 0;
+    bool introOk = false, outOk = false, defIsCode = false;
+    for( size_t i = 0; i < ls.size(); ++i )
+    {
+        std::string t = textOf( ls[i] );
+        bool code = ( ls[i].bg == atui::tui::rCode );
+        if( code )
+        {
+            ++codeRows;
+            if( t.empty() ) ++blankCodeRows;
+        }
+        if( t == "intro" && !code ) introOk = true;
+        if( t == "out"   && !code ) outOk = true;
+        if( t == "def f():" )       defIsCode = code;
+    }
+    if( codeRows < 3 )     return -1;   // def, blank, return
+    if( blankCodeRows < 1 ) return -2;  // interior blank line preserved
+    if( !defIsCode )        return -3;  // code row marked as code bg
+    if( !introOk )          return -4;  // prose before is not code bg
+    if( !outOk )            return -5;  // prose after is not code bg
+    return 0;
+}
+
 int test_detect_lang()
 {
     using atui::tui::detectLang;
@@ -232,6 +263,7 @@ void init_markdown_tests()
     register_test( "md: code fence highlight", &test_md_code_fence_highlight );
     register_test( "md: code fence python", &test_md_code_fence_python );
     register_test( "md: unclosed fence", &test_md_unclosed_fence );
+    register_test( "md: code bg + blank lines", &test_md_code_bg_and_blank_lines );
     register_test( "syntax: detect lang", &test_detect_lang );
     register_test( "syntax: block comment state", &test_syntax_block_comment_state );
     register_test( "syntax: json keys", &test_syntax_json_keys );

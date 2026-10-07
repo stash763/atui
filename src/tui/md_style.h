@@ -63,6 +63,14 @@ struct Line
 {
     std::vector<Span> spans;
 
+    // Background role for the whole row. Normally rNormal, but code rows use
+    // rCode so the code background fills the full width edge-to-edge (and
+    // blank lines inside a code block still read as code) instead of only
+    // under the drawn text.
+    unsigned char bg;
+
+    Line() : spans(), bg( rNormal ) {}
+
     // Width in display columns (byte-based, matching the wrap logic).
     int width() const
     {

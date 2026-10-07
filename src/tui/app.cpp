@@ -203,8 +203,13 @@ public:
         int top = delta.y;
         for( int row = 0; row < size.y; ++row )
         {
-            writeChar( 0, row, ' ', rNormal, (ushort) size.x );
             int li = top + row;
+            // Fill the whole row with its background role first. Code rows use
+            // rCode so the code background spans edge-to-edge (and blank lines
+            // inside a fence still read as code) rather than only under text.
+            unsigned char bgRole = ( li >= 0 && li < (int) lines_.size() )
+                                       ? lines_[li].bg : rNormal;
+            writeChar( 0, row, ' ', bgRole, (ushort) size.x );
             if( li < 0 || li >= (int) lines_.size() ) continue;
             int x = 0;
             const std::vector<Span> &spans = lines_[li].spans;
@@ -353,9 +358,11 @@ private:
     struct Block { int kind; std::string text; bool expanded; bool open; };
     struct RLine {
         std::vector<Span> spans; int block; bool toggle;
-        RLine() : spans(), block( -1 ), toggle( false ) {}
-        RLine( const std::vector<Span> &s, int b, bool g )
-            : spans( s ), block( b ), toggle( g ) {}
+        unsigned char bg;                    // whole-row background role
+        RLine() : spans(), block( -1 ), toggle( false ), bg( rNormal ) {}
+        RLine( const std::vector<Span> &s, int b, bool g,
+               unsigned char bgRole = rNormal )
+            : spans( s ), block( b ), toggle( g ), bg( bgRole ) {}
     };
 
     // A single-span row (used for user / status / thinking text).
@@ -445,7 +452,8 @@ private:
                 // syntax-highlighted code blocks become styled spans.
                 std::vector<Line> md = atui::tui::render( bl.text, width );
                 for( size_t i = 0; i < md.size(); ++i )
-                    lines_.push_back( RLine( md[i].spans, (int) b, false ) );
+                    lines_.push_back(
+                        RLine( md[i].spans, (int) b, false, md[i].bg ) );
             }
             else // kThinking
             {
