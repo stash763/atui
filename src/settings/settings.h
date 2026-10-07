@@ -7,12 +7,14 @@
 //
 //   [ui]
 //   theme = dark
+//   thinking_expand = false
 //
 //   [provider]
 //   base_url = http://127.0.0.1:8080/v1
 //   api_key  =
 //   model    = llama
 //   temperature = 0.7
+//   thinking_resend = false
 //
 // Precedence: env vars seed the singletons first (see provider.cpp,
 // theme.cpp); a config file, when present, overrides those.
@@ -35,6 +37,11 @@ bool loadAll();
 // Write providerSettings() and the current theme to the config file, keeping
 // any unrelated keys that were already in it. Returns true on success.
 bool saveAll();
+
+// Whether reasoning/"thinking" blocks are expanded by default in the chat
+// transcript. Backed by a process-wide flag; seeded by loadAll() and written
+// by saveAll(). Toggle at runtime with Ctrl-T. Reference this as a variable.
+bool &thinkingExpandAll();
 
 } // namespace atui::settings
 } // namespace atui

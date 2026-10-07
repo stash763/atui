@@ -17,6 +17,12 @@ namespace net {
 // finish_reason chunk).
 std::string deltaContent( const std::string &json );
 
+// Extracts the assistant "thinking" (reasoning) text from a streaming chunk.
+// Different servers use different delta keys: Ollama sends "reasoning",
+// DeepSeek-style servers send "reasoning_content". Returns the first non-null
+// value found in the delta object, or "" when absent (the common case).
+std::string deltaReasoning( const std::string &json );
+
 // Returns the choices[0].finish_reason value ("stop", "tool_calls", ...), or
 // "" when absent or null.
 std::string finishReason( const std::string &json );
@@ -36,6 +42,12 @@ struct ToolCallFrag {
 // Returns true if at least one fragment was found.
 bool parseToolCallFrags( const std::string &json,
                          std::vector<ToolCallFrag> &out );
+
+// Extracts the model ids from an OpenAI-compatible GET /models response:
+//   {"object":"list","data":[{"id":"llama3","object":"model",...}, ...]}
+// Returns the "id" of every element of the "data" array, in server order,
+// skipping non-string/empty ids. Returns empty when no data array is present.
+std::vector<std::string> modelIds( const std::string &json );
 
 // Escapes a string so it is valid inside a JSON "string".
 std::string jsonEscape( const std::string &s );

@@ -23,6 +23,9 @@ ProviderSettings defaults()
     s.model = envOr( "ATUI_MODEL", "llama" );
     const char *t = getenv( "ATUI_TEMPERATURE" );
     s.temperature = ( t && t[0] ) ? std::atof( t ) : 0.7;
+    const char *tr = getenv( "ATUI_THINKING_RESEND" );
+    s.thinkingResend = ( tr && ( tr[0] == '1' || tr[0] == 'y' ||
+                                 tr[0] == 'Y' || tr[0] == 't' || tr[0] == 'T' ) );
     return s;
 }
 

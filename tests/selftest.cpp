@@ -17,6 +17,8 @@ namespace atui_test {
 
 // Defined in tests/oai_mock_test.cpp (network builds only).
 void init_network_tests();
+// Defined in tests/markdown_test.cpp (always built).
+void init_markdown_tests();
 
 namespace {
 
@@ -542,6 +544,9 @@ void init()
 #endif
     register_test( "tool: get_time", &test_time_tool );
     register_test( "tool: registry render", &test_tool_registry );
+
+    // Markdown + syntax highlighting (network-independent).
+    init_markdown_tests();
 }
 
 } // namespace atui_test

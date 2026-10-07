@@ -78,6 +78,16 @@ std::string buildBody( const OaiRequest &req )
             body += "\"";
         }
 
+        // Optional thinking text carried on an assistant turn (only present
+        // when the user enabled "resend thinking"). Emitted as
+        // reasoning_content, the common replay convention.
+        if( m.role == "assistant" && !m.reasoning.empty() )
+        {
+            body += ",\"reasoning_content\":\"";
+            body += jsonEscape( m.reasoning );
+            body += "\"";
+        }
+
         if( m.role == "assistant" && !m.toolCalls.empty() )
         {
             body += ",\"tool_calls\":[";
@@ -170,9 +180,18 @@ size_t writeData( char *ptr, size_t size, size_t nmemb, void *op )
             if( !content.empty() )
             {
                 if( sp->cb )
-                    sp->cb( content.c_str(), sp->ctx );
+                    sp->cb( content.c_str(), false, sp->ctx );
                 if( sp->out )
                     sp->out->content += content;
+            }
+
+            std::string reasoning = deltaReasoning( payload );
+            if( !reasoning.empty() )
+            {
+                if( sp->cb )
+                    sp->cb( reasoning.c_str(), true, sp->ctx );
+                if( sp->out )
+                    sp->out->reasoning += reasoning;
             }
 
             if( sp->out )
@@ -267,6 +286,72 @@ bool OaiClient::request( const std::string &baseUrl,
 #endif
 
     return res == CURLE_OK;
+}
+
+namespace {
+size_t writeStr( char *ptr, size_t size, size_t nmemb, void *op )
+{
+    size_t n = size * nmemb;
+    static_cast<std::string *>( op )->append( ptr, n );
+    return n;
+}
+} // anonymous namespace
+
+bool fetchModels( const std::string &baseUrl,
+                  const std::string &apiKey,
+                  std::vector<std::string> &models,
+                  std::string &err )
+{
+    models.clear();
+    err.clear();
+    if( baseUrl.empty() ) { err = "no server URL set"; return false; }
+
+    CURL *curl = curl_easy_init();
+    if( !curl ) { err = "curl init failed"; return false; }
+
+    std::string url = baseUrl;
+    if( !url.empty() && url.back() != '/' ) url += "/";
+    url += "models";
+
+    struct curl_slist *headers = nullptr;
+    if( !apiKey.empty() )
+    {
+        std::string auth = std::string( "Authorization: Bearer " ) + apiKey;
+        headers = curl_slist_append( headers, auth.c_str() );
+    }
+
+    std::string body;
+    curl_easy_setopt( curl, CURLOPT_URL, url.c_str() );
+    curl_easy_setopt( curl, CURLOPT_HTTPGET, 1L );
+    if( headers )
+        curl_easy_setopt( curl, CURLOPT_HTTPHEADER, headers );
+    curl_easy_setopt( curl, CURLOPT_WRITEFUNCTION, writeStr );
+    curl_easy_setopt( curl, CURLOPT_WRITEDATA, &body );
+    curl_easy_setopt( curl, CURLOPT_FOLLOWLOCATION, 1L );
+    curl_easy_setopt( curl, CURLOPT_TIMEOUT, 20L );
+    curl_easy_setopt( curl, CURLOPT_CONNECTTIMEOUT, 10L );
+    curl_easy_setopt( curl, CURLOPT_PROTOCOLS,
+                      CURLPROTO_HTTP | CURLPROTO_HTTPS );
+    curl_easy_setopt( curl, CURLOPT_SSL_VERIFYPEER, 1L );
+
+    CURLcode res = curl_easy_perform( curl );
+    long code = 0;
+    curl_easy_getinfo( curl, CURLINFO_RESPONSE_CODE, &code );
+    curl_slist_free_all( headers );
+    curl_easy_cleanup( curl );
+
+    if( res != CURLE_OK )
+    {
+        err = std::string( "request failed: " ) + curl_easy_strerror( res );
+        return false;
+    }
+    if( code < 200 || code >= 300 )
+    {
+        err = "server returned HTTP " + std::to_string( code );
+        return false;
+    }
+    models = modelIds( body );
+    return true;
 }
 
 } // namespace atui::net

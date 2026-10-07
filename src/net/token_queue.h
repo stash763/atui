@@ -11,17 +11,28 @@
 namespace atui {
 namespace net {
 
+// What kind of transcript item a token represents, so the UI can render each
+// distinctly (answer text, collapsible reasoning, transient tool status).
+enum TokenKind { tkContent = 0, tkThinking = 1, tkStatus = 2 };
+
+struct Token {
+    std::string text;
+    TokenKind kind;
+    Token() : text(), kind( tkContent ) {}
+    Token( const std::string &t, TokenKind k = tkContent ) : text( t ), kind( k ) {}
+};
+
 class TokenQueue
 {
 public:
-    void push( const std::string &item );
+    void push( const Token &item );
 
     // Non-blocking pop. Returns true and fills out when an item is available.
-    bool pop( std::string &out );
+    bool pop( Token &out );
 
 private:
     std::mutex mtx_;
-    std::queue< std::string > items_;
+    std::queue< Token > items_;
 };
 
 } // namespace atui::net

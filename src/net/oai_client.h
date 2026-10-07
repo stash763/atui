@@ -22,6 +22,9 @@ struct OaiToolCall {
 struct OaiMessage {
     std::string role;    // "user", "assistant", "system", "tool"
     std::string content;
+    // Optional reasoning/"thinking" text carried with an assistant turn. Only
+    // replayed to the model when the "resend thinking" option is enabled.
+    std::string reasoning;
     // For role == "assistant" that requested tools:
     std::vector<OaiToolCall> toolCalls;
     // For role == "tool" (a tool execution result):
@@ -47,12 +50,14 @@ struct OaiRequest {
 // Accumulated result of one streaming request.
 struct OaiResponse {
     std::string content;                 // concatenated delta.content
+    std::string reasoning;               // concatenated thinking/reasoning text
     std::string finishReason;            // "stop", "tool_calls", ... ("" if none)
     std::vector<OaiToolCall> toolCalls;  // populated when finishReason == tool_calls
 };
 
-// Invoked (on the worker thread) with each extracted content token.
-typedef void (*TokenCallback)( const char *token, void *ctx );
+// Invoked (on the worker thread) with each streamed token. `thinking` is true
+// for reasoning/"thinking" deltas and false for normal answer content.
+typedef void (*TokenCallback)( const char *token, bool thinking, void *ctx );
 
 // Performs a streaming chat-completion request. Blocks until the stream is
 // complete or the connection fails. `cb`/`ctx` receive each delta.content
@@ -68,6 +73,17 @@ public:
                   void *ctx,
                   OaiResponse *out = 0 );
 };
+
+// Fetches the provider's model list via a synchronous GET of
+// <baseUrl>/models (OpenAI-compatible; works on Ollama and llama.cpp).
+// On success fills `models` with the ids in server order and returns true.
+// On failure returns false and sets `err` to a short human-readable reason.
+// Blocks the calling thread (short timeouts); call it from the UI thread for
+// the settings dialog.
+bool fetchModels( const std::string &baseUrl,
+                  const std::string &apiKey,
+                  std::vector<std::string> &models,
+                  std::string &err );
 
 } // namespace atui::net
 } // namespace atui

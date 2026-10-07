@@ -15,6 +15,10 @@ struct ProviderSettings {
     std::string apiKey;       // optional bearer token
     std::string model;        // served model name
     double temperature;
+    // When true, an assistant turn's thinking text is stored in the
+    // conversation and replayed to the model on later turns. Off by default
+    // (thinking is display-only), matching OpenAI behavior.
+    bool thinkingResend;
 };
 
 // Process-wide settings. Initialized on first use from ATUI_* environment

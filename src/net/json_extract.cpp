@@ -152,6 +152,25 @@ bool readInt( const std::string &s, size_t rangeStart, size_t rangeEnd,
     return true;
 }
 
+// Within the "delta" object of a streaming chunk, return the value of `key`
+// when it is a JSON string, else "". Bounded to the delta object so sibling
+// fields (e.g. a top-level "content") are never mistaken for it.
+std::string deltaStr( const std::string &json, const char *key )
+{
+    size_t dpos = json.find( "\"delta\"" );
+    if( dpos == std::string::npos ) return std::string();
+    size_t ds = json.find( '{', dpos );
+    if( ds == std::string::npos ) return std::string();
+    size_t de = matchBrace( json, ds, json.size() );
+    if( de == std::string::npos ) return std::string();
+
+    size_t vp = valuePosForKey( json, ds, de, key );
+    if( vp == std::string::npos ) return std::string();
+    skipWs( json, vp, de );
+    if( vp >= de || json[vp] != '"' ) return std::string(); // null/absent
+    return decodeString( json, vp, de );
+}
+
 } // anonymous namespace
 
 std::string jsonEscape( const std::string &s )
@@ -171,6 +190,46 @@ std::string jsonEscape( const std::string &s )
             case '\f': out += "\\f";    break;
             default:   out += c;        break;
         }
+    }
+    return out;
+}
+
+std::vector<std::string> modelIds( const std::string &json )
+{
+    std::vector<std::string> out;
+
+    // Scope the scan to the "data" array; without one there are no model ids,
+    // and we must not pick up stray "id" members elsewhere in the payload.
+    size_t dpos = json.find( "\"data\"" );
+    if( dpos == std::string::npos )
+        return out;
+    size_t b = json.find( '[', dpos );
+    if( b == std::string::npos )
+        return out;
+
+    int depth = 0;
+    size_t close = b;
+    for( ; close < json.size(); ++close )
+    {
+        if( json[close] == '[' )      ++depth;
+        else if( json[close] == ']' ) { if( --depth == 0 ) break; }
+    }
+    size_t start   = b;
+    size_t endpos  = ( close < json.size() ) ? close : json.size();
+
+    // Collect every string "id" member within [start, endpos).
+    size_t i = start;
+    while( i < endpos )
+    {
+        size_t vp = valuePosForKey( json, i, endpos, "id" );
+        if( vp == std::string::npos ) break;
+        skipWs( json, vp, endpos );
+        if( vp < endpos && json[vp] == '"' )
+        {
+            std::string id = decodeString( json, vp, endpos );
+            if( !id.empty() ) out.push_back( id );
+        }
+        i = vp;
     }
     return out;
 }
@@ -233,6 +292,14 @@ std::string deltaContent( const std::string &json )
         }
     }
     return out;
+}
+
+std::string deltaReasoning( const std::string &json )
+{
+    // Ollama uses "reasoning"; DeepSeek-style servers "reasoning_content".
+    std::string r = deltaStr( json, "reasoning_content" );
+    if( !r.empty() ) return r;
+    return deltaStr( json, "reasoning" );
 }
 
 std::string finishReason( const std::string &json )

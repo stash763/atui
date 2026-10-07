@@ -4,13 +4,13 @@
 namespace atui {
 namespace net {
 
-void TokenQueue::push( const std::string &item )
+void TokenQueue::push( const Token &item )
 {
     std::lock_guard< std::mutex > lock( mtx_ );
     items_.push( item );
 }
 
-bool TokenQueue::pop( std::string &out )
+bool TokenQueue::pop( Token &out )
 {
     std::lock_guard< std::mutex > lock( mtx_ );
     if( items_.empty() )

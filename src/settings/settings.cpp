@@ -48,13 +48,23 @@ bool loadAll()
     p.apiKey      = ini.getString( "provider", "api_key",     p.apiKey );
     p.model       = ini.getString( "provider", "model",       p.model );
     p.temperature = ini.getDouble( "provider", "temperature", p.temperature );
+    p.thinkingResend =
+        ini.getBool( "provider", "thinking_resend", p.thinkingResend );
 
     // Color theme (only override when the file actually specifies one).
     std::string theme = ini.getString( "ui", "theme", std::string() );
     if( theme == "classic" )   tui::setTheme( tui::ThemeClassic );
     else if( theme == "dark" ) tui::setTheme( tui::ThemeDark );
 
+    thinkingExpandAll() = ini.getBool( "ui", "thinking_expand",
+                                       thinkingExpandAll() );
     return had;
+}
+
+bool &thinkingExpandAll()
+{
+    static bool expandAll = false; // collapsed by default
+    return expandAll;
 }
 
 bool saveAll()
@@ -67,8 +77,10 @@ bool saveAll()
     ini.setString( "provider", "api_key",     p.apiKey );
     ini.setString( "provider", "model",       p.model );
     ini.setDouble( "provider", "temperature", p.temperature );
+    ini.setBool( "provider", "thinking_resend", p.thinkingResend );
 
     ini.setString( "ui", "theme", tui::themeName( tui::currentTheme() ) );
+    ini.setBool( "ui", "thinking_expand", thinkingExpandAll() );
 
     return ini.save();
 }

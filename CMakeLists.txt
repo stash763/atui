@@ -32,6 +32,9 @@ set(ATUI_SOURCES
     "${ATUI_SRC_DIR}/main.cpp"
     "${ATUI_SRC_DIR}/tui/app.cpp"
     "${ATUI_SRC_DIR}/tui/theme.cpp"
+    # Markdown + syntax highlighting for the transcript. Network-independent.
+    "${ATUI_SRC_DIR}/tui/markdown.cpp"
+    "${ATUI_SRC_DIR}/tui/syntax.cpp"
     "${ATUI_SRC_DIR}/core/string.cpp"
     "${ATUI_SRC_DIR}/core/ai.cpp"
     # Settings persistence: INI helper + glue. Always built so provider/theme
@@ -61,6 +64,7 @@ if(ATUI_BUILD_TESTS)
         "${ATUI_TESTS_DIR}/runner.cpp"
         "${ATUI_TESTS_DIR}/selftest.cpp"
         "${ATUI_TESTS_DIR}/oai_mock_test.cpp"
+        "${ATUI_TESTS_DIR}/markdown_test.cpp"
     )
 endif()
 

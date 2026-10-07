@@ -26,13 +26,14 @@ struct CbCtx {
 };
 
 // C-style callback invoked by libcurl on the worker thread: forward each
-// streamed content token to the UI queue for live display.
-void pushToken( const char *tok, void *ctx )
+// streamed token to the UI queue, tagged as thinking vs. answer content.
+void pushToken( const char *tok, bool thinking, void *ctx )
 {
     if( !tok || !ctx ) return;
     CbCtx *c = static_cast< CbCtx * >( ctx );
     if( c->queue )
-        c->queue->push( std::string( tok, std::strlen( tok ) ) );
+        c->queue->push( Token( std::string( tok, std::strlen( tok ) ),
+                               thinking ? tkThinking : tkContent ) );
 }
 
 // Guard against a model that keeps requesting tools without ever finishing.
@@ -111,11 +112,14 @@ bool OaiChatModel::ask( const std::string &userMessage, const std::string &histo
             if( !ok )
                 break;
 
-            // Record the assistant turn (text and/or tool calls).
+            // Record the assistant turn (text and/or tool calls). Its
+            // thinking text is kept for replay only when the option is on.
             OaiMessage asst;
             asst.role = "assistant";
             asst.content = resp.content;
             asst.toolCalls = resp.toolCalls;
+            if( cfg.thinkingResend )
+                asst.reasoning = resp.reasoning;
             msgs.push_back( asst );
 
             // Not a tool call: this was the final answer.
@@ -129,7 +133,8 @@ bool OaiChatModel::ask( const std::string &userMessage, const std::string &histo
                 const OaiToolCall &tc = resp.toolCalls[i];
 
                 if( queue )
-                    queue->push( "\n~ calling " + tc.name + "\n" );
+                    queue->push( Token( "calling " + tc.name + "...",
+                                        tkStatus ) );
 
                 atui::tools::Tool *tool =
                     atui::tools::ToolRegistry::instance().find( tc.name );

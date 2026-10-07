@@ -6,12 +6,14 @@ which needs a real terminal (pty) to exercise.
 ## Build & unit tests
 
     cmake --build build          # from repo root
-    ./build/atui --self-test     # unit + integration tests (29/29 PASS, network build)
+    ./build/atui --self-test     # unit + integration tests (51/51 PASS, network build)
 
 Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
 `src/settings/settings.cpp`):
 
 - `ATUI_MODEL`, `ATUI_BASE_URL`, `ATUI_API_KEY`, `ATUI_TEMPERATURE`
+- `ATUI_THINKING_RESEND` — `1`/`y`/`t` to replay an assistant turn's thinking
+  to the model on later turns (default off; also a Providers-dialog checkbox).
 - `ATUI_THEME` — `dark` (default) or `classic`; also switchable at runtime via
   `File ▸ Options ▸ Theme...` (Alt-T), which opens a radio-button dialog.
 - `ATUI_CONFIG` — override the config file path (see Settings persistence).
@@ -33,12 +35,14 @@ Schema:
 
     [ui]
     theme = dark            # dark | classic
+    thinking_expand = false # show reasoning blocks expanded at startup
 
     [provider]
     base_url = http://127.0.0.1:8080/v1
     api_key  =
     model    = llama
     temperature = 0.7
+    thinking_resend = false # replay thinking to the model on later turns
 
 Precedence: env vars seed the singletons first; a config file, when present,
 overrides them (a key missing from the file keeps its env/default value).
@@ -184,7 +188,130 @@ teardown. Coverage (`--self-test`, network build):
 
 These register via `atui_test::init_network_tests()` (called from
 `selftest.cpp` under `#ifdef ATUI_HAVE_NETWORK`); the file compiles to nothing
-in non-network builds (verified: 18/18 there, 29/29 with network).
+in non-network builds (verified: 33/33 there, 51/51 with network).
+
+
+## Model picker (Providers dialog)
+
+`File ▸ Options ▸ Providers…` shows an **Available models** list box
+populated from the server via a synchronous `GET <baseUrl>/models`
+(OpenAI-compatible; works on Ollama and llama.cpp). Implementation:
+
+- `oai_client.cpp:fetchModels()` does the blocking GET (short timeouts:
+  10s connect / 20s total) and reports a short error string on failure.
+- `json_extract.cpp:modelIds()` pulls `data[].id` in server order; a
+  payload without a `data` array yields no ids.
+- The widget is a tvision `TListBox` + `TScrollBar` (the tvdemo
+  fileview/listdlg pattern). `ModelListBox` (a `TListBox` subclass) fires
+  `selectItem()` on a **single** click — clicking a model copies its id into
+  the **Model** field immediately. **Refresh** reloads the list from the
+  URL/Key fields *as currently typed*, so you can browse before saving. The
+  collection is a `TStringCollection` (sorted, owns/frees its strings).
+- The list auto-loads when the dialog opens; the status line shows
+  "`N model(s) loaded.`" or "`Refresh failed: <reason>`". Without the network
+  build it shows "`Model list needs a network build.`" and the list stays
+  empty.
+
+**Verified live** (real Ollama server): opening the dialog lists all installed
+models; clicking one updates the Model field (e.g. `llama` →
+`granite3.2-vision:2b-q8_0`).
+
+> tui-test quirk: it delivers mouse `where.y` as the absolute screen row, so a
+> harness click can select the neighbouring row; native `TListViewer` mapping
+> is correct in real terminals. Selection is confirmed by watching the Model
+> field change after `tui-test mouse click <x> <y>`.
+
+Self-tests (network build): `oai: model ids parse` (list/empty/no-data-array,
+id-outside-array ignored) and `oai: fetch models` (round-trips a mock
+`GET /v1/models`, asserts the request line + parsed ids, empty URL errors).
+
+
+## Markdown & code highlighting
+
+AI answers are rendered as Markdown with syntax-highlighted fenced code blocks.
+Rendering is **span-based**: every row is a vector of spans, each carrying a
+`Role` that `TranscriptView::mapColor()` turns into a theme-aware colour (both
+dark and classic schemes are covered).
+
+Modules (all network-independent, always built):
+
+- `src/tui/md_style.h` — `Role` enum + `Span` / `Line`.
+- `src/tui/syntax.{h,cpp}` — `detectLang()` + `highlightLine()`; tokenises
+  keywords / types / strings / chars / comments / numbers / functions /
+  preprocessor / operators. Carries `SynState` across lines so block comments,
+  triple-quoted strings and JS template literals highlight correctly.
+  Languages: **C/C++, Python, JS/TS, JSON, Bash, Go, Rust**; unknown languages
+  fall back to plain code (monospace colour, no per-token colouring). JSON keys
+  are coloured distinctly from string values.
+- `src/tui/markdown.{h,cpp}` — `render(md, width)` — block parser (ATX headings,
+  fenced code, bullet / ordered / task lists with nesting, blockquotes, thematic
+  breaks, GFM pipe tables, footnote + link reference definitions) and inline
+  parser (strong / emphasis / strike / inline code / links / autolinks / images
+  / footnote markers) plus a span-aware word wrapper that keeps styling across
+  wraps. Link URLs are hidden (only the label shows, underlined). A still-open
+  fence (mid-stream) renders its body.
+
+Notes: width math is byte-based (1 byte = 1 column), so borders use ASCII
+(`|`, `-`) rather than box-drawing glyphs. Indented (4-space) code is treated as
+prose, not code (only fenced blocks are highlighted).
+
+**Verified live** (mock SSE server serving a markdown answer, coloured
+screenshot via `tui-test screenshot`): heading colour + bold, `**bold**` /
+`*italic*` / `` `code` `` styling, underlined link with the URL hidden, bullet +
+nested + ordered list markers, blockquote bar, an aligned GFM table, and a
+python code block with keyword / function / comment / number / operator colours
+on the darker code background.
+
+Self-tests (15, in `tests/markdown_test.cpp`, run in **both** configs): heading,
+strong/em/code, link, bullet / nested / ordered lists, blockquote, wrapping,
+table, cpp + python code-fence highlighting, unclosed fence, `detectLang`,
+block-comment state carry-over, and JSON key colouring.
+
+
+## Reasoning / "thinking" display
+
+Some models emit a reasoning ("thinking") stream alongside the answer. The
+client reads it from the streaming delta under either key — Ollama sends
+`reasoning`, DeepSeek-style servers send `reasoning_content`
+(`json_extract.cpp:deltaReasoning`). Tokens are routed through the UI queue as
+a typed `Token` (`tkThinking` vs `tkContent` vs `tkStatus`), so the transcript
+can render each distinctly.
+
+The transcript is a custom `TranscriptView` (a `TScroller` subclass in
+`app.cpp`), not a `TTerminal`, so it can color items and hold collapsible
+blocks. Behavior:
+
+- Reasoning arrives as a **collapsed block** by default:
+  `[+] thinking (57 chars)  click/Ctrl-T to expand`. The full text is buffered
+  even while collapsed.
+- Click the block (mouse) or press **Ctrl-T** (global) to expand/collapse.
+  Ctrl-T toggles *all* blocks; a click toggles just that one. Expanded it shows
+  `[-] thinking (N chars)  click/Ctrl-T to collapse` plus the indented text.
+- Colors (via `TranscriptView::mapColor`): answer = yellow, thinking text = dim
+  slate, thinking header = cyan, user = green, tool status = amber (dark theme;
+  distinct BIOS attrs in classic).
+- Scrolling: mouse wheel or the vertical scrollbar; auto-follows the bottom
+  while streaming until you scroll up.
+- Whether thinking is stored and replayed to the model on later turns is the
+  `thinking_resend` option (default off). When on, the assistant turn carries
+  `reasoning_content` on subsequent requests (`oai_client.cpp:buildBody`).
+
+**Verified live** (localhost mock SSE server, since the served models here fold
+reasoning into `content`): sending a question renders the collapsed thinking
+block; clicking it expands to show the buffered reasoning then the answer.
+
+> Note: `tui-test` cannot inject Ctrl-T — its raw `0x14` byte (and named
+> combos) are dropped by tvision/ncurses before reaching the app, and `key
+> press` needs `press` (e.g. `tui-test key press <s> Enter`). Ctrl-T works in
+> real terminals; the click path exercises the identical toggle and was used
+> to verify rendering. Enter itself is delivered as `evCommand` (kbEnter) in
+> this harness, so `handleEvent` accepts both the key-down and command forms.
+
+Test coverage (`--self-test`, network build):
+`oai: delta reasoning parse` (both keys + null), `oai: reasoning stream`
+(content/reasoning separated, callback routing), `oai: chat thinking` (queued
+as `tkThinking`/`tkContent`), `oai: chat resend off/on` (the `reasoning_content`
+is replayed only when the option is on).
 
 
 ## Color scheme design (follows the tvision examples)
