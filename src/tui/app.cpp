@@ -715,15 +715,21 @@ TDeskTop *initDeskTop_( TRect r )
     int x2 = r.b.x;
     int y2 = r.b.y;
 
-    int inHeight = 3;
+    // Layout: the input line is a single row on the bottom of the desktop;
+    // the transcript (with its vertical scrollbar) fills the rows above it.
+    // NOTE: the input rect must be exactly 1 row tall -- TInputLine::draw()
+    // repeats its single text buffer across its full height, so a taller rect
+    // paints the typed text on every row.
+    int inputRow = y2 - 2;   // last desktop row that isn't overlapped by the
+                             // status line
 
-    TRect inRect( x1, y2 - inHeight, x2 - 1, y2 - 1 );
-    TRect sbRect( x2 - 2, y1 + 1, x2 - 1, y2 - inHeight - 1 );
+    TRect inRect( x1, inputRow, x2 - 1, inputRow + 1 );
+    TRect sbRect( x2 - 2, y1 + 1, x2 - 1, inputRow );
+    TRect trRect( x1, y1 + 1, x2 - 3, inputRow );
 
     g_vBar_ = new TScrollBar( sbRect );
     d->insert( g_vBar_ );
 
-    TRect trRect( x1, y1 + 1, x2 - 3, y2 - inHeight - 1 );
     g_transcript_ = new TranscriptView( trRect, g_vBar_ );
     g_transcript_->hideCursor();
     g_transcript_->setThinkingExpandAll( atui::settings::thinkingExpandAll() );
