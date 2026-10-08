@@ -2,7 +2,8 @@
 // OpenRouter, ...). Several named providers can be configured; exactly one is
 // active and is what requests use. The store is a process-wide singleton,
 // seeded from the environment, editable at runtime (Options ▸ Providers and the
-// Model menu) and persisted by settings::saveAll(). Requests snapshot it.
+// "Switch model" menu) and persisted by settings::saveAll(). Requests snapshot
+// the active provider.
 // C++14, network module (ATUI_HAVE_NETWORK).
 #ifndef ATUI_NET_PROVIDER_H
 #define ATUI_NET_PROVIDER_H
@@ -24,7 +25,7 @@ struct ProviderSettings {
     // (thinking is display-only), matching OpenAI behavior.
     bool thinkingResend;
     // Model ids offered by this provider (from GET /models or the config file);
-    // these are what the Model menu lists.
+    // the Providers dialog lists them, `model` is the one actually used.
     std::vector<std::string> models;
 };
 

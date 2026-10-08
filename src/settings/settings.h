@@ -17,7 +17,7 @@
 //   base_url = http://10.0.0.5:11434/v1
 //   api_key  =
 //   model    = qwen3:30b         # selected model for this provider
-//   models   = llama3.2,qwen3:30b  # ids offered in the Model menu
+//   models   = llama3.2,qwen3:30b  # cached ids from GET /models
 //   temperature = 0.7
 //   thinking_resend = false
 //

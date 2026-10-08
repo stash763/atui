@@ -75,22 +75,15 @@ namespace tui {
 
 using atui::core::String;
 
-// Command ids. cm* are TVision's, Cmd* are ours. The Model and Provider
-// dropdowns use ranges: the command encodes the index of the picked entry.
+// Command ids. cm* are TVision's, Cmd* are ours. The "Switch model" dropdown
+// uses a range: the command encodes the index of the picked provider, whose
+// configured model comes with it.
 enum { CmdHelp = 1000, CmdTheme = 1004, CmdProviders = 1003,
        CmdRefreshModels = 2000,
-       CmdMenuRefreshModels = 2010,  // Model ▸ Refresh models...
-       CmdModelManual   = 2011,      // Model ▸ Enter model name...
-       CmdNewProvider   = 2012,      // Provider ▸ New provider...
-       CmdModelBase     = 2100,      // + model index
-       CmdProviderBase  = 2200,      // + provider index
-       CmdNoop          = 3000 };    // greyed-out menu line (a command id is
-                                     // required: command 0 means "has submenu")
+       CmdSwitchModelBase = 2200 };  // + provider index
 
-// Guards on the size of the generated dropdowns (the command ranges above and
-// very long model lists).
-const int kMaxMenuModels    = 40;
-const int kMaxMenuProviders = 30;
+// Guard on the size of the generated dropdown (the command range above).
+const int kMaxSwitchModels = 40;
 
 class TranscriptView;   // defined below; used via pointer in the globals
 class PromptInput;      // defined below; used via pointer in the globals
@@ -105,11 +98,10 @@ namespace {
     // Desktop rect (saved so the transcript + prompt can reflow together).
     int g_dX1 = 0, g_dY1 = 0, g_dX2 = 0, g_dY2 = 0;
 
-    // Provider/model pickers: the two menu-bar dropdown items whose submenus
-    // are regenerated from the provider store, plus the status-line item whose
-    // text shows the active "provider | model".
-    TSubMenu *g_modelMenu_ = 0;
-    TSubMenu *g_providerMenu_ = 0;
+    // Provider/model pickers: the "Switch model" menu-bar dropdown (rebuilt
+    // from the provider store) and the status-line item showing the active
+    // "provider | model".
+    TSubMenu *g_switchModelMenu_ = 0;
     TStatusItem *g_statusProvider_ = 0;
 
     // M2 streaming state (only used when ATUI_HAVE_NETWORK).
@@ -136,16 +128,11 @@ void processMessage_();
 void focusInput_();
 void relayoutPanels_();
 void pollSink_();
-TMenu *buildModelMenu_();
-TMenu *buildProviderMenu_();
-void refreshProviderMenus_();
+TMenu *buildSwitchModelMenu_();
+void refreshSwitchModelMenu_();
 void updateProviderStatus_();
 void showProvidersDialog_();
-void pickModel_( int index );
-void pickProvider_( int index );
-void refreshModelsFromMenu_();
-void enterModelManually_();
-void addNewProvider_();
+void pickSwitchModel_( int index );
 
 #ifdef ATUI_HAVE_NETWORK
 // --- tool approval (worker thread -> UI) -------------------------------------
@@ -928,18 +915,12 @@ public:
         {
             const ushort cmd = event.message.command;
 
-            // Model / Switch provider dropdown entries: the command carries the
-            // index of the picked entry.
-            if( cmd >= CmdModelBase && cmd < CmdModelBase + kMaxMenuModels )
+            // "Switch model" entry: the command carries the index of the
+            // provider whose configured model was picked.
+            if( cmd >= CmdSwitchModelBase &&
+                cmd < CmdSwitchModelBase + kMaxSwitchModels )
             {
-                pickModel_( cmd - CmdModelBase );
-                clearEvent( event );
-                return;
-            }
-            if( cmd >= CmdProviderBase &&
-                cmd < CmdProviderBase + kMaxMenuProviders )
-            {
-                pickProvider_( cmd - CmdProviderBase );
+                pickSwitchModel_( cmd - CmdSwitchModelBase );
                 clearEvent( event );
                 return;
             }
@@ -954,23 +935,8 @@ public:
                     showProviders();
                     clearEvent( event );
                     break;
-                case CmdMenuRefreshModels:
-                    refreshModelsFromMenu_();
-                    clearEvent( event );
-                    break;
-                case CmdModelManual:
-                    enterModelManually_();
-                    clearEvent( event );
-                    break;
-                case CmdNewProvider:
-                    addNewProvider_();
-                    clearEvent( event );
-                    break;
                 case CmdTheme:
                     showTheme();
-                    clearEvent( event );
-                    break;
-                case CmdNoop:   // greyed-out informational line
                     clearEvent( event );
                     break;
                 case cmQuit:
@@ -1053,15 +1019,12 @@ TStatusLine *initStatusLine_( TRect r )
 TMenuBar *initMenuBar_( TRect r )
 {
     r.b.y = r.a.y + 1;
-    // Two generated dropdowns. They must be TSubMenus: in a menu-bar item
-    // chain, "subMenu + menuItem" appends to the LAST top-level entry's own
-    // menu, so only another TSubMenu creates a new top-level dropdown.
-    g_modelMenu_ = new TSubMenu( "~M~odel", kbAltM );
-    delete g_modelMenu_->subMenu;          // the TSubMenu's empty menu
-    g_modelMenu_->subMenu = buildModelMenu_();
-    g_providerMenu_ = new TSubMenu( "~S~witch provider", kbAltS );
-    delete g_providerMenu_->subMenu;
-    g_providerMenu_->subMenu = buildProviderMenu_();
+    // The "Switch model" dropdown must be a TSubMenu: in a menu-bar item chain,
+    // "subMenu + menuItem" appends to the LAST top-level entry's own menu, so
+    // only another TSubMenu creates a new top-level dropdown.
+    g_switchModelMenu_ = new TSubMenu( "~S~witch model", kbAltS );
+    delete g_switchModelMenu_->subMenu;    // the TSubMenu's empty menu
+    g_switchModelMenu_->subMenu = buildSwitchModelMenu_();
 
     return new TMenuBar( r,
         *new TSubMenu( "~F~ile", kbAltF )
@@ -1077,8 +1040,7 @@ TMenuBar *initMenuBar_( TRect r )
         + newLine()
         + *new TMenuItem( "E~xit...",  cmQuit,  kbAltX, hcNoContext, "Alt-X" )
         + newLine()
-        + *g_modelMenu_
-        + *g_providerMenu_
+        + *g_switchModelMenu_
         + *new TSubMenu( "~A~bout", kbAltA )
         + *new TMenuItem( "ab~out...", CmdHelp, kbAltA, hcNoContext, "Alt-A" )
         + newLine()
@@ -1326,7 +1288,7 @@ void TApp::showHelp()
     d->insert( new TStaticText( TRect( 3, 2, d->size.x - 2, d->size.y - 3 ),
         "atui - AI development TUI (M2)\nStreaming chat window.\n"
         "\n"
-        "Model / Switch provider (menu bar) pick the endpoint and model;\n"
+        "Switch model (menu bar) picks the provider and its model;\n"
         "Alt-P edits providers, Alt-T the theme, Ctrl-T the thinking blocks."
         ) );
     TButton *b = new TButton( TRect( 0, 0, 14, 3 ), "OK", cmCancel, bfNormal );
@@ -1365,13 +1327,17 @@ static char *dupStr_( const std::string &s )
     return p;
 }
 
-// --- provider / model pickers -------------------------------------------------
+// --- switch model -------------------------------------------------------------
 //
-// The "Model" and "Switch provider" menu-bar dropdowns are generated from the
-// provider store, so switching needs no modal dialog: pick the entry, persist,
-// rebuild. TVision reads TMenuItem::subMenu each time a menu opens and ~TMenu()
-// releases the old item chain, so a refresh is "build a new submenu, delete the
-// previous one". Menu commands encode the index of the picked entry.
+// The "Switch model" menu-bar dropdown lists one entry per provider: the model
+// that provider is configured to use. Picking an entry makes that provider
+// active (its configured model comes with it), so switching is one click and
+// the list stays short instead of showing every model a server happens to
+// offer. Creating or editing providers stays under Options > Providers.
+//
+// TVision reads TMenuItem::subMenu each time a menu opens and ~TMenu() releases
+// the old item chain, so refreshing means "build a new submenu, delete the
+// previous one". Commands encode the index of the picked provider.
 
 // Menu label text: drops TVision's '~' hot-key marker (a model id may contain
 // one) and caps the length so the dropdown stays readable.
@@ -1403,63 +1369,25 @@ private:
     TMenuItem **link_ = &head_;
 };
 
-// Model ▾: the active provider's models (the current one marked with '*'),
-// plus ways to add a model the endpoint does not report.
-TMenu *buildModelMenu_()
-{
-    const atui::net::ProviderSettings &p = atui::net::providerSettings();
-    std::vector<std::string> models = p.models;
-    if( models.empty() && !p.model.empty() ) models.push_back( p.model );
-    if( models.size() > (size_t) kMaxMenuModels )
-        models.resize( kMaxMenuModels );
-
-    MenuBuilder mb;
-    TMenuItem *title = new TMenuItem(
-        ( "Provider: " + menuText_( p.name, 24 ) ).c_str(), CmdNoop, kbNoKey );
-    title->disabled = True;
-    mb.add( title );
-    mb.sep();
-
-    if( models.empty() )
-    {
-        TMenuItem *none =
-            new TMenuItem( "(no models: Refresh)", CmdNoop, kbNoKey );
-        none->disabled = True;
-        mb.add( none );
-    }
-    for( size_t i = 0; i < models.size(); ++i )
-    {
-        std::string label = std::string( models[i] == p.model ? "* " : "  " ) +
-                            menuText_( models[i] );
-        mb.add( new TMenuItem( label.c_str(),
-                               (ushort) ( CmdModelBase + (int) i ), kbNoKey ) );
-    }
-
-    mb.sep();
-    mb.add( new TMenuItem( "~R~efresh models", CmdMenuRefreshModels, kbNoKey ) );
-    mb.add( new TMenuItem( "Enter model ~n~ame...", CmdModelManual, kbNoKey ) );
-    return mb.finish();
-}
-
-// Switch provider ▾: every configured provider (the active one marked), plus
-// the ways to add/edit them.
-TMenu *buildProviderMenu_()
+// "model  (provider)" per provider, the active one marked with '*'. A provider
+// with no model set shows its name, so an entry is never blank.
+TMenu *buildSwitchModelMenu_()
 {
     std::vector<atui::net::ProviderSettings> &all = atui::net::providers();
     const std::size_t active = atui::net::activeProviderIndex();
 
     MenuBuilder mb;
-    for( std::size_t i = 0; i < all.size() && (int) i < kMaxMenuProviders; ++i )
+    for( std::size_t i = 0; i < all.size() && (int) i < kMaxSwitchModels; ++i )
     {
-        std::string label = std::string( i == active ? "* " : "  " ) +
-                            menuText_( all[i].name, 28 );
+        const std::string model =
+            all[i].model.empty() ? all[i].name : all[i].model;
+        const std::string label =
+            std::string( i == active ? "* " : "  " ) + menuText_( model ) +
+            "  (" + menuText_( all[i].name, 20 ) + ")";
         mb.add( new TMenuItem( label.c_str(),
-                               (ushort) ( CmdProviderBase + (int) i ), kbNoKey ) );
+                               (ushort) ( CmdSwitchModelBase + (int) i ),
+                               kbNoKey ) );
     }
-    mb.sep();
-    mb.add( new TMenuItem( "~N~ew provider...", CmdNewProvider, kbNoKey ) );
-    mb.add( new TMenuItem( "Edit providers...", CmdProviders, kbAltP,
-                           hcNoContext, "Alt-P" ) );
     return mb.finish();
 }
 
@@ -1471,12 +1399,11 @@ static void setSubMenu_( TMenuItem *item, TMenu *menu )
     delete old;
 }
 
-// Rebuilds both dropdowns from the store. Called after any change to it, from
-// the event loop only (never while one of these menus is open).
-void refreshProviderMenus_()
+// Rebuilds the dropdown from the store. Called after any change to the store,
+// from the event loop only (never while that menu is open).
+void refreshSwitchModelMenu_()
 {
-    setSubMenu_( g_modelMenu_, buildModelMenu_() );
-    setSubMenu_( g_providerMenu_, buildProviderMenu_() );
+    setSubMenu_( g_switchModelMenu_, buildSwitchModelMenu_() );
     if( TProgram::menuBar ) TProgram::menuBar->drawView();
 }
 
@@ -1494,111 +1421,15 @@ void updateProviderStatus_()
     if( TProgram::statusLine ) TProgram::statusLine->drawView();
 }
 
-// One-field prompt: TVision's stock inputBox(). Returns false when cancelled
-// or left empty.
-static bool askForText_( const char *title, const char *label,
-                         const std::string &initial, std::string &out )
+// "Switch model" entry: activate the picked provider; the model configured for
+// it becomes the model used.
+void pickSwitchModel_( int index )
 {
-    char buf[ 128 ];
-    memset( buf, 0, sizeof buf );
-    strncpy( buf, initial.c_str(), sizeof buf - 1 );
-    if( inputBox( title, label, buf, (uchar) ( sizeof buf - 1 ) ) != cmOK )
-        return false;
-
-    std::string value( buf );
-    while( !value.empty() && ( value.back() == ' ' || value.back() == '\r' ||
-                               value.back() == '\n' ) )
-        value.pop_back();
-    out = value;
-    return !out.empty();
-}
-
-// Fetches a provider's model list from GET /models (cached in the store, so
-// the Model menu also works offline).
-static bool fetchModelsFor_( atui::net::ProviderSettings &p, std::string &err )
-{
-#ifdef ATUI_HAVE_NETWORK
-    std::vector<std::string> ids;
-    if( !atui::net::fetchModels( p.baseUrl, p.apiKey, ids, err ) ) return false;
-    atui::net::setModels( p, ids );
-    return true;
-#else
-    (void) p;
-    err = "model lists need a network build";
-    return false;
-#endif
-}
-
-// Model ▾ entry: make 'index' (an entry of the cached list) the model used.
-void pickModel_( int index )
-{
-    atui::net::ProviderSettings &p = atui::net::providerSettings();
-    if( index < 0 || index >= (int) p.models.size() ) return;
-    atui::net::selectModel( p, p.models[index] );
-    atui::settings::saveAll();
-    refreshProviderMenus_();
-    updateProviderStatus_();
-    focusInput_();
-}
-
-// Switch provider ▾ entry.
-void pickProvider_( int index )
-{
-    if( index < 0 ) return;
+    if( index < 0 || (std::size_t) index >= atui::net::providers().size() )
+        return;
     atui::net::setActiveProvider( (std::size_t) index );
     atui::settings::saveAll();
-    refreshProviderMenus_();
-    updateProviderStatus_();
-    focusInput_();
-}
-
-// Model ▸ Refresh models.
-void refreshModelsFromMenu_()
-{
-    atui::net::ProviderSettings &p = atui::net::providerSettings();
-    std::string err;
-    if( !fetchModelsFor_( p, err ) )
-        messageBox( ( "Refresh failed: " + err ).c_str(),
-                    mfInformation | mfOKButton );
-    atui::settings::saveAll();
-    refreshProviderMenus_();
-    updateProviderStatus_();
-    focusInput_();
-}
-
-// Model ▸ Enter model name... (endpoints that do not report their models).
-void enterModelManually_()
-{
-    atui::net::ProviderSettings &p = atui::net::providerSettings();
-    std::string value = p.model;
-    if( !askForText_( "Model - enter a model id", "~M~odel", value, value ) )
-    {
-        focusInput_();
-        return;
-    }
-    atui::net::selectModel( p, value );   // appends it to the list if new
-    atui::settings::saveAll();
-    refreshProviderMenus_();
-    updateProviderStatus_();
-    focusInput_();
-}
-
-// Provider ▸ New provider...: create, activate, then edit the endpoint.
-void addNewProvider_()
-{
-    std::string name;
-    if( !askForText_( "New provider", "~N~ame", "provider", name ) )
-    {
-        focusInput_();
-        return;
-    }
-    const std::size_t index = atui::net::addProvider( name );
-    atui::net::setActiveProvider( index );
-    atui::settings::saveAll();
-    refreshProviderMenus_();
-    updateProviderStatus_();
-    showProvidersDialog_();
-    refreshProviderMenus_();
+    refreshSwitchModelMenu_();
     updateProviderStatus_();
     focusInput_();
 }
@@ -1632,7 +1463,7 @@ public:
 //
 // "Available models" is filled from the server's GET /models endpoint (a
 // tvision TListBox + TScrollBar, the tvdemo fileview/listdlg pattern) and
-// cached on the provider, so the Model menu also works offline. Fetching needs
+// cached on the provider, so the box is not empty offline. Fetching needs
 // the network build; otherwise the box stays empty and the status line says why.
 enum { CmdProviderAdd = 2013, CmdProviderDel = 2014, CmdProviderActive = 2015 };
 
@@ -1861,7 +1692,7 @@ void ProvidersDialog::setStatus( const std::string &text )
 
 // Writes the fields back to the provider being edited. Names stay unique (they
 // double as the config section ids), and a hand-typed model id is added to the
-// provider's list so it shows up in the Model menu.
+// provider's list so it is offered again next time.
 void ProvidersDialog::commitFields()
 {
     if( atui::net::providers().empty() ) return;
@@ -1915,8 +1746,8 @@ void ProvidersDialog::refreshModels()
         return;
     }
 
-    // Cache the list on the provider being edited (so the Model menu works
-    // offline), keeping whatever the Model field currently says.
+    // Cache the list on the provider being edited (so it is available offline),
+    // keeping whatever the Model field currently says.
     if( !atui::net::providers().empty() )
     {
         atui::net::ProviderSettings &p =
@@ -2041,7 +1872,7 @@ void showProvidersDialog_()
 void TApp::showProviders()
 {
     showProvidersDialog_();
-    refreshProviderMenus_();
+    refreshSwitchModelMenu_();
     updateProviderStatus_();
     focusInput_();
 }

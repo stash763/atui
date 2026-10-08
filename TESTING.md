@@ -6,7 +6,7 @@ which needs a real terminal (pty) to exercise.
 ## Build & unit tests
 
     cmake --build build          # from repo root
-    ./build/atui --self-test     # unit + integration tests (60/60 PASS, network build)
+    ./build/atui --self-test     # unit + integration tests (64/64 network build, 44/44 without)
 
 Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
 `src/settings/settings.cpp`):
@@ -46,7 +46,7 @@ the active one):
     base_url = http://127.0.0.1:11434/v1
     api_key  =
     model    = qwen3:30b    # model this provider uses
-    models   = llama3.2,qwen3:30b  # ids offered in the Model menu (from GET /models)
+    models   = llama3.2,qwen3:30b  # cached model ids for this provider (from GET /models)
     temperature = 0.7
     thinking_resend = false # replay thinking to the model on later turns
 
@@ -65,26 +65,29 @@ Manual round-trip test:
     cat "$CFG"
     rm -f "$CFG"
 
-## Multiple providers, model switching (Model / Switch provider menus)
+## Switching models (Switch model menu)
 
-Two generated menu-bar dropdowns sit next to `File`:
+One generated dropdown sits next to `File`:
 
-    File   Model   Switch provider   About        (Options lives under File)
+    File   Switch model   About        (providers and theme are under File > Options)
 
-* **Model** (`Alt-M`) — the active provider's models; the one in use is marked
-  `*`. Picking one sets it immediately and writes the config. Below the list:
-  `Refresh models` (re-reads `GET <base_url>/models`) and
-  `Enter model name...` (a prompt for endpoints that do not list their models;
-  a hand-typed id is appended to the list).
-* **Switch provider** (`Alt-S`) — every configured provider, active one marked,
-  plus `New provider...` (asks for a name, activates it and opens the Providers
-  dialog) and `Edit providers...`.
+* **Switch model** (`Alt-S`) — one entry per configured provider, labelled with
+  the model *that provider is set to use*: `qwen3:30b  (ollama)`, the provider
+  in use marked `*`. Picking an entry makes that provider active (its configured
+  model comes with it) and writes the config. The list is deliberately **not**
+  everything a server happens to offer: which model an endpoint runs is a
+  property of the provider, so it is edited with the provider.
+  Providers are listed in store order, which is alphabetical by section id (the
+  INI helper keeps its sections in a sorted map) rather than file order.
 
 The status line's left-most field always shows what a message is actually sent
 to: ` ollama | qwen3:30b `.
 
-Model ids are cached in the config (`models = ...`), so the Model menu works
-offline; `Refresh models` updates the cache from the server.
+Changing the model of a provider — including picking one of the ids a server
+reports — happens in the Providers dialog: the `Model` field takes an id
+directly, `Available models` + `Refresh` list the ones the server offers and
+cache them on the provider (`models = ...` in the config, so they survive
+restarts and the dialog does not have to re-fetch).
 
 Implementation (`src/net/provider.{h,cpp}`): a process-wide store
 (`providers()`, `activeProviderIndex()`) with `addProvider` /
@@ -95,7 +98,7 @@ Implementation (`src/net/provider.{h,cpp}`): a process-wide store
 `addProvider` copies `defaultProviderSettings()` (env-seeded) under a unique
 name; the last remaining provider cannot be deleted.
 
-TVision notes for the generated dropdowns (all verified live):
+TVision notes for the generated dropdown (all verified live):
 
 * A dropdown must be a `TSubMenu`; `subMenu + menuItem` appends to the **last
   top-level entry's own** menu, so a plain `TMenuItem` in that chain silently
@@ -104,8 +107,11 @@ TVision notes for the generated dropdowns (all verified live):
   `TMenu::~TMenu` deletes its item chain — so refreshing is "assign a new
   `TMenu`, delete the old one" (`setSubMenu_`).
 * `command == 0` also means "has a submenu" to `TMenuBox` (it draws a `►` and
-  opens the submenu), so greyed-out informational lines get a real no-op command
-  (`CmdNoop`) instead.
+  opens the submenu), so an entry that should only be informational needs a real
+  no-op command rather than `0`.
+* Generated entries use `CmdSwitchModelBase + index` and are handled in
+  `TApp::handleEvent()` before the command switch; `kMaxSwitchModels` caps the
+  list so the command range stays inside bounds.
 * The app's own start-up pass is too late for the status line: `TProgram::init()`
   creates the desktop **before** the status line, so the provider label is filled
   in at the end of `initStatusLine_`.
@@ -315,9 +321,9 @@ in non-network builds (verified: 40/40 there, 60/60 with network).
 
 ## Model picker (Providers dialog)
 
-(The quick switcher is the **Model** menu on the menu bar — see "Multiple
-providers, model switching" above. The dialog's list is the discovery view: it
-shows what the server reports and caches it for the menu.)
+(The quick switcher is the **Switch model** menu on the menu bar — it offers one
+entry per provider, see "Switching models" above. This dialog's list is the
+discovery view: it shows what a server reports and caches it on the provider.)
 
 `File ▸ Options ▸ Providers…` shows an **Available models** list box
 populated from the server via a synchronous `GET <baseUrl>/models`
