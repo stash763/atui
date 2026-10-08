@@ -5,7 +5,11 @@
 #include "net/json_extract.h"
 #include "net/oai_client.h"
 #include "tools/tool_registry.h"
+#include "tools/tool.h"
 #include "tools/time_tool.h"
+#include "tools/json_args.h"
+#include "tools/edit_file_tool.h"
+#include "tools/run_command_tool.h"
 #include "settings/ini.h"
 #include <cstdlib>
 #include <cstring>
@@ -504,13 +508,215 @@ int test_tool_registry()
         return -1;
     if( reg.find( "does_not_exist" ) )
         return -1;
+    // The file-write and shell tools are registered and require approval.
+    atui::tools::Tool *ed = reg.find( "edit_file" );
+    atui::tools::Tool *rc = reg.find( "run_command" );
+    if( !ed || !rc )
+        return -1;
+    if( reg.find( "get_time" )->requiresApproval() )
+        return -1;
+    if( !ed->requiresApproval() || !rc->requiresApproval() )
+        return -1;
     std::string json = reg.renderToolsJson();
     if( json.find( "\"type\":\"function\"" ) == std::string::npos )
         return -1;
     if( json.find( "get_time" ) == std::string::npos )
         return -1;
+    if( json.find( "edit_file" ) == std::string::npos )
+        return -1;
+    if( json.find( "run_command" ) == std::string::npos )
+        return -1;
     if( json[0] != '[' || json[json.size() - 1] != ']' )
         return -1;
+    return 0;
+}
+
+// --- json argument reader -----------------------------------------------------
+
+int test_json_args_strings()
+{
+    std::string obj = "{\"path\":\"a/b.txt\",\"note\":\"path\",\"x\":\"q\\\"r\"}";
+    std::string v;
+    if( !atui::tools::jsonStringArg( obj, "path", v ) || v != "a/b.txt" )
+        return -1;
+    // A key must not match a value that happens to equal the key name.
+    if( atui::tools::jsonStringArg( obj, "path2", v ) )
+        return -2;
+    // Escaped quote decoded.
+    if( !atui::tools::jsonStringArg( obj, "x", v ) || v != "q\"r" )
+        return -3;
+    // \n and \t decoded to real control chars.
+    if( !atui::tools::jsonStringArg( "{\"old_text\":\"a\\nb\\tc\"}", "old_text", v )
+        || v != "a\nb\tc" )
+        return -4;
+    // Braces inside a string must not confuse the scan.
+    if( !atui::tools::jsonStringArg( "{\"command\":\"echo } {\",\"y\":1}", "command", v )
+        || v != "echo } {" )
+        return -5;
+    if( atui::tools::jsonStringArg( obj, "missing", v ) )
+        return -6;
+    return 0;
+}
+
+int test_json_args_bool_and_nested()
+{
+    bool b = false;
+    if( !atui::tools::jsonBoolArg( "{\"all\":true}", "all", b ) || b != true )
+        return -1;
+    b = true;
+    if( !atui::tools::jsonBoolArg( "{\"all\":false}", "all", b ) || b != false )
+        return -2;
+    if( !atui::tools::jsonBoolArg( "{\"all\":\"true\"}", "all", b ) || b != true )
+        return -3;
+    if( atui::tools::jsonBoolArg( "{\"all\":5}", "all", b ) )
+        return -4;   // not a boolean value
+
+    // A top-level string key wins even when a nested object holds the same key.
+    std::string v;
+    if( !atui::tools::jsonStringArg( "{\"a\":{\"path\":\"x\"},\"path\":\"top\"}",
+                                     "path", v ) || v != "top" )
+        return -5;
+    // A key that only exists nested is not a top-level string -> not found.
+    v.clear();
+    if( atui::tools::jsonStringArg( "{\"a\":{\"path\":\"x\"}}", "path", v ) )
+        return -6;
+    return 0;
+}
+
+int test_json_args_looks_object()
+{
+    if( !atui::tools::looksJsonObject( " {\"a\":1} " ) )
+        return -1;
+    if( atui::tools::looksJsonObject( "[1,2]" ) )
+        return -2;
+    if( atui::tools::looksJsonObject( "garbage" ) )
+        return -3;
+    if( atui::tools::looksJsonObject( "" ) )
+        return -4;
+    return 0;
+}
+
+// --- edit_file ----------------------------------------------------------------
+
+std::string toolTmpPath( const char *name )
+{
+    const char *d = std::getenv( "TMPDIR" );
+    if( !d || !*d ) d = "/tmp";
+    std::string s( d );
+    if( s.empty() || s[s.size() - 1] != '/' ) s += "/";
+    s += "atui_";
+    s += name;
+    return s;
+}
+
+void toolWriteFile( const std::string &path, const std::string &content )
+{
+    std::ofstream o( path.c_str(), std::ios::out | std::ios::binary | std::ios::trunc );
+    o.write( content.data(), (std::streamsize) content.size() );
+}
+
+std::string toolReadFile( const std::string &path )
+{
+    std::ifstream in( path.c_str(), std::ios::in | std::ios::binary );
+    std::string s( (std::istreambuf_iterator<char>( in )),
+                    std::istreambuf_iterator<char>() );
+    return s;
+}
+
+int test_edit_file_first_and_all()
+{
+    std::string p = toolTmpPath( "edit_first.txt" );
+    toolWriteFile( p, "x x x and hello world\n" );
+
+    // First occurrence only.
+    atui::tools::EditFileTool t;
+    std::string r = t.execute( "{\"path\":\"" + p + "\",\"old_text\":\"x\",\"new_text\":\"y\"}" );
+    std::string got = toolReadFile( p );
+    if( got != "y x x and hello world\n" )
+        return -1;
+    if( r.find( "replaced 1" ) == std::string::npos )
+        return -2;
+
+    // all=true replaces every occurrence.
+    t.execute( "{\"path\":\"" + p + "\",\"old_text\":\"x\",\"new_text\":\"z\",\"all\":true}" );
+    got = toolReadFile( p );
+    if( got != "y z z and hello world\n" )
+        return -3;
+
+    // Multiline exact match with real newlines passed through JSON escapes.
+    std::string p2 = toolTmpPath( "edit_multi.txt" );
+    toolWriteFile( p2, "one\ntwo\nthree\n" );
+    t.execute( "{\"path\":\"" + p2 + "\",\"old_text\":\"two\\nthree\",\"new_text\":\"2/3\"}" );
+    if( toolReadFile( p2 ) != "one\n2/3\n" )
+        return -4;
+
+    std::remove( p.c_str() );
+    std::remove( p2.c_str() );
+    return 0;
+}
+
+int test_edit_file_errors()
+{
+    atui::tools::EditFileTool t;
+    std::string p = toolTmpPath( "edit_miss.txt" );
+    toolWriteFile( p, "abc\n" );
+
+    // old_text not found: file unchanged, message mentions not found.
+    std::string r = t.execute( "{\"path\":\"" + p + "\",\"old_text\":\"zzz\",\"new_text\":\"q\"}" );
+    if( r.find( "not found" ) == std::string::npos )
+        return -1;
+    if( toolReadFile( p ) != "abc\n" )
+        return -2;
+
+    // Empty old_text rejected.
+    r = t.execute( "{\"path\":\"" + p + "\",\"old_text\":\"\",\"new_text\":\"q\"}" );
+    if( r.find( "empty" ) == std::string::npos )
+        return -3;
+
+    // Missing file.
+    r = t.execute( "{\"path\":\"/nonexistent/atui/nope.txt\",\"old_text\":\"a\",\"new_text\":\"b\"}" );
+    if( r.find( "cannot read" ) == std::string::npos )
+        return -4;
+
+    // Non-object arguments.
+    r = t.execute( "not json" );
+    if( r.find( "JSON object" ) == std::string::npos )
+        return -5;
+
+    std::remove( p.c_str() );
+    return 0;
+}
+
+// --- run_command --------------------------------------------------------------
+
+bool containsSub( const std::string &h, const std::string &n )
+{
+    return h.find( n ) != std::string::npos;
+}
+
+int test_run_command_basic()
+{
+    atui::tools::RunCommandTool t;
+    std::string r = t.execute( "{\"command\":\"echo hello\"}" );
+    if( !containsSub( r, "exit code 0" ) )
+        return -1;
+    if( !containsSub( r, "hello" ) )
+        return -2;
+
+    // Non-zero exit code is reported.
+    r = t.execute( "{\"command\":\"exit 3\"}" );
+    if( !containsSub( r, "exit code 3" ) )
+        return -3;
+
+    // stderr is merged into the captured output.
+    r = t.execute( "{\"command\":\"echo boom 1>&2\"}" );
+    if( !containsSub( r, "boom" ) )
+        return -4;
+
+    // Empty command rejected.
+    r = t.execute( "{\"command\":\"\"}" );
+    if( r.find( "required" ) == std::string::npos )
+        return -5;
     return 0;
 }
 
@@ -544,6 +750,12 @@ void init()
 #endif
     register_test( "tool: get_time", &test_time_tool );
     register_test( "tool: registry render", &test_tool_registry );
+    register_test( "tool: json args strings", &test_json_args_strings );
+    register_test( "tool: json args bool/nested", &test_json_args_bool_and_nested );
+    register_test( "tool: json args looks object", &test_json_args_looks_object );
+    register_test( "tool: edit_file first/all", &test_edit_file_first_and_all );
+    register_test( "tool: edit_file errors", &test_edit_file_errors );
+    register_test( "tool: run_command basic", &test_run_command_basic );
 
     // Markdown + syntax highlighting (network-independent).
     init_markdown_tests();

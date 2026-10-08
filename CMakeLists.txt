@@ -44,7 +44,11 @@ set(ATUI_SOURCES
     # Tools exposed to the model. Network-independent (pure local functions);
     # the chat model renders them into the request's "tools" array.
     "${ATUI_SRC_DIR}/tools/tool_registry.cpp"
+    "${ATUI_SRC_DIR}/tools/json_args.cpp"
+    "${ATUI_SRC_DIR}/tools/approval.cpp"
     "${ATUI_SRC_DIR}/tools/time_tool.cpp"
+    "${ATUI_SRC_DIR}/tools/edit_file_tool.cpp"
+    "${ATUI_SRC_DIR}/tools/run_command_tool.cpp"
     # Provider settings singleton: no libcurl dependency, always built so the
     # Options > Providers dialog works regardless of the network transport.
     "${ATUI_SRC_DIR}/net/provider.cpp"

@@ -15,6 +15,7 @@
 #include "net/token_queue.h"
 #include "net/provider.h"
 #include "net/json_extract.h"
+#include "tools/approval.h"
 
 #include <chrono>
 #include <cstring>
@@ -608,6 +609,112 @@ int test_oai_fetch_models()
     return 0;
 }
 
+// --- sensitive-tool approval in the chat loop --------------------------------
+
+// A test Approver answers with a fixed decision and records each request.
+struct TestApprover : public atui::tools::Approver
+{
+    bool decision;
+    int  calls;
+    std::string lastTool;
+    std::string lastSummary;
+    TestApprover() : decision( true ), calls( 0 ) {}
+    virtual bool approve( const atui::tools::ApprovalRef &req )
+    {
+        ++calls;
+        lastTool    = req->tool;
+        lastSummary = req->summary;
+        return decision;
+    }
+};
+
+// Drive one ask() whose round 0 asks to run_command; `allow` decides approval.
+int runApprovalRound( bool allow, std::string &drained,
+                      std::string &req2, int &calls )
+{
+    MockOpenAiServer srv;
+    if( !srv.start() )
+        return -1;
+    // Round 0: request run_command(echo hi). Round 1: final answer.
+    srv.enqueue( MockOpenAiServer::sse( {
+        "{\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\","
+        "\"tool_calls\":[{\"index\":0,\"id\":\"call_r\",\"type\":\"function\","
+        "\"function\":{\"name\":\"run_command\","
+        "\"arguments\":\"{\\\"command\\\":\\\"echo hi\\\"}\"}}]}},"
+        "\"finish_reason\":\"tool_calls\"}]}" } ) );
+    srv.enqueue( MockOpenAiServer::sse( {
+        "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"all done\","
+        "\"finish_reason\":\"stop\"}]}" } ) );
+
+    useMock( srv );
+    TestApprover ap;
+    ap.decision = allow;
+    atui::tools::setApprover( &ap );
+
+    TokenQueue q;
+    atui::net::OaiChatModel model;
+    int rc = 0;
+    if( !model.ask( "run it", "", &q ) )
+        rc = -2;
+    else if( !waitFor( [&] { return model.isDone(); } ) )
+        rc = -3;
+    else
+    {
+        std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+        drain( q, drained );
+        calls = ap.calls;
+        std::vector<std::string> reqs = srv.requests();
+        if( reqs.size() == 2 )
+            req2 = reqs[1];
+        else
+            rc = -4;
+    }
+
+    atui::tools::setApprover( 0 );   // restore: no approver outside tests
+    srv.stop();
+    return rc;
+}
+
+int test_oai_tool_approval_allow()
+{
+    std::string drained, req2; int calls = 0;
+    int rc = runApprovalRound( true, drained, req2, calls );
+    if( rc != 0 )
+        return rc;
+    if( calls != 1 )
+        return -5;
+    if( !contains( drained, "calling run_command" ) )
+        return -6;
+    if( !contains( drained, "all done" ) )
+        return -7;
+    // Round 1 replays the tool result: the command actually ran (exit code 0).
+    if( !contains( req2, "\"role\":\"tool\"" ) )
+        return -8;
+    if( !contains( req2, "exit code 0" ) )
+        return -9;
+    return 0;
+}
+
+int test_oai_tool_approval_deny()
+{
+    std::string drained, req2; int calls = 0;
+    int rc = runApprovalRound( false, drained, req2, calls );
+    if( rc != 0 )
+        return rc;
+    if( calls != 1 )
+        return -5;
+    if( !contains( drained, "awaiting your approval" ) )
+        return -6;
+    if( contains( drained, "calling run_command" ) )
+        return -7;   // must NOT have run
+    if( !contains( drained, "all done" ) )
+        return -8;
+    // The tool result the model sees reports the denial.
+    if( !contains( req2, "declined" ) )
+        return -9;
+    return 0;
+}
+
 } // anonymous namespace
 
 void init_network_tests()
@@ -627,6 +734,8 @@ void init_network_tests()
     register_test( "oai: chat resend on", &test_oai_chat_resend_on );
     register_test( "oai: model ids parse", &test_oai_model_ids_parse );
     register_test( "oai: fetch models", &test_oai_fetch_models );
+    register_test( "oai: tool approval allow", &test_oai_tool_approval_allow );
+    register_test( "oai: tool approval deny", &test_oai_tool_approval_deny );
 }
 
 } // namespace atui_test

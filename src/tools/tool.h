@@ -31,6 +31,20 @@ public:
     // Run the tool with the raw JSON arguments string the model emitted and
     // return a text result. Must not throw for robustness.
     virtual std::string execute( const std::string &argumentsJson ) = 0;
+
+    // Whether running this tool must be approved by the user first. Tools that
+    // touch the file system or run commands return true; the chat loop then
+    // consults the process-wide Approver before executing. Defaults to false.
+    virtual bool requiresApproval() const { return false; }
+
+    // A short, human-readable one-line preview of what this specific call will
+    // do, shown in the confirmation prompt. `argumentsJson` is the raw
+    // arguments. Defaults to just the tool name.
+    virtual std::string approvalSummary( const std::string &argumentsJson ) const
+    {
+        ( void ) argumentsJson;
+        return std::string( name() );
+    }
 };
 
 } // namespace atui::tools

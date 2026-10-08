@@ -1,6 +1,8 @@
 // Implementation of the tool registry. See tool_registry.h.
 #include "tools/tool_registry.h"
 #include "tools/time_tool.h"
+#include "tools/edit_file_tool.h"
+#include "tools/run_command_tool.h"
 
 #include <mutex>
 
@@ -89,7 +91,10 @@ void registerDefaults()
 {
     static std::once_flag flag;
     std::call_once( flag, []() {
-        ToolRegistry::instance().add( &g_timeTool );
+        ToolRegistry &r = ToolRegistry::instance();
+        r.add( &g_timeTool );
+        r.add( &g_editFileTool );     // file-system write: gated by approval
+        r.add( &g_runCommandTool );   // shell exec: gated by approval
     } );
 }
 

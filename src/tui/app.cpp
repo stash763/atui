@@ -40,6 +40,7 @@
 #define Uses_TStringCollection
 #define Uses_TTimer
 #define Uses_TScreen
+#define Uses_MsgBox
 #include <cstdio>
 #include <cstddef>
 #include <cstdlib>
@@ -62,6 +63,8 @@
 #include "net/oai_chat_model.h"
 #include "net/oai_client.h"
 #include "net/token_queue.h"
+#include "tools/approval.h"
+#include <mutex>
 #endif
 
 #include <vector>
@@ -106,6 +109,49 @@ void appendReply_( const char *text );
 void processMessage_();
 void focusInput_();
 void pollSink_();
+
+#ifdef ATUI_HAVE_NETWORK
+// --- tool approval (worker thread -> UI) -------------------------------------
+//
+// A tool that requires approval (edit_file / run_command) blocks the request
+// worker inside TuiApprover::approve() until this UI thread shows a Yes/No
+// dialog. The worker publishes the pending request here; pollSink_() picks it
+// up on its periodic timer, shows the modal box, and records the decision.
+
+std::mutex                 g_apMx;               // guards g_pendingApproval
+atui::tools::ApprovalRef   g_pendingApproval;    // worker sets, UI clears
+bool                       g_approvalShowing = false;  // re-entrancy guard
+
+// Show the confirmation dialog (modal; runs a nested event loop on this
+// thread) and return true if the user allowed it.
+bool showApprovalDialog_( const atui::tools::ApprovalRef &req )
+{
+    std::string msg = "The model wants to run the \"" + req->tool
+                    + "\" tool.\n\n";
+    msg += req->summary;
+    msg += "\n\nAllow this to run?";
+    ushort r = ::messageBox( msg.c_str(),
+                             mfConfirmation | mfYesButton | mfNoButton );
+    return r == cmYes;
+}
+
+// Approver installed process-wide. approve() runs on the worker thread.
+class TuiApprover : public atui::tools::Approver
+{
+public:
+    virtual bool approve( const atui::tools::ApprovalRef &req )
+    {
+        {
+            std::lock_guard< std::mutex > lock( g_apMx );
+            g_pendingApproval = req;
+        }
+        // Refuse rather than hang forever if the UI can't show the prompt.
+        return req->waitFor( 600000 );   // 10 minutes
+    }
+};
+
+TuiApprover g_approver;
+#endif // ATUI_HAVE_NETWORK
 
 // The chat transcript. Replaces the plain TTerminal so we can render the
 // model's answers as styled markdown (headings, emphasis, syntax-highlighted
@@ -690,6 +736,8 @@ TDeskTop *initDeskTop_( TRect r )
     // Periodic poll of the AI token queue (worker thread -> event loop).
     if( TProgram::application != 0 )
         TProgram::application->setTimer( 50, 50 );
+    // Install the tool-confirmation approver (edit_file / run_command).
+    atui::tools::setApprover( &g_approver );
 #endif
 
     appendReply_( "atui (M2): type a message and press Enter." );
@@ -747,6 +795,31 @@ void pollSink_()
         }
         gotToken = true;
     }
+
+    // If the worker is blocked waiting for approval on a sensitive tool, show
+    // the prompt now. g_approvalShowing prevents re-entrant dialogs while the
+    // modal box pumps its own event loop (the 50ms timer keeps firing).
+    if( !g_approvalShowing )
+    {
+        atui::tools::ApprovalRef req;
+        {
+            std::lock_guard< std::mutex > lock( g_apMx );
+            req = g_pendingApproval;
+        }
+        if( req && !req->answered() )
+        {
+            g_approvalShowing = true;
+            bool allow = showApprovalDialog_( req );
+            req->answer( allow );
+            {
+                std::lock_guard< std::mutex > lock( g_apMx );
+                if( g_pendingApproval == req )
+                    g_pendingApproval.reset();
+            }
+            g_approvalShowing = false;
+        }
+    }
+
     bool done = g_oai_->isDone();
     if( !gotToken && done && !g_replyFinished_ )
     {

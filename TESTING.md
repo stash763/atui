@@ -6,7 +6,7 @@ which needs a real terminal (pty) to exercise.
 ## Build & unit tests
 
     cmake --build build          # from repo root
-    ./build/atui --self-test     # unit + integration tests (52/52 PASS, network build)
+    ./build/atui --self-test     # unit + integration tests (60/60 PASS, network build)
 
 Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
 `src/settings/settings.cpp`):
@@ -114,21 +114,54 @@ model has seen. Confirmed against Ollama: two-turn recall works.
 ## Tool calling
 
 The model is offered a `tools` array (OpenAI function-calling schema) rendered
-by `ToolRegistry::renderToolsJson()` (`src/tools/tool_registry.cpp`). One tool
-is registered by default:
+by `ToolRegistry::renderToolsJson()` (`src/tools/tool_registry.cpp`). Three
+tools are registered by default:
 
 - `get_time` (`src/tools/time_tool.cpp`) — no arguments; returns the machine's
-  local date/time via `strftime`.
+  local date/time via `strftime`. Safe, no approval needed.
+- `edit_file` (`src/tools/edit_file_tool.cpp`) — replaces an exact substring of
+  an existing file: `{path, old_text, new_text, all?}` (first match unless
+  `all=true`). Reports how many occurrences were replaced (and how many remain).
+  **Requires approval.**
+- `run_command` (`src/tools/run_command_tool.cpp`) — runs a shell command
+  through `/bin/sh` (POSIX) / `cmd` (Windows), merging stderr into stdout and
+  returning combined output (capped at 200 KB) plus the exit code:
+  `{command}`. **Requires approval.**
+
+### Confirmation prompt for sensitive tools
+
+`edit_file` and `run_command` touch the file system / shell, so they set
+`Tool::requiresApproval()` and the loop asks the user before running them. The
+worker thread and the TUI handshake lives in `src/tools/approval.{h,cpp}`:
+
+- The tool loop (`oai_chat_model.cpp`) checks `requiresApproval()`. If a
+  process-wide `Approver` is installed, it builds an `Approval` (tool name + a
+  one-line `approvalSummary()` preview), pushes a status line
+  (`~ <tool>: awaiting your approval…`), and blocks in `approve()` until
+  answered. No approver, or a timeout (10 min), means **refuse** — the tool
+  never runs and the model gets a "declined"/"no approval UI" result.
+- The TUI installs a `TuiApprover` (`src/tui/app.cpp`). `approve()` runs on the
+  worker thread: it publishes the request and blocks. `pollSink_()` (the 50 ms
+  timer on the UI thread) picks it up and shows a modal
+  `messageBox(..., mfConfirmation | mfYesButton | mfNoButton)`; Yes runs the
+  tool, No / Cancel declines. A `g_approvalShowing` guard prevents a re-entrant
+  dialog while the modal box pumps its own event loop.
+
+Arguments are parsed with a small flat-JSON reader (`src/tools/json_args.{h,cpp}`)
+that unescapes strings and skips nested objects/arrays, so values containing
+braces, quotes or newlines are handled correctly.
 
 The exchange is a loop in `OaiChatModel::ask()` (`src/net/oai_chat_model.cpp`),
 all on the worker thread, capped at `kMaxToolRounds = 6`:
 
 1. Send the request (with `tools`). The SSE stream is parsed for
    `delta.tool_calls` fragments and `finish_reason` (`json_extract.cpp`).
-2. If `finish_reason == "tool_calls"`: for each call, push a status line
-   (`~ calling <name>`) to the queue, execute the tool via
-   `ToolRegistry::find(name)->execute(args)`, append the assistant turn (with
-   its `tool_calls`) and a `role:"tool"` result message, and request again.
+2. If `finish_reason == "tool_calls"`: for each call, look it up. If it
+   requires approval, gate on the `Approver` (see above); otherwise (or once
+   approved) push a `~ calling <name>` status line and run
+   `ToolRegistry::find(name)->execute(args)`. Append the assistant turn (with
+   its `tool_calls`) and a `role:"tool"` result message (or the decline
+   message), then request again.
 3. Otherwise stop — that content was the final answer. The whole exchange is
    committed to `conv_` only on success.
 
@@ -150,9 +183,25 @@ time?" against `ministral-3:8b-instruct-2512-q4_K_M`:
     [round 0] finish='tool_calls'  exec get_time({}) -> 2026-10-05 22:08:34 EDT
     [round 1] finish='stop'        "The current time is **10:08 PM EDT** …"
 
+**Live confirmation check** (mock server asking for `run_command`
+`{command:"echo APPROVED_42"}`): submitting shows
+`~ run_command: awaiting your approval…` then a modal Confirm dialog
+(`$ echo APPROVED_42`, Yes/No) while the worker is blocked. Answering **Yes**
+proceeds to `~ calling run_command...` and the round-1 final answer; answering
+**No** shows the prompt but never prints `calling run_command...` — the command
+does not run and the loop continues with the "declined" result.
+
 Unit coverage (`--self-test`): `finish_reason: parse`, `tool: call frags split`,
 `tool: args with braces` (JSON with escaped quotes/braces in `arguments`),
-`tool: get_time`, `tool: registry render`.
+`tool: get_time`, `tool: registry render` (now also checks `edit_file` /
+`run_command` are registered and their `requiresApproval()` flags),
+`tool: json args strings` / `bool/nested` / `looks object` (argument parser:
+escapes, nested objects, braces-in-strings, key-not-a-value),
+`tool: edit_file first/all` (first vs `all=true`, multi-line match),
+`tool: edit_file errors` (not-found / empty old_text / missing file / bad args),
+`tool: run_command basic` (stdout, non-zero exit, merged stderr, empty cmd).
+The tool loop's approval round-trip is covered by the integration tests
+`oai: tool approval allow` and `oai: tool approval deny`.
 
 ## OpenAI client integration tests (localhost mock server)
 
@@ -188,7 +237,7 @@ teardown. Coverage (`--self-test`, network build):
 
 These register via `atui_test::init_network_tests()` (called from
 `selftest.cpp` under `#ifdef ATUI_HAVE_NETWORK`); the file compiles to nothing
-in non-network builds (verified: 34/34 there, 52/52 with network).
+in non-network builds (verified: 40/40 there, 60/60 with network).
 
 
 ## Model picker (Providers dialog)

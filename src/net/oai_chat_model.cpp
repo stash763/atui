@@ -9,6 +9,7 @@
 #include "oai_client.h"
 #include "provider.h"
 #include "tools/tool_registry.h"
+#include "tools/approval.h"
 #ifdef ATUI_DEBUG_KEYS
 #include "dbg.h"
 #endif
@@ -132,15 +133,52 @@ bool OaiChatModel::ask( const std::string &userMessage, const std::string &histo
             {
                 const OaiToolCall &tc = resp.toolCalls[i];
 
-                if( queue )
-                    queue->push( Token( "calling " + tc.name + "...",
-                                        tkStatus ) );
-
                 atui::tools::Tool *tool =
                     atui::tools::ToolRegistry::instance().find( tc.name );
-                std::string result = tool
-                    ? tool->execute( tc.arguments )
-                    : ( "error: unknown tool '" + tc.name + "'" );
+
+                std::string result;
+                bool run = true;
+
+                if( !tool )
+                {
+                    result = "error: unknown tool '" + tc.name + "'";
+                    run = false;
+                }
+                else if( tool->requiresApproval() )
+                {
+                    // Sensitive tool (file write / shell). Ask the user first.
+                    // With no approver installed, or on timeout, we refuse.
+                    atui::tools::Approver *ap = atui::tools::approver();
+                    if( !ap )
+                    {
+                        result = "error: tool '" + tc.name + "' requires "
+                                 "approval but no approval UI is available";
+                        run = false;
+                    }
+                    else
+                    {
+                        atui::tools::ApprovalRef req =
+                            std::make_shared< atui::tools::Approval >();
+                        req->tool    = tc.name;
+                        req->summary = tool->approvalSummary( tc.arguments );
+                        if( queue )
+                            queue->push( Token( tc.name
+                                                    + ": awaiting your approval…",
+                                                tkStatus ) );
+                        run = ap->approve( req );   // blocks this worker thread
+                        if( !run )
+                            result =
+                                "The user declined to run '" + tc.name + "'.";
+                    }
+                }
+
+                if( run )
+                {
+                    if( queue )
+                        queue->push( Token( "calling " + tc.name + "...",
+                                            tkStatus ) );
+                    result = tool->execute( tc.arguments );
+                }
 
                 OaiMessage tr;
                 tr.role = "tool";
