@@ -11,6 +11,7 @@
 #include "tools/edit_file_tool.h"
 #include "tools/run_command_tool.h"
 #include "settings/ini.h"
+#include "settings/settings.h"
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -285,6 +286,206 @@ void writeFile( const std::string &path, const char *content )
     std::ofstream out( path.c_str(), std::ios::out | std::ios::trunc );
     out << content;
 }
+
+// --- multiple providers -------------------------------------------------------
+
+// Restores the provider store, the theme and $ATUI_CONFIG after a test that
+// rewrites them (they are process-wide singletons).
+class StoreGuard
+{
+public:
+    StoreGuard()
+        : list_( atui::net::providers() ),
+          active_( atui::net::providerSettings().name ),
+          theme_( atui::tui::currentTheme() )
+    {
+        const char *p = std::getenv( "ATUI_CONFIG" );
+        if( p ) { hadConfig_ = true; savedConfig_ = p; }
+    }
+    ~StoreGuard()
+    {
+        atui::net::replaceProviders( list_, active_ );
+        atui::tui::setTheme( theme_ );
+        if( hadConfig_ ) setenv( "ATUI_CONFIG", savedConfig_.c_str(), 1 );
+        else unsetenv( "ATUI_CONFIG" );
+    }
+
+private:
+    std::vector<atui::net::ProviderSettings> list_;
+    std::string active_;
+    atui::tui::Theme theme_;
+    bool hadConfig_ = false;
+    std::string savedConfig_;
+};
+
+int test_provider_store()
+{
+    StoreGuard guard;
+
+    atui::net::replaceProviders( std::vector<atui::net::ProviderSettings>(), "" );
+    if( atui::net::providers().size() != 1 ) return -1;   // empty list ignored
+
+    const std::size_t b = atui::net::addProvider( "beta" );
+    const std::size_t c = atui::net::addProvider( "beta" );   // name is taken
+    if( atui::net::providers().size() != 3 ) return -1;
+    if( atui::net::providers()[b].name != "beta" ) return -1;
+    if( atui::net::providers()[c].name != "beta-2" ) return -1;
+
+    atui::net::setActiveProvider( b );
+    if( atui::net::providerSettings().name != "beta" ) return -1;
+    if( atui::net::activeProviderIndex() != b ) return -1;
+
+    // Names match case-insensitively; unknown names change nothing.
+    if( !atui::net::setActiveProviderByName( "BETA-2" ) ) return -1;
+    if( atui::net::activeProviderIndex() != c ) return -1;
+    if( atui::net::setActiveProviderByName( "nope" ) ) return -1;
+    if( atui::net::activeProviderIndex() != c ) return -1;
+
+    // Deleting the active provider keeps the store valid.
+    if( !atui::net::removeProvider( c ) ) return -1;
+    if( atui::net::providers().size() != 2 ) return -1;
+    if( atui::net::activeProviderIndex() >= atui::net::providers().size() )
+        return -1;
+
+    // The last provider cannot be deleted.
+    atui::net::setActiveProvider( 0 );
+    if( !atui::net::removeProvider( 1 ) ) return -1;
+    if( atui::net::removeProvider( 0 ) ) return -1;
+    if( atui::net::providers().size() != 1 ) return -1;
+
+    if( atui::net::findProvider( "default" ) != &atui::net::providers()[0] )
+        return -1;
+    if( atui::net::findProvider( "missing" ) != 0 ) return -1;
+    return 0;
+}
+
+int test_provider_model_lists()
+{
+    atui::net::ProviderSettings p = atui::net::defaultProviderSettings();
+
+    std::vector<std::string> ids;
+    ids.push_back( "llama3.2" );
+    ids.push_back( "qwen3:30b" );
+
+    p.model = "qwen3:30b";
+    atui::net::setModels( p, ids );
+    if( p.model != "qwen3:30b" ) return -1;         // selection survives
+
+    // A selection the endpoint does not report is kept (re-added in front)
+    // rather than silently switching models.
+    p.model = "gone";
+    atui::net::setModels( p, ids );
+    if( p.model != "gone" ) return -1;
+    if( p.models.size() != 3 || p.models[0] != "gone" ) return -1;
+
+    p.model = "";
+    atui::net::setModels( p, ids );
+    if( p.model != "llama3.2" ) return -1;          // defaults to the first
+
+    atui::net::selectModel( p, "deepseek-r1" );     // appends unknown ids
+    if( p.model != "deepseek-r1" ) return -1;
+    if( p.models.size() != 3 ) return -1;
+
+    const std::string text = atui::net::formatModelList( p.models );
+    if( text != "llama3.2,qwen3:30b,deepseek-r1" ) return -1;
+    if( atui::net::parseModelList( text ).size() != 3 ) return -1;
+    if( atui::net::parseModelList( " a , ,b " ).size() != 2 ) return -1;
+    if( atui::net::parseModelList( "" ).size() != 0 ) return -1;
+    return 0;
+}
+
+int test_settings_provider_roundtrip()
+{
+    StoreGuard guard;
+    const std::string path = tmpIniPath();
+    std::remove( path.c_str() );
+    setenv( "ATUI_CONFIG", path.c_str(), 1 );
+
+    std::vector<atui::net::ProviderSettings> list;
+    list.push_back( atui::net::defaultProviderSettings() );
+    list[0].name = "local";
+    list[0].baseUrl = "http://127.0.0.1:8080/v1";
+    list[0].model = "llama";
+    list[0].models = atui::net::parseModelList( "llama,phi" );
+    list.push_back( atui::net::defaultProviderSettings() );
+    list[1].name = "Hosted";
+    list[1].baseUrl = "https://api.example.com/v1";
+    list[1].apiKey = "secret";
+    list[1].model = "gpt-x";
+    list[1].models = atui::net::parseModelList( "gpt-x" );
+    list[1].temperature = 0.25;
+    atui::net::replaceProviders( list, "Hosted" );
+
+    if( !atui::settings::saveAll() ) return -1;
+
+    // The file holds one section per provider plus the active selection.
+    {
+        atui::settings::IniFile ini( path );
+        if( !ini.load() ) return -1;
+        if( ini.getString( "app", "provider" ) != "Hosted" ) return -1;
+        if( ini.getString( "provider:local", "base_url" ) !=
+            "http://127.0.0.1:8080/v1" ) return -1;
+        if( ini.getString( "provider:hosted", "api_key" ) != "secret" )
+            return -1;
+        if( ini.getString( "provider:hosted", "name" ) != "Hosted" )
+            return -1;   // display case preserved in the section
+        if( ini.getString( "provider:local", "models" ) != "llama,phi" )
+            return -1;
+    }
+
+    // Loading replaces the store, including which provider is active.
+    atui::net::replaceProviders( std::vector<atui::net::ProviderSettings>(),
+                                 "" );
+    if( !atui::settings::loadAll() ) return -1;
+    if( atui::net::providers().size() != 2 ) return -1;
+    if( atui::net::providerSettings().name != "Hosted" ) return -1;
+    if( atui::net::providerSettings().baseUrl !=
+        "https://api.example.com/v1" ) return -1;
+    if( atui::net::providerSettings().temperature != 0.25 ) return -1;
+    if( atui::net::providerSettings().models.size() != 1 ) return -1;
+
+    // Re-saving drops the section of a provider that was deleted (sections
+    // come from the file in alphabetical order, so index 0 is "Hosted").
+    atui::net::removeProvider( 0 );
+    if( !atui::settings::saveAll() ) return -1;
+    atui::settings::IniFile after( path );
+    if( !after.load() ) return -1;
+    if( after.has( "provider:hosted", "api_key" ) ) return -1;
+    if( !after.has( "provider:local", "base_url" ) ) return -1;
+    if( atui::net::providers().size() != 1 ) return -1;
+    return 0;
+}
+
+// A config file from before multiple providers: the single [provider] section
+// becomes the provider named "default".
+int test_settings_legacy_provider_section()
+{
+    StoreGuard guard;
+    const std::string path = tmpIniPath();
+    setenv( "ATUI_CONFIG", path.c_str(), 1 );
+    writeFile( path,
+        "[provider]\n"
+        "base_url = http://legacy:1234/v1\n"
+        "model = old-model\n"
+        "temperature = 0.9\n"
+        "[ui]\n"
+        "theme = classic\n" );
+
+    if( !atui::settings::loadAll() ) return -1;
+    if( atui::net::providers().size() != 1 ) return -1;
+    if( atui::net::providerSettings().name != "default" ) return -1;
+    if( atui::net::providerSettings().baseUrl != "http://legacy:1234/v1" )
+        return -1;
+    if( atui::net::providerSettings().model != "old-model" ) return -1;
+    if( atui::net::providerSettings().temperature != 0.9 ) return -1;
+    if( atui::tui::currentTheme() != atui::tui::ThemeClassic ) return -1;
+
+    // The selected model is offered even though no model list was stored.
+    if( atui::net::providerSettings().models.size() != 1 ||
+        atui::net::providerSettings().models[0] != "old-model" ) return -1;
+    return 0;
+}
+
 
 int test_ini_parse()
 {
@@ -736,6 +937,12 @@ void init()
     register_test( "theme: dark recolor", &test_theme_dark_recolor );
     register_test( "theme: switch", &test_theme_switch );
     register_test( "provider: singleton mutable", &test_provider_singleton_mutable );
+    register_test( "provider: store add/switch/delete", &test_provider_store );
+    register_test( "provider: model lists", &test_provider_model_lists );
+    register_test( "settings: provider round-trip",
+                   &test_settings_provider_roundtrip );
+    register_test( "settings: legacy [provider] section",
+                   &test_settings_legacy_provider_section );
     register_test( "ini: parse", &test_ini_parse );
     register_test( "ini: typed defaults", &test_ini_typed_defaults );
     register_test( "ini: save round-trip", &test_ini_save_roundtrip );

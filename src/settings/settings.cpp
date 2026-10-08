@@ -19,6 +19,28 @@ const char *envOrNone( const char *name )
     return ( v && v[0] ) ? v : 0;
 }
 
+// One [provider:<id>] section -> settings. Keys that are absent fall back to
+// environment/default values; a provider with no stored model list still offers
+// its selected model.
+net::ProviderSettings readProvider( const IniFile &ini,
+                                    const std::string &section,
+                                    const std::string &defaultName )
+{
+    net::ProviderSettings p = net::defaultProviderSettings();
+    p.name  = ini.getString( section.c_str(), "name", defaultName );
+    p.baseUrl = ini.getString( section.c_str(), "base_url", p.baseUrl );
+    p.apiKey  = ini.getString( section.c_str(), "api_key",  p.apiKey );
+    p.model   = ini.getString( section.c_str(), "model",    p.model );
+    p.temperature = ini.getDouble( section.c_str(), "temperature",
+                                   p.temperature );
+    p.thinkingResend = ini.getBool( section.c_str(), "thinking_resend",
+                                    p.thinkingResend );
+    p.models = net::parseModelList(
+        ini.getString( section.c_str(), "models", std::string() ) );
+    if( p.models.empty() ) p.models.push_back( p.model );
+    return p;
+}
+
 } // anonymous namespace
 
 std::string configPath()
@@ -40,16 +62,22 @@ bool loadAll()
     IniFile ini( configPath() );
     bool had = ini.load();
 
-    // Provider endpoint settings. Keys absent from the file keep their
-    // current (env-seeded) values, since getString/getDouble return the
-    // default we pass through.
-    net::ProviderSettings &p = net::providerSettings();
-    p.baseUrl     = ini.getString( "provider", "base_url",    p.baseUrl );
-    p.apiKey      = ini.getString( "provider", "api_key",     p.apiKey );
-    p.model       = ini.getString( "provider", "model",       p.model );
-    p.temperature = ini.getDouble( "provider", "temperature", p.temperature );
-    p.thinkingResend =
-        ini.getBool( "provider", "thinking_resend", p.thinkingResend );
+    // Providers: one [provider:<id>] section each. Keys absent from a section
+    // keep their env-seeded values (see readProvider).
+    std::vector<net::ProviderSettings> list;
+    std::vector<std::string> ids = ini.sectionsWith( "provider:" );
+    for( std::size_t i = 0; i < ids.size(); ++i )
+        list.push_back( readProvider( ini, "provider:" + ids[i], ids[i] ) );
+
+    // Legacy single [provider] section (before multiple providers): read as
+    // the provider named "default" when no new-style section exists.
+    if( list.empty() && ini.has( "provider", "base_url" ) )
+        list.push_back( readProvider( ini, "provider", "default" ) );
+
+    std::string active = ini.getString( "app", "provider", std::string() );
+    if( list.empty() )
+        active = net::providerSettings().name;   // keep the env-seeded store
+    net::replaceProviders( list, active );
 
     // Color theme (only override when the file actually specifies one).
     std::string theme = ini.getString( "ui", "theme", std::string() );
@@ -72,12 +100,26 @@ bool saveAll()
     IniFile ini( configPath() );
     ini.load();   // preserve any unrelated keys already in the file
 
-    net::ProviderSettings &p = net::providerSettings();
-    ini.setString( "provider", "base_url",    p.baseUrl );
-    ini.setString( "provider", "api_key",     p.apiKey );
-    ini.setString( "provider", "model",       p.model );
-    ini.setDouble( "provider", "temperature", p.temperature );
-    ini.setBool( "provider", "thinking_resend", p.thinkingResend );
+    // Rewrite every provider from the store, and drop the sections belonging
+    // to providers that no longer exist (plus the legacy [provider] section).
+    ini.eraseSectionsWith( "provider:" );
+    ini.eraseSection( "provider" );
+    const std::vector<net::ProviderSettings> &list = net::providers();
+    for( std::size_t i = 0; i < list.size(); ++i )
+    {
+        const net::ProviderSettings &p = list[i];
+        const std::string section = "provider:" + p.name;
+        ini.setString( section.c_str(), "name",  p.name );
+        ini.setString( section.c_str(), "base_url", p.baseUrl );
+        ini.setString( section.c_str(), "api_key",  p.apiKey );
+        ini.setString( section.c_str(), "model",    p.model );
+        ini.setString( section.c_str(), "models",
+                       net::formatModelList( p.models ) );
+        ini.setDouble( section.c_str(), "temperature", p.temperature );
+        ini.setBool( section.c_str(), "thinking_resend", p.thinkingResend );
+    }
+
+    ini.setString( "app", "provider", net::providerSettings().name );
 
     ini.setString( "ui", "theme", tui::themeName( tui::currentTheme() ) );
     ini.setBool( "ui", "thinking_expand", thinkingExpandAll() );

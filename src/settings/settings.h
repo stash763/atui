@@ -9,12 +9,20 @@
 //   theme = dark
 //   thinking_expand = false
 //
-//   [provider]
-//   base_url = http://127.0.0.1:8080/v1
+//   [app]
+//   provider = ollama            # active provider
+//
+//   [provider:ollama]            # one section per provider
+//   name     = ollama            # display name (case preserved here)
+//   base_url = http://10.0.0.5:11434/v1
 //   api_key  =
-//   model    = llama
+//   model    = qwen3:30b         # selected model for this provider
+//   models   = llama3.2,qwen3:30b  # ids offered in the Model menu
 //   temperature = 0.7
 //   thinking_resend = false
+//
+// A legacy single [provider] section is still read and becomes the provider
+// named "default".
 //
 // Precedence: env vars seed the singletons first (see provider.cpp,
 // theme.cpp); a config file, when present, overrides those.

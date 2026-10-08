@@ -31,18 +31,27 @@ Path precedence for `configPath()`: `$ATUI_CONFIG`, else
 `$XDG_CONFIG_HOME/atui/config.ini`, else `$HOME/.atui.ini`, else `atui.ini`.
 The file is written `0600` (it holds `api_key`); parent dirs are created `0700`.
 
-Schema:
+Schema (one `[provider:<id>]` section per provider; `[app] provider` selects
+the active one):
 
     [ui]
     theme = dark            # dark | classic
     thinking_expand = false # show reasoning blocks expanded at startup
 
-    [provider]
-    base_url = http://127.0.0.1:8080/v1
+    [app]
+    provider = ollama       # active provider name
+
+    [provider:ollama]       # section name is lower-cased; `name` keeps the case
+    name     = ollama
+    base_url = http://127.0.0.1:11434/v1
     api_key  =
-    model    = llama
+    model    = qwen3:30b    # model this provider uses
+    models   = llama3.2,qwen3:30b  # ids offered in the Model menu (from GET /models)
     temperature = 0.7
     thinking_resend = false # replay thinking to the model on later turns
+
+An old single `[provider]` section is still read and becomes the provider named
+`default`; on the next save it is rewritten in the new form.
 
 Precedence: env vars seed the singletons first; a config file, when present,
 overrides them (a key missing from the file keeps its env/default value).
@@ -56,26 +65,90 @@ Manual round-trip test:
     cat "$CFG"
     rm -f "$CFG"
 
+## Multiple providers, model switching (Model / Switch provider menus)
+
+Two generated menu-bar dropdowns sit next to `File`:
+
+    File   Model   Switch provider   About        (Options lives under File)
+
+* **Model** (`Alt-M`) — the active provider's models; the one in use is marked
+  `*`. Picking one sets it immediately and writes the config. Below the list:
+  `Refresh models` (re-reads `GET <base_url>/models`) and
+  `Enter model name...` (a prompt for endpoints that do not list their models;
+  a hand-typed id is appended to the list).
+* **Switch provider** (`Alt-S`) — every configured provider, active one marked,
+  plus `New provider...` (asks for a name, activates it and opens the Providers
+  dialog) and `Edit providers...`.
+
+The status line's left-most field always shows what a message is actually sent
+to: ` ollama | qwen3:30b `.
+
+Model ids are cached in the config (`models = ...`), so the Model menu works
+offline; `Refresh models` updates the cache from the server.
+
+Implementation (`src/net/provider.{h,cpp}`): a process-wide store
+(`providers()`, `activeProviderIndex()`) with `addProvider` /
+`removeProvider` / `setActiveProvider[ByName]` / `findProvider` /
+`uniqueProviderName`, plus `setModels` / `selectModel` for the model list.
+`providerSettings()` still returns the **active** provider, which is what
+`OaiChatModel` snapshots per request — so the request path did not change.
+`addProvider` copies `defaultProviderSettings()` (env-seeded) under a unique
+name; the last remaining provider cannot be deleted.
+
+TVision notes for the generated dropdowns (all verified live):
+
+* A dropdown must be a `TSubMenu`; `subMenu + menuItem` appends to the **last
+  top-level entry's own** menu, so a plain `TMenuItem` in that chain silently
+  lands inside `File`.
+* `TMenuItem::~TMenuItem` deletes `subMenu` only for `command == 0` items, and
+  `TMenu::~TMenu` deletes its item chain — so refreshing is "assign a new
+  `TMenu`, delete the old one" (`setSubMenu_`).
+* `command == 0` also means "has a submenu" to `TMenuBox` (it draws a `►` and
+  opens the submenu), so greyed-out informational lines get a real no-op command
+  (`CmdNoop`) instead.
+* The app's own start-up pass is too late for the status line: `TProgram::init()`
+  creates the desktop **before** the status line, so the provider label is filled
+  in at the end of `initStatusLine_`.
+
+Self-tests: `provider: store add/switch/delete`, `provider: model lists`,
+`settings: provider round-trip` (two providers + active + delete-drops-section)
+and `settings: legacy [provider] section`.
+
 ## Providers dialog (remote OpenAI-compatible endpoint)
 
 `File ▸ Options ▸ Providers...` (shortcut Alt-F, then Alt-P; or Alt-P directly)
-opens a dialog to configure the remote server (any OpenAI-compatible endpoint,
-e.g. llama.cpp's `server` or Ollama):
+manages the provider list — every entry is an OpenAI-compatible endpoint such
+as llama.cpp's `server` or Ollama:
 
-- Url — base URL (e.g. `http://127.0.0.1:8080/v1`, `http://host:11434/v1`)
-- Key — optional bearer token
-- Model — served model name
-- Temp — sampling temperature
+* **Provider list** (top-left) — click to edit one; the active provider is
+  marked `name *`. `+ New` appends a provider (based on the env-seeded
+  defaults), `- Delete` removes the one being edited (the last provider cannot
+  be deleted), `Make active` switches to the edited provider.
+* **Name / Url / Key / Model / Temp / Resend thinking** — the fields of the
+  provider being edited.
+* **Available models** + `Refresh` — `GET <url>/models` for the URL/Key as
+  typed; clicking a model selects it (and caches the list on the provider).
 
-Edits are stored in the process-wide `atui::net::providerSettings()` singleton
-(`src/net/provider.{h,cpp}`), seeded from `ATUI_BASE_URL` / `ATUI_API_KEY` /
-`ATUI_MODEL` / `ATUI_TEMPERATURE`. `OaiChatModel::ask()` snapshots these
-settings per request, so a dialog edit takes effect on the next chat message
-without a restart. Pressing OK also writes the settings to the config file
-(see Configuration above), so they persist across runs.
+Clicking a provider row, a model row, or `New` / `Delete` / `Make active` acts
+on the store **and the config file immediately** (the status line in the dialog
+says what happened); the text fields are written on `OK`, and `Cancel` discards
+them. Renaming via `Name` changes the config section id (a duplicate name is
+made unique).
+
+Everything lives in the process-wide store in `src/net/provider.{h,cpp}`,
+seeded from `ATUI_BASE_URL` / `ATUI_API_KEY` / `ATUI_MODEL` / `ATUI_TEMPERATURE`.
+`OaiChatModel::ask()` snapshots `providerSettings()` per request, so a switch
+takes effect on the next chat message without a restart.
 
 `provider.cpp` has no libcurl dependency and is always compiled, so the dialog
-builds and runs with `ATUI_HAVE_NETWORK=OFF` too (verified in both configs).
+builds and runs with `ATUI_HAVE_NETWORK=OFF` too (verified in both configs;
+without it the model list stays empty and says "Model list needs a network
+build.").
+
+> tui-test note: `TListBox` items come back **sorted** (`TStringCollection`), so
+> a row number is not a store index — the row *text* identifies the entry
+> (`providerRowToIndex_`). Harness clicks can also fire twice, which looks like a
+> button acting twice.
 
 ## Live endpoint testing
 
@@ -241,6 +314,10 @@ in non-network builds (verified: 40/40 there, 60/60 with network).
 
 
 ## Model picker (Providers dialog)
+
+(The quick switcher is the **Model** menu on the menu bar — see "Multiple
+providers, model switching" above. The dialog's list is the discovery view: it
+shows what the server reports and caches it for the menu.)
 
 `File ▸ Options ▸ Providers…` shows an **Available models** list box
 populated from the server via a synchronous `GET <baseUrl>/models`

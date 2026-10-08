@@ -149,6 +149,42 @@ bool IniFile::has( const char *section, const char *key ) const
     return si->second.find( lower( key ? key : "" ) ) != si->second.end();
 }
 
+std::vector<std::string> IniFile::sectionsWith( const std::string &prefix ) const
+{
+    std::vector<std::string> out;
+    const std::string p = lower( prefix );
+    for( std::map<std::string, Section>::const_iterator it = data_.begin();
+         it != data_.end(); ++it )
+    {
+        if( it->first.compare( 0, p.size(), p ) == 0 && it->first.size() > p.size() )
+            out.push_back( it->first.substr( p.size() ) );
+    }
+    return out;
+}
+
+std::size_t IniFile::eraseSection( const std::string &name )
+{
+    return data_.erase( lower( name ) );
+}
+
+std::size_t IniFile::eraseSectionsWith( const std::string &prefix )
+{
+    const std::string p = lower( prefix );
+    std::size_t n = 0;
+    for( std::map<std::string, Section>::iterator it = data_.begin();
+         it != data_.end(); )
+    {
+        if( it->first.compare( 0, p.size(), p ) == 0 )
+        {
+            std::map<std::string, Section>::iterator gone = it++;
+            data_.erase( gone );
+            ++n;
+        }
+        else ++it;
+    }
+    return n;
+}
+
 std::string IniFile::getString( const char *section, const char *key,
                                 const std::string &def ) const
 {

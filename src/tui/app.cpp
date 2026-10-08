@@ -45,6 +45,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -74,8 +75,22 @@ namespace tui {
 
 using atui::core::String;
 
+// Command ids. cm* are TVision's, Cmd* are ours. The Model and Provider
+// dropdowns use ranges: the command encodes the index of the picked entry.
 enum { CmdHelp = 1000, CmdTheme = 1004, CmdProviders = 1003,
-       CmdRefreshModels = 2000 };
+       CmdRefreshModels = 2000,
+       CmdMenuRefreshModels = 2010,  // Model ▸ Refresh models...
+       CmdModelManual   = 2011,      // Model ▸ Enter model name...
+       CmdNewProvider   = 2012,      // Provider ▸ New provider...
+       CmdModelBase     = 2100,      // + model index
+       CmdProviderBase  = 2200,      // + provider index
+       CmdNoop          = 3000 };    // greyed-out menu line (a command id is
+                                     // required: command 0 means "has submenu")
+
+// Guards on the size of the generated dropdowns (the command ranges above and
+// very long model lists).
+const int kMaxMenuModels    = 40;
+const int kMaxMenuProviders = 30;
 
 class TranscriptView;   // defined below; used via pointer in the globals
 class PromptInput;      // defined below; used via pointer in the globals
@@ -89,6 +104,13 @@ namespace {
 
     // Desktop rect (saved so the transcript + prompt can reflow together).
     int g_dX1 = 0, g_dY1 = 0, g_dX2 = 0, g_dY2 = 0;
+
+    // Provider/model pickers: the two menu-bar dropdown items whose submenus
+    // are regenerated from the provider store, plus the status-line item whose
+    // text shows the active "provider | model".
+    TSubMenu *g_modelMenu_ = 0;
+    TSubMenu *g_providerMenu_ = 0;
+    TStatusItem *g_statusProvider_ = 0;
 
     // M2 streaming state (only used when ATUI_HAVE_NETWORK).
 #ifdef ATUI_HAVE_NETWORK
@@ -114,6 +136,16 @@ void processMessage_();
 void focusInput_();
 void relayoutPanels_();
 void pollSink_();
+TMenu *buildModelMenu_();
+TMenu *buildProviderMenu_();
+void refreshProviderMenus_();
+void updateProviderStatus_();
+void showProvidersDialog_();
+void pickModel_( int index );
+void pickProvider_( int index );
+void refreshModelsFromMenu_();
+void enterModelManually_();
+void addNewProvider_();
 
 #ifdef ATUI_HAVE_NETWORK
 // --- tool approval (worker thread -> UI) -------------------------------------
@@ -894,7 +926,25 @@ public:
 
         if( event.what == evCommand )
         {
-            switch( event.message.command )
+            const ushort cmd = event.message.command;
+
+            // Model / Switch provider dropdown entries: the command carries the
+            // index of the picked entry.
+            if( cmd >= CmdModelBase && cmd < CmdModelBase + kMaxMenuModels )
+            {
+                pickModel_( cmd - CmdModelBase );
+                clearEvent( event );
+                return;
+            }
+            if( cmd >= CmdProviderBase &&
+                cmd < CmdProviderBase + kMaxMenuProviders )
+            {
+                pickProvider_( cmd - CmdProviderBase );
+                clearEvent( event );
+                return;
+            }
+
+            switch( cmd )
             {
                 case CmdHelp:
                     showHelp();
@@ -904,8 +954,23 @@ public:
                     showProviders();
                     clearEvent( event );
                     break;
+                case CmdMenuRefreshModels:
+                    refreshModelsFromMenu_();
+                    clearEvent( event );
+                    break;
+                case CmdModelManual:
+                    enterModelManually_();
+                    clearEvent( event );
+                    break;
+                case CmdNewProvider:
+                    addNewProvider_();
+                    clearEvent( event );
+                    break;
                 case CmdTheme:
                     showTheme();
+                    clearEvent( event );
+                    break;
+                case CmdNoop:   // greyed-out informational line
                     clearEvent( event );
                     break;
                 case cmQuit:
@@ -969,22 +1034,40 @@ TDeskTop *TApp::initDeskTop( TRect r )
 TStatusLine *initStatusLine_( TRect r )
 {
     r.a.y = r.b.y - 1;
-    return new TStatusLine( r,
+    // The first item is the active provider/model; its text is rewritten by
+    // updateProviderStatus_() whenever a provider or model is switched. (It is
+    // filled in right here: TVision builds the desktop before the status line,
+    // so the app's start-up pass would be too early.)
+    g_statusProvider_ = new TStatusItem( "  ", 0, 0 );
+    TStatusLine *line = new TStatusLine( r,
         *new TStatusDef( 0, 0xFFFF )
+        + *g_statusProvider_
         + *new TStatusItem( "~Alt-H~  About", kbAltH, CmdHelp )
         + *new TStatusItem( " Ctrl-T  thinking", 0, 0 )
         + *new TStatusItem( "~Alt-X~  Quit",  kbAltX, cmQuit )
     );
+    updateProviderStatus_();
+    return line;
 }
 
 TMenuBar *initMenuBar_( TRect r )
 {
     r.b.y = r.a.y + 1;
+    // Two generated dropdowns. They must be TSubMenus: in a menu-bar item
+    // chain, "subMenu + menuItem" appends to the LAST top-level entry's own
+    // menu, so only another TSubMenu creates a new top-level dropdown.
+    g_modelMenu_ = new TSubMenu( "~M~odel", kbAltM );
+    delete g_modelMenu_->subMenu;          // the TSubMenu's empty menu
+    g_modelMenu_->subMenu = buildModelMenu_();
+    g_providerMenu_ = new TSubMenu( "~S~witch provider", kbAltS );
+    delete g_providerMenu_->subMenu;
+    g_providerMenu_->subMenu = buildProviderMenu_();
+
     return new TMenuBar( r,
         *new TSubMenu( "~F~ile", kbAltF )
         + *new TMenuItem( "H~elp...",  CmdHelp, kbAltH, hcNoContext, "Alt-H" )
         + newLine()
-        + *new TMenuItem( "~Options", kbAltO,
+        + *new TMenuItem( "~O~ptions", kbAltO,
               new TMenu(
                   *new TMenuItem( "~P~roviders...", CmdProviders, kbAltP,
                                   hcNoContext, "Alt-P" )
@@ -994,6 +1077,8 @@ TMenuBar *initMenuBar_( TRect r )
         + newLine()
         + *new TMenuItem( "E~xit...",  cmQuit,  kbAltX, hcNoContext, "Alt-X" )
         + newLine()
+        + *g_modelMenu_
+        + *g_providerMenu_
         + *new TSubMenu( "~A~bout", kbAltA )
         + *new TMenuItem( "ab~out...", CmdHelp, kbAltA, hcNoContext, "Alt-A" )
         + newLine()
@@ -1047,6 +1132,7 @@ TDeskTop *initDeskTop_( TRect r )
 #endif
 
     appendReply_( "atui (M2): type a message and press Enter." );
+    updateProviderStatus_();   // status line shows "provider | model"
     focusInput_();
     return d;
 }
@@ -1238,7 +1324,10 @@ void TApp::showHelp()
 {
     TDialog *d = new TDialog( TRect( 12, 9, 72, 24 ), "atui - About" );
     d->insert( new TStaticText( TRect( 3, 2, d->size.x - 2, d->size.y - 3 ),
-        "atui - AI development TUI (M2)\nStreaming chat window."
+        "atui - AI development TUI (M2)\nStreaming chat window.\n"
+        "\n"
+        "Model / Switch provider (menu bar) pick the endpoint and model;\n"
+        "Alt-P edits providers, Alt-T the theme, Ctrl-T the thinking blocks."
         ) );
     TButton *b = new TButton( TRect( 0, 0, 14, 3 ), "OK", cmCancel, bfNormal );
     d->insert( b );
@@ -1276,6 +1365,244 @@ static char *dupStr_( const std::string &s )
     return p;
 }
 
+// --- provider / model pickers -------------------------------------------------
+//
+// The "Model" and "Switch provider" menu-bar dropdowns are generated from the
+// provider store, so switching needs no modal dialog: pick the entry, persist,
+// rebuild. TVision reads TMenuItem::subMenu each time a menu opens and ~TMenu()
+// releases the old item chain, so a refresh is "build a new submenu, delete the
+// previous one". Menu commands encode the index of the picked entry.
+
+// Menu label text: drops TVision's '~' hot-key marker (a model id may contain
+// one) and caps the length so the dropdown stays readable.
+static std::string menuText_( const std::string &text, size_t maxLen = 52 )
+{
+    std::string out;
+    for( size_t i = 0; i < text.size() && out.size() < maxLen; ++i )
+        if( text[i] != '~' ) out += text[i];
+    return out;
+}
+
+// Collects generated items into a chain and hands it to a TMenu (which then
+// owns and deletes them).
+class MenuBuilder
+{
+public:
+    void add( TMenuItem *item ) { *link_ = item; link_ = &item->next; }
+    void sep()                  { add( &newLine() ); }
+    TMenu *finish()
+    {
+        TMenu *m = new TMenu();
+        m->items = head_;
+        m->deflt = head_;
+        return m;
+    }
+
+private:
+    TMenuItem  *head_ = 0;
+    TMenuItem **link_ = &head_;
+};
+
+// Model ▾: the active provider's models (the current one marked with '*'),
+// plus ways to add a model the endpoint does not report.
+TMenu *buildModelMenu_()
+{
+    const atui::net::ProviderSettings &p = atui::net::providerSettings();
+    std::vector<std::string> models = p.models;
+    if( models.empty() && !p.model.empty() ) models.push_back( p.model );
+    if( models.size() > (size_t) kMaxMenuModels )
+        models.resize( kMaxMenuModels );
+
+    MenuBuilder mb;
+    TMenuItem *title = new TMenuItem(
+        ( "Provider: " + menuText_( p.name, 24 ) ).c_str(), CmdNoop, kbNoKey );
+    title->disabled = True;
+    mb.add( title );
+    mb.sep();
+
+    if( models.empty() )
+    {
+        TMenuItem *none =
+            new TMenuItem( "(no models: Refresh)", CmdNoop, kbNoKey );
+        none->disabled = True;
+        mb.add( none );
+    }
+    for( size_t i = 0; i < models.size(); ++i )
+    {
+        std::string label = std::string( models[i] == p.model ? "* " : "  " ) +
+                            menuText_( models[i] );
+        mb.add( new TMenuItem( label.c_str(),
+                               (ushort) ( CmdModelBase + (int) i ), kbNoKey ) );
+    }
+
+    mb.sep();
+    mb.add( new TMenuItem( "~R~efresh models", CmdMenuRefreshModels, kbNoKey ) );
+    mb.add( new TMenuItem( "Enter model ~n~ame...", CmdModelManual, kbNoKey ) );
+    return mb.finish();
+}
+
+// Switch provider ▾: every configured provider (the active one marked), plus
+// the ways to add/edit them.
+TMenu *buildProviderMenu_()
+{
+    std::vector<atui::net::ProviderSettings> &all = atui::net::providers();
+    const std::size_t active = atui::net::activeProviderIndex();
+
+    MenuBuilder mb;
+    for( std::size_t i = 0; i < all.size() && (int) i < kMaxMenuProviders; ++i )
+    {
+        std::string label = std::string( i == active ? "* " : "  " ) +
+                            menuText_( all[i].name, 28 );
+        mb.add( new TMenuItem( label.c_str(),
+                               (ushort) ( CmdProviderBase + (int) i ), kbNoKey ) );
+    }
+    mb.sep();
+    mb.add( new TMenuItem( "~N~ew provider...", CmdNewProvider, kbNoKey ) );
+    mb.add( new TMenuItem( "Edit providers...", CmdProviders, kbAltP,
+                           hcNoContext, "Alt-P" ) );
+    return mb.finish();
+}
+
+static void setSubMenu_( TMenuItem *item, TMenu *menu )
+{
+    if( item == 0 ) return;
+    TMenu *old = item->subMenu;
+    item->subMenu = menu;
+    delete old;
+}
+
+// Rebuilds both dropdowns from the store. Called after any change to it, from
+// the event loop only (never while one of these menus is open).
+void refreshProviderMenus_()
+{
+    setSubMenu_( g_modelMenu_, buildModelMenu_() );
+    setSubMenu_( g_providerMenu_, buildProviderMenu_() );
+    if( TProgram::menuBar ) TProgram::menuBar->drawView();
+}
+
+// Status line: what a message will actually be sent to. TStatusLine lays its
+// items out from their text on every draw, so rewriting the string and
+// redrawing is enough.
+void updateProviderStatus_()
+{
+    if( g_statusProvider_ == 0 ) return;
+    const atui::net::ProviderSettings &p = atui::net::providerSettings();
+    const std::string text = " " + menuText_( p.name, 16 ) + " | " +
+                             menuText_( p.model, 24 ) + " ";
+    delete[] g_statusProvider_->text;
+    g_statusProvider_->text = newStr( text.c_str() );
+    if( TProgram::statusLine ) TProgram::statusLine->drawView();
+}
+
+// One-field prompt: TVision's stock inputBox(). Returns false when cancelled
+// or left empty.
+static bool askForText_( const char *title, const char *label,
+                         const std::string &initial, std::string &out )
+{
+    char buf[ 128 ];
+    memset( buf, 0, sizeof buf );
+    strncpy( buf, initial.c_str(), sizeof buf - 1 );
+    if( inputBox( title, label, buf, (uchar) ( sizeof buf - 1 ) ) != cmOK )
+        return false;
+
+    std::string value( buf );
+    while( !value.empty() && ( value.back() == ' ' || value.back() == '\r' ||
+                               value.back() == '\n' ) )
+        value.pop_back();
+    out = value;
+    return !out.empty();
+}
+
+// Fetches a provider's model list from GET /models (cached in the store, so
+// the Model menu also works offline).
+static bool fetchModelsFor_( atui::net::ProviderSettings &p, std::string &err )
+{
+#ifdef ATUI_HAVE_NETWORK
+    std::vector<std::string> ids;
+    if( !atui::net::fetchModels( p.baseUrl, p.apiKey, ids, err ) ) return false;
+    atui::net::setModels( p, ids );
+    return true;
+#else
+    (void) p;
+    err = "model lists need a network build";
+    return false;
+#endif
+}
+
+// Model ▾ entry: make 'index' (an entry of the cached list) the model used.
+void pickModel_( int index )
+{
+    atui::net::ProviderSettings &p = atui::net::providerSettings();
+    if( index < 0 || index >= (int) p.models.size() ) return;
+    atui::net::selectModel( p, p.models[index] );
+    atui::settings::saveAll();
+    refreshProviderMenus_();
+    updateProviderStatus_();
+    focusInput_();
+}
+
+// Switch provider ▾ entry.
+void pickProvider_( int index )
+{
+    if( index < 0 ) return;
+    atui::net::setActiveProvider( (std::size_t) index );
+    atui::settings::saveAll();
+    refreshProviderMenus_();
+    updateProviderStatus_();
+    focusInput_();
+}
+
+// Model ▸ Refresh models.
+void refreshModelsFromMenu_()
+{
+    atui::net::ProviderSettings &p = atui::net::providerSettings();
+    std::string err;
+    if( !fetchModelsFor_( p, err ) )
+        messageBox( ( "Refresh failed: " + err ).c_str(),
+                    mfInformation | mfOKButton );
+    atui::settings::saveAll();
+    refreshProviderMenus_();
+    updateProviderStatus_();
+    focusInput_();
+}
+
+// Model ▸ Enter model name... (endpoints that do not report their models).
+void enterModelManually_()
+{
+    atui::net::ProviderSettings &p = atui::net::providerSettings();
+    std::string value = p.model;
+    if( !askForText_( "Model - enter a model id", "~M~odel", value, value ) )
+    {
+        focusInput_();
+        return;
+    }
+    atui::net::selectModel( p, value );   // appends it to the list if new
+    atui::settings::saveAll();
+    refreshProviderMenus_();
+    updateProviderStatus_();
+    focusInput_();
+}
+
+// Provider ▸ New provider...: create, activate, then edit the endpoint.
+void addNewProvider_()
+{
+    std::string name;
+    if( !askForText_( "New provider", "~N~ame", "provider", name ) )
+    {
+        focusInput_();
+        return;
+    }
+    const std::size_t index = atui::net::addProvider( name );
+    atui::net::setActiveProvider( index );
+    atui::settings::saveAll();
+    refreshProviderMenus_();
+    updateProviderStatus_();
+    showProvidersDialog_();
+    refreshProviderMenus_();
+    updateProviderStatus_();
+    focusInput_();
+}
+
 // A list box that "selects" on a single mouse click. The stock TListBox only
 // fires selectItem() on double-click / Space; here a single click picks the
 // model immediately (the dialog reacts to the cmListItemSelected broadcast).
@@ -1298,108 +1625,228 @@ public:
     }
 };
 
-// Options > Providers dialog. Besides the endpoint fields it shows an
-// "Available models" list box populated from the server's GET /models endpoint
-// (a tvision TListBox + TScrollBar, the tvdemo fileview/listdlg pattern).
-// Clicking a model copies it into the Model field; "Refresh" reloads the list
-// from the URL/Key fields as currently typed. Model fetching needs the network
-// build; without it the list stays empty and the status line says why.
+// Options > Providers dialog: manage the provider list (OpenAI-compatible
+// endpoints). The list box on the left picks which provider the fields describe;
+// "+ New" / "- Delete" / "Make active" and clicking a model act on the store
+// immediately (and persist), while the fields themselves are written on OK.
+//
+// "Available models" is filled from the server's GET /models endpoint (a
+// tvision TListBox + TScrollBar, the tvdemo fileview/listdlg pattern) and
+// cached on the provider, so the Model menu also works offline. Fetching needs
+// the network build; otherwise the box stays empty and the status line says why.
+enum { CmdProviderAdd = 2013, CmdProviderDel = 2014, CmdProviderActive = 2015 };
+
 class ProvidersDialog : public TDialog
 {
 public:
 
-    TInputLine  *url    = 0;
-    TInputLine  *key    = 0;
-    TInputLine  *model  = 0;
-    TInputLine  *temp   = 0;
-    TCheckBoxes *resend = 0;
-    TListBox    *modelList = 0;
-    TStaticText *status = 0;
-    TRect        statusRect;
+    int            editing = 0;         // provider the fields describe
+    TInputLine    *name  = 0;
+    TInputLine    *url   = 0;
+    TInputLine    *key   = 0;
+    TInputLine    *model = 0;
+    TInputLine    *temp  = 0;
+    TCheckBoxes   *resend = 0;
+    TListBox      *providerList = 0;
+    TListBox      *modelList = 0;
+    TStaticText   *status = 0;
+    TRect          statusRect;
 
     ProvidersDialog();
 
-    void refreshModels();
+    void loadProviderList();     // provider names, '*' marking the active one
+    void loadFields();           // fields <- providers()[editing]
+    void loadModelList();        // model box <- providers()[editing].models
+    void refreshModels();        // GET /models with the URL/Key as typed
     void setStatus( const std::string &text );
+    void commitFields();         // fields -> providers()[editing]
 
-    virtual void handleEvent( TEvent& event )
-    {
-        if( event.what == evCommand &&
-            event.message.command == CmdRefreshModels )
-        {
-            refreshModels();
-            clearEvent( event );
-        }
-        else if( event.what == evBroadcast &&
-                 event.message.command == cmListItemSelected &&
-                 event.message.infoPtr == (void *) modelList )
-        {
-            TCollection *items = modelList->list();
-            short sel = modelList->focused;
-            if( items && sel >= 0 && sel < items->getCount() )
-            {
-                char buf[ 160 ];
-                modelList->getText( buf, sel, sizeof buf - 1 );
-                buf[ sizeof buf - 1 ] = '\0';
-                setInput_( model, buf );
-            }
-            clearEvent( event );
-        }
-        else
-            TDialog::handleEvent( event );
-    }
+    virtual void handleEvent( TEvent& event );
 };
+
+// Reads one row of a list box into a string.
+static std::string listRow_( TListBox *box, short row )
+{
+    char buf[ 160 ];
+    buf[ 0 ] = '\0';
+    if( box && row >= 0 )
+    {
+        box->getText( buf, row, sizeof buf - 1 );
+        buf[ sizeof buf - 1 ] = '\0';
+    }
+    return std::string( buf );
+}
+
+// The store index a provider-list row stands for. TListBox items come back
+// sorted (TStringCollection), so a row number is not a provider index: the row
+// text (minus the active marker) is what identifies the entry.
+static int providerRowToIndex_( TListBox *box, short row )
+{
+    std::string text = listRow_( box, row );
+    while( !text.empty() && text[0] == ' ' ) text.erase( text.begin() );
+    while( !text.empty() && ( text[text.size() - 1] == ' ' ||
+                              text[text.size() - 1] == '*' ) )
+        text.erase( text.end() - 1 );
+
+    const std::vector<atui::net::ProviderSettings> &all = atui::net::providers();
+    for( std::size_t i = 0; i < all.size(); ++i )
+        if( all[i].name == text )
+            return (int) i;
+    return -1;
+}
+
+// The row of a list box holding 'text' (or -1), so a selection can be restored
+// without assuming the items kept their insertion order.
+static short listRowFor_( TListBox *box, const std::string &text )
+{
+    TCollection *items = box ? box->list() : 0;
+    if( !items ) return -1;
+    for( short i = 0; i < items->getCount(); ++i )
+    {
+        std::string row = listRow_( box, i );
+        while( !row.empty() && row[0] == ' ' ) row.erase( row.begin() );
+        while( !row.empty() && ( row[row.size() - 1] == ' ' ||
+                                 row[row.size() - 1] == '*' ) )
+            row.erase( row.end() - 1 );
+        if( row == text ) return i;
+    }
+    return -1;
+}
+
+// The provider the fields currently describe (clamped to the store).
+static std::size_t editingIndex_( const ProvidersDialog *d )
+{
+    const std::size_t n = atui::net::providers().size();
+    if( d->editing < 0 || (std::size_t) d->editing >= n )
+        return atui::net::activeProviderIndex();
+    return (std::size_t) d->editing;
+}
 
 ProvidersDialog::ProvidersDialog()
     : TWindowInit( &TDialog::initFrame ),
-      TDialog( TRect( 10, 3, 76, 28 ), "Options - Providers" )
+      TDialog( TRect( 0, 0, 72, 25 ), "Options - Providers" )
 {
-    insert( new TStaticText( TRect( 3, 1, size.x - 2, 2 ),
-        "Remote llama.cpp server (OpenAI-compatible):" ) );
+    options |= ofCentered;
 
-    url   = new TInputLine( TRect( 14, 3, size.x - 3, 4 ), 128 );
-    key   = new TInputLine( TRect( 14, 5, size.x - 3, 6 ), 64 );
-    model = new TInputLine( TRect( 14, 7, size.x - 3, 8 ), 128 );
-    temp  = new TInputLine( TRect( 14, 9, 22, 10 ), 8 );
+    insert( new TStaticText( TRect( 3, 1, size.x - 3, 2 ),
+        "Pick a provider or a model to switch it now; OK saves the fields." ) );
 
-    insert( new TLabel( TRect( 3, 3, 13, 4 ), "~U~rl", url ) );
+    // --- providers (click to edit one) -------------------------------------
+    TScrollBar *psb = new TScrollBar( TRect( 30, 3, 31, 9 ) );
+    insert( psb );
+    providerList = new ModelListBox( TRect( 3, 3, 30, 9 ), 1, psb );
+    providerList->newList( new TStringCollection( 4096, 32 ) );
+    insert( providerList );
+
+    insert( new TButton( TRect( 34, 3, 48, 5 ), "+ ~N~ew",
+                         CmdProviderAdd, bfNormal ) );
+    insert( new TButton( TRect( 50, 3, 64, 5 ), "- ~D~elete",
+                         CmdProviderDel, bfNormal ) );
+    insert( new TButton( TRect( 34, 6, 50, 8 ), "Make ~a~ctive",
+                         CmdProviderActive, bfNormal ) );
+
+    // --- fields of the provider being edited -------------------------------
+    name  = new TInputLine( TRect( 10, 10, size.x - 3, 11 ), 64 );
+    url   = new TInputLine( TRect( 10, 11, size.x - 3, 12 ), 128 );
+    key   = new TInputLine( TRect( 10, 12, size.x - 3, 13 ), 64 );
+    model = new TInputLine( TRect( 10, 13, 44, 14 ), 128 );
+    temp  = new TInputLine( TRect( 51, 13, 58, 14 ), 8 );
+
+    insert( new TLabel( TRect( 3, 10, 9, 11 ), "~N~ame", name ) );
+    insert( name );
+    insert( new TLabel( TRect( 3, 11, 9, 12 ), "~U~rl", url ) );
     insert( url );
-    insert( new TLabel( TRect( 3, 5, 13, 6 ), "~K~ey", key ) );
+    insert( new TLabel( TRect( 3, 12, 9, 13 ), "~K~ey", key ) );
     insert( key );
-    insert( new TLabel( TRect( 3, 7, 13, 8 ), "~M~odel", model ) );
+    insert( new TLabel( TRect( 3, 13, 9, 14 ), "~M~odel", model ) );
     insert( model );
-    insert( new TLabel( TRect( 3, 9, 13, 10 ), "~T~emp", temp ) );
+    insert( new TLabel( TRect( 46, 13, 51, 14 ), "~T~emp", temp ) );
     insert( temp );
 
-    resend = new TCheckBoxes( TRect( 3, 11, size.x - 3, 12 ),
+    resend = new TCheckBoxes( TRect( 3, 14, 44, 15 ),
         new TSItem( "~R~esend thinking in history", NULL ) );
     insert( resend );
 
-    // Available models list box (with its own vertical scrollbar) + Refresh.
-    insert( new TLabel( TRect( 3, 13, 20, 14 ), "~A~vailable models", 0 ) );
-    TButton *refresh = new TButton( TRect( size.x - 16, 13, size.x - 3, 15 ),
-                                    "~R~efresh", CmdRefreshModels, bfNormal );
-    insert( refresh );
+    // --- models of the provider being edited -------------------------------
+    insert( new TStaticText( TRect( 3, 16, 22, 17 ), "Available models" ) );
+    insert( new TButton( TRect( size.x - 18, 15, size.x - 3, 17 ),
+                         "~R~efresh", CmdRefreshModels, bfNormal ) );
 
-    TScrollBar *sb = new TScrollBar(
-        TRect( size.x - 3, 14, size.x - 2, 20 ) );
+    TScrollBar *sb = new TScrollBar( TRect( size.x - 4, 16, size.x - 3, 21 ) );
     insert( sb );
-    modelList = new ModelListBox( TRect( 3, 14, size.x - 4, 20 ), 1, sb );
+    modelList = new ModelListBox( TRect( 3, 16, size.x - 5, 21 ), 1, sb );
     modelList->newList( new TStringCollection( 4096, 32 ) );
     insert( modelList );
 
     statusRect = TRect( 3, 21, size.x - 3, 22 );
     setStatus( "" );
 
-    TButton *ok     = new TButton( TRect( 0, 0, 14, 3 ), "OK",     cmOK,     bfDefault );
-    TButton *cancel = new TButton( TRect( 0, 0, 14, 3 ), "Cancel", cmCancel, bfNormal );
+    TButton *ok     = new TButton( TRect( 20, 22, 34, 24 ), "OK",
+                                   cmOK, bfDefault );
+    TButton *cancel = new TButton( TRect( 36, 22, 50, 24 ), "Cancel",
+                                   cmCancel, bfNormal );
     insert( ok );
     insert( cancel );
-    ok->moveTo( (size.x - 30) / 2, size.y - 3 );
-    cancel->moveTo( ok->origin.x + 16, size.y - 3 );
 }
 
-// TStaticText has no text setter, so the status line is replaced in place.
+// Rebuilds the provider box: one row per provider, '*' marking the active one.
+void ProvidersDialog::loadProviderList()
+{
+    std::vector<atui::net::ProviderSettings> &all = atui::net::providers();
+    const std::size_t active = atui::net::activeProviderIndex();
+
+    TStringCollection *coll = new TStringCollection( 4096, 32 );
+    for( std::size_t i = 0; i < all.size(); ++i )
+        coll->insert( dupStr_( all[i].name + ( i == active ? " *" : "" ) ) );
+    providerList->newList( coll );
+
+    if( !all.empty() )
+    {
+        const std::size_t keep = editingIndex_( this );
+        editing = (int) keep;
+        const short row = listRowFor_( providerList, all[ keep ].name );
+        if( row >= 0 ) providerList->focusItem( row );
+    }
+}
+
+void ProvidersDialog::loadFields()
+{
+    if( atui::net::providers().empty() ) return;
+    editing = (int) editingIndex_( this );
+    const atui::net::ProviderSettings &p = atui::net::providers()[ editing ];
+
+    setInput_( name, p.name );
+    setInput_( url, p.baseUrl );
+    setInput_( key, p.apiKey );
+    setInput_( model, p.model );
+    char tbuf[ 16 ];
+    snprintf( tbuf, sizeof tbuf, "%.2f", p.temperature );
+    setInput_( temp, tbuf );
+    ushort rinit = p.thinkingResend ? 1 : 0;
+    resend->setData( &rinit );
+    loadModelList();
+}
+
+void ProvidersDialog::loadModelList()
+{
+    TStringCollection *coll = new TStringCollection( 4096, 32 );
+    std::string selected;
+    if( !atui::net::providers().empty() )
+    {
+        const atui::net::ProviderSettings &p =
+            atui::net::providers()[ editingIndex_( this ) ];
+        selected = p.model;
+        for( std::vector<std::string>::const_iterator it = p.models.begin();
+             it != p.models.end(); ++it )
+        {
+            coll->insert( dupStr_( *it ) );
+        }
+    }
+    modelList->newList( coll );
+    const short row = listRowFor_( modelList, selected );
+    if( row >= 0 ) modelList->focusItem( row );
+}
+
 void ProvidersDialog::setStatus( const std::string &text )
 {
     if( status )
@@ -1412,6 +1859,34 @@ void ProvidersDialog::setStatus( const std::string &text )
     status->drawView();
 }
 
+// Writes the fields back to the provider being edited. Names stay unique (they
+// double as the config section ids), and a hand-typed model id is added to the
+// provider's list so it shows up in the Model menu.
+void ProvidersDialog::commitFields()
+{
+    if( atui::net::providers().empty() ) return;
+    atui::net::ProviderSettings &p = atui::net::providers()[ editingIndex_( this ) ];
+
+    const std::string n( name->data ), u( url->data ), k( key->data ),
+                      m( model->data ), tv( temp->data );
+    if( !n.empty() && n != p.name )
+    {
+        if( atui::net::findProvider( n ) ) p.name = atui::net::uniqueProviderName( n );
+        else                               p.name = n;
+    }
+    if( !u.empty() ) p.baseUrl = u;
+    p.apiKey = k;                       // clearing the key is allowed
+    atui::net::selectModel( p, m );
+    if( !tv.empty() )
+    {
+        double x = std::atof( tv.c_str() );
+        if( x >= 0.0 ) p.temperature = x;
+    }
+    ushort rval = 0;
+    resend->getData( &rval );
+    p.thinkingResend = ( rval & 0x0001 ) != 0;
+}
+
 void ProvidersDialog::refreshModels()
 {
     std::string u( url->data );
@@ -1421,77 +1896,154 @@ void ProvidersDialog::refreshModels()
                            u.back() == '\n' ) )
         u.pop_back();
 
-#ifdef ATUI_HAVE_NETWORK
     std::vector<std::string> ids;
     std::string err;
-    if( !atui::net::fetchModels( u, k, ids, err ) )
+    bool fetched = false;
+#ifdef ATUI_HAVE_NETWORK
+    fetched = atui::net::fetchModels( u, k, ids, err );
+#endif
+
+    if( !fetched )
     {
         modelList->newList( new TStringCollection( 4096, 32 ) );
-        std::string m = "Refresh failed: " + err;
-        setStatus( m );
+#ifdef ATUI_HAVE_NETWORK
+        setStatus( "Refresh failed: " + err );
+#else
+        (void) u; (void) k;
+        setStatus( "Model list needs a network build." );
+#endif
         return;
     }
-    TStringCollection *coll = new TStringCollection( 4096, 32 );
-    std::string want( model->data );
-    int selIdx = -1, i = 0;
-    for( std::vector<std::string>::const_iterator it = ids.begin();
-         it != ids.end(); ++it, ++i )
+
+    // Cache the list on the provider being edited (so the Model menu works
+    // offline), keeping whatever the Model field currently says.
+    if( !atui::net::providers().empty() )
     {
-        if( selIdx < 0 && *it == want ) selIdx = i;
-        coll->insert( dupStr_( *it ) );
+        atui::net::ProviderSettings &p =
+            atui::net::providers()[ editingIndex_( this ) ];
+        const std::string want( model->data );
+        if( !want.empty() ) p.model = want;   // keep what the field says
+        atui::net::setModels( p, ids );
+        setInput_( model, p.model );
+        loadModelList();
     }
-    modelList->newList( coll );
-    if( selIdx >= 0 ) modelList->focusItem( (short) selIdx );
     char msg[ 48 ];
     snprintf( msg, sizeof msg, "%zu model(s) loaded.", ids.size() );
     setStatus( msg );
-#else
-    (void) u; (void) k;
-    modelList->newList( new TStringCollection( 4096, 32 ) );
-    setStatus( "Model list needs a network build." );
-#endif
 }
 
-// Options > Providers: configure the remote llama.cpp server endpoint.
-// Edits are written to the shared providerSettings() on OK, so the next
-// chat request talks to the new endpoint.
-void TApp::showProviders()
+void ProvidersDialog::handleEvent( TEvent& event )
 {
-    atui::net::ProviderSettings &p = atui::net::providerSettings();
-
-    ProvidersDialog *d = new ProvidersDialog();
-
-    setInput_( d->url, p.baseUrl );
-    setInput_( d->key, p.apiKey );
-    setInput_( d->model, p.model );
-    char tbuf[16];
-    snprintf( tbuf, sizeof tbuf, "%.2f", p.temperature );
-    setInput_( d->temp, tbuf );
-    ushort rinit = p.thinkingResend ? 1 : 0;
-    d->resend->setData( &rinit );
-
-    d->refreshModels();   // best-effort populate on open
-
-    if( deskTop->execView( d ) == cmOK )
+    if( event.what == evCommand )
     {
-        std::string u( d->url->data );
-        std::string k( d->key->data );
-        std::string m( d->model->data );
-        std::string tv( d->temp->data );
-        if( !u.empty() ) p.baseUrl = u;
-        p.apiKey = k;                       // clearing the key is allowed
-        if( !m.empty() ) p.model = m;
-        if( !tv.empty() )
+        switch( event.message.command )
         {
-            double x = std::atof( tv.c_str() );
-            if( x >= 0.0 ) p.temperature = x;
+            case CmdRefreshModels:
+                refreshModels();
+                clearEvent( event );
+                return;
+
+            case CmdProviderAdd:
+                commitFields();
+                editing = (int) atui::net::addProvider( "provider" );
+                atui::settings::saveAll();
+                loadProviderList();
+                loadFields();
+                setStatus( "Created " + atui::net::providers()[ editing ].name +
+                           ": set its URL and key." );
+                clearEvent( event );
+                return;
+
+            case CmdProviderDel:
+                if( !atui::net::removeProvider( editingIndex_( this ) ) )
+                    setStatus( "Cannot delete the only provider." );
+                else
+                {
+                    editing = (int) editingIndex_( this );
+                    atui::settings::saveAll();
+                    loadProviderList();
+                    loadFields();
+                    setStatus( "Provider deleted." );
+                }
+                clearEvent( event );
+                return;
+
+            case CmdProviderActive:
+                commitFields();
+                atui::net::setActiveProvider( editingIndex_( this ) );
+                atui::settings::saveAll();
+                loadProviderList();
+                setStatus( "Active provider: " +
+                           atui::net::providers()[ editingIndex_( this ) ].name );
+                clearEvent( event );
+                return;
+
+            default:
+                break;
         }
-        ushort rval = 0;
-        d->resend->getData( &rval );
-        p.thinkingResend = ( rval & 0x0001 ) != 0;
+    }
+    else if( event.what == evBroadcast &&
+             event.message.command == cmListItemSelected )
+    {
+        if( event.message.infoPtr == (void *) providerList )
+        {
+            // Editing another provider: its stored values replace the fields.
+            const int row = providerRowToIndex_( providerList,
+                                                providerList->focused );
+            if( row >= 0 )
+            {
+                commitFields();
+                editing = row;
+                loadFields();
+                setStatus( "Editing " + atui::net::providers()[ row ].name );
+            }
+            clearEvent( event );
+            return;
+        }
+        if( event.message.infoPtr == (void *) modelList )
+        {
+            const std::string picked = listRow_( modelList, modelList->focused );
+            if( !picked.empty() )
+            {
+                setInput_( model, picked );
+                if( !atui::net::providers().empty() )
+                {
+                    atui::net::selectModel(
+                        atui::net::providers()[ editingIndex_( this ) ], picked );
+                    atui::settings::saveAll();
+                }
+                setStatus( "Model: " + picked );
+            }
+            clearEvent( event );
+            return;
+        }
+    }
+    TDialog::handleEvent( event );
+}
+
+// Options > Providers: configure the remote endpoints (see ProvidersDialog).
+void showProvidersDialog_()
+{
+    ProvidersDialog *d = new ProvidersDialog();
+    d->editing = (int) atui::net::activeProviderIndex();
+    d->loadProviderList();
+    d->loadFields();
+    if( atui::net::providerSettings().models.empty() ) d->refreshModels();
+
+    if( TProgram::deskTop->execView( d ) == cmOK )
+    {
+        d->commitFields();
         atui::settings::saveAll();
     }
-    destroy( d );
+    TObject::destroy( d );
+}
+
+void TApp::showProviders()
+{
+    showProvidersDialog_();
+    refreshProviderMenus_();
+    updateProviderStatus_();
+    focusInput_();
 }
 
 

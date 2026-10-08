@@ -19,6 +19,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 namespace atui {
 namespace settings {
@@ -41,6 +42,18 @@ public:
     bool loaded() const;   // whether the last load() found a file
 
     bool has( const char *section, const char *key ) const;
+
+    // Section names that start with `prefix` (e.g. "provider:" for the
+    // [provider:<id>] sections), returned WITHOUT the prefix and sorted
+    // alphabetically. Section names are lower-cased by load()/setString().
+    std::vector<std::string> sectionsWith( const std::string &prefix ) const;
+
+    // Removes one section, or every section whose (lower-cased) name starts
+    // with `prefix`; returns how many were removed. Used when rewriting the
+    // [provider:*] sections so entries deleted from the store also disappear
+    // from the file instead of lingering on the next load().
+    std::size_t eraseSection( const std::string &name );
+    std::size_t eraseSectionsWith( const std::string &prefix );
 
     std::string getString( const char *section, const char *key,
                            const std::string &def = std::string() ) const;
