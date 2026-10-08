@@ -370,6 +370,52 @@ as `tkThinking`/`tkContent`), `oai: chat resend off/on` (the `reasoning_content`
 is replayed only when the option is on).
 
 
+## Prompt input (wrapping + auto-grow)
+
+The message box is a custom `PromptInput` view (a `TView` subclass in
+`src/tui/app.cpp`), not `TInputLine`. `TInputLine` keeps one screen column per
+character and its `draw()` repaints that single row, so it cannot wrap or grow.
+
+Behavior:
+
+- Holds a single logical line (Enter submits; there are no hard newlines) and
+  soft-wraps it greedily at the panel width, breaking on the last space in each
+  row (hard-breaking only over-long words).
+- The panel **grows and shrinks to fit** the wrapped rows. `relayoutPanels_()`
+  re-shares the desktop so the transcript fills the rows above and the prompt
+  sits below, with no gap and no overlap. A short cap (`MIN_TR`) keeps a couple
+  of transcript rows visible; past that the prompt scrolls internally to keep the
+  caret on screen.
+- **Row 0 of the view is a horizontal separator** (`-`) drawn between the
+  transcript above and the typed text below — this is the visual divider between
+  the response and prompt areas.
+- Editing: left/right/home/end, up/down (across wrapped rows), Backspace/Delete
+  are UTF-8 aware (continuation bytes are treated as part of the code point).
+- **Text is read from the event's UTF-8 `text` buffer, not `keyCode`** — many
+  terminals (and bracketed paste) deliver the character only in `text` with
+  `keyCode == 0`. Control bytes are skipped so Enter/Esc/accelerators still
+  reach `TApp`.
+
+Focus & plumbing notes (learned via `tui-test`):
+
+- The transcript and the scrollbar both set `options &= ~ofSelectable`, so the
+  prompt is the desktop's only selectable view and gets the initial keyboard
+  focus.
+- The scrollbar renders 3 cells (`◄▓►`) and is sized to cols `x2-3..x2-1`; when
+  the split moves, `relayoutPanels_()` redraws it so no stale separator pixels
+  survive on rows that flip between transcript and prompt.
+- The 50 ms timer (network build) calls `relayoutPanels_()`, which re-reads the
+  live `deskTop` size and therefore **self-heals the split after a terminal
+  resize**.
+
+Manual verification:
+
+    tui-test run --cols 80 --rows 24 -- ./build/atui
+    tui-test write "a long line that must wrap onto several visual rows ..."
+    # the box grows; press Enter (key press Enter) -> submits and collapses back.
+    tui-test resize 50 12        # network build re-tiles within ~50 ms.
+
+
 ## Color scheme design (follows the tvision examples)
 
 The pattern is taken from the tvision examples (`tvision/examples/tvdemo/`):

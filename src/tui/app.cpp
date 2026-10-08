@@ -78,13 +78,17 @@ enum { CmdHelp = 1000, CmdTheme = 1004, CmdProviders = 1003,
        CmdRefreshModels = 2000 };
 
 class TranscriptView;   // defined below; used via pointer in the globals
+class PromptInput;      // defined below; used via pointer in the globals
 
 namespace {
     TranscriptView *g_transcript_ = 0;
-    TInputLine *g_inputLine_ = 0;
+    PromptInput *g_prompt_ = 0;
     TScrollBar *g_vBar_ = 0;
     atui::core::ChatModelStub *g_stub_ = 0;
     String g_history_;
+
+    // Desktop rect (saved so the transcript + prompt can reflow together).
+    int g_dX1 = 0, g_dY1 = 0, g_dX2 = 0, g_dY2 = 0;
 
     // M2 streaming state (only used when ATUI_HAVE_NETWORK).
 #ifdef ATUI_HAVE_NETWORK
@@ -108,6 +112,7 @@ void appendUser_( const char *text );
 void appendReply_( const char *text );
 void processMessage_();
 void focusInput_();
+void relayoutPanels_();
 void pollSink_();
 
 #ifdef ATUI_HAVE_NETWORK
@@ -307,6 +312,18 @@ public:
             }
         }
         TScroller::handleEvent( event );
+    }
+
+    // Re-clamp the scroll position after the view was resized (e.g. the prompt
+    // grew and this view lost rows) and repaint.
+    void reflow()
+    {
+        int maxTop = (int) lines_.size() - size.y;
+        if( maxTop < 0 ) maxTop = 0;
+        if( follow_ || delta.y > maxTop )
+            delta.y = maxTop;
+        setLimit( 0, (int) lines_.size() );
+        drawView();
     }
 
     virtual void changeBounds( const TRect &bounds )
@@ -537,6 +554,279 @@ private:
 };
 
 
+// --- PromptInput: a wrapping, auto-growing prompt ----------------------------
+//
+// The classic TInputLine cannot wrap: it keeps one screen column per character
+// and its draw() just repaints that single row. So we implement the prompt our-
+// selves. It stores a byte buffer (the transcript layout model throughout this
+// app is "1 byte == 1 column") and soft-wraps it into rows of `width` columns,
+// wrapping on spaces where possible. The panel grows and shrinks to fit those
+// rows; when the text is longer than the panel allows (see relayoutPanels_) it
+// scrolls vertically and keeps the caret visible.
+//
+// Row 0 of the view is a horizontal separator drawn between the transcript
+// above and the text below.
+class PromptInput : public TView
+{
+public:
+    PromptInput( const TRect &bounds ) noexcept
+        : TView( bounds ), cursor_( 0 ), top_( 0 )
+    {
+        options |= ofSelectable;
+        eventMask |= evMouseDown;
+    }
+
+    // The buffer contents (bytes).
+    const std::string &text() const { return buf_; }
+    void setText( const std::string &t )
+    {
+        buf_ = t;
+        if( cursor_ > buf_.size() ) cursor_ = buf_.size();
+    }
+    void clear() { buf_.clear(); cursor_ = 0; top_ = 0; }
+
+    // Number of wrapped rows the current text needs at the given width.
+    int rowCount( int w )
+    {
+        rewrap( w );
+        return (int) rows_.size();
+    }
+
+    // Byte width available for text (the view's full width).
+    int columnWidth() const { return size.x > 0 ? size.x : 1; }
+
+    virtual void draw()
+    {
+        // Fill everything, then paint row 0 (the separator) and the text rows.
+        for( int r = 0; r < size.y; ++r )
+            writeChar( 0, (short) r, ' ', rInput, (ushort) size.x );
+
+        if( size.y >= 1 )
+            writeChar( 0, 0, '-', rSep, (ushort) size.x );
+
+        rewrap( columnWidth() );
+
+        // Keep the caret on a visible wrapped row (row 0 is the separator).
+        int visRows = size.y - 1;
+        if( visRows < 1 ) visRows = 1;
+        int cr = 0, cc = 0;
+        caretPos( cr, cc );
+        // Don't allow scrolling past the last wrapped row (e.g. right after the
+        // panel grew and top_ was left over from a shorter height).
+        int maxTop = (int) rows_.size() - visRows;
+        if( maxTop < 0 ) maxTop = 0;
+        if( top_ > cr ) top_ = cr;
+        if( cr >= top_ + visRows ) top_ = cr - visRows + 1;
+        if( top_ > maxTop ) top_ = maxTop;
+        if( top_ < 0 ) top_ = 0;
+
+        for( int r = 0; r < visRows; ++r )
+        {
+            int idx = top_ + r;
+            if( idx >= 0 && idx < (int) rows_.size() )
+            {
+                const std::string &row = rows_[idx];
+                if( !row.empty() )
+                    writeStr( 0, (short)(r + 1), row.c_str(), rInput );
+            }
+        }
+
+        if( (state & sfFocused) && cr >= top_ && cr < top_ + visRows )
+            setCursor( cc, (short)(cr - top_ + 1) );
+        else
+            hideCursor();
+    }
+
+    virtual void handleEvent( TEvent &event )
+    {
+        if( event.what == evMouseDown )
+        {
+            focus();
+            clearEvent( event );
+            return;
+        }
+        if( event.what != evKeyDown ) { TView::handleEvent( event ); return; }
+
+        ushort c = event.keyDown.keyCode;
+        int w = columnWidth();
+        bool handled = true;
+
+        // Navigation / editing keys (keyCode is reliable for these on every
+        // platform).
+        switch( c )
+        {
+            case kbLeft:  if( cursor_ > 0 ) cursor_ = prevChar( cursor_ ); break;
+            case kbRight: if( cursor_ < buf_.size() ) cursor_ = nextChar( cursor_ ); break;
+            case kbHome:  cursor_ = 0; break;
+            case kbEnd:   cursor_ = buf_.size(); break;
+            case kbBack:
+                if( cursor_ > 0 ) { size_t p = prevChar( cursor_ ); buf_.erase( p, cursor_ - p ); cursor_ = p; }
+                break;
+            case kbDel:
+                if( cursor_ < buf_.size() ) { buf_.erase( cursor_, nextChar( cursor_ ) - cursor_ ); }
+                break;
+            case kbUp:    moveVert( -1, w ); break;
+            case kbDown:  moveVert(  1, w ); break;
+            default:
+            {
+                // Printable text. Read it from the UTF-8 text buffer rather than
+                // keyCode: many terminals (and bracketed paste) deliver the
+                // character only in `text` with keyCode == 0. Control bytes are
+                // skipped so Enter/Esc/accelerators still bubble up to TApp.
+                if( event.keyDown.controlKeyState & (kbCtrlShift | kbAltShift) )
+                {
+                    handled = false;    // leave Ctrl/Alt combos to the app/menu
+                    break;
+                }
+                TStringView txt = event.keyDown.getText();
+                bool inserted = false;
+                for( int i = 0; i < (int) event.keyDown.textLength; ++i )
+                {
+                    unsigned char b = (unsigned char) txt[i];
+                    if( b < 32 ) continue;                 // control (incl. Enter)
+                    buf_.insert( cursor_, 1, (char) b );
+                    ++cursor_;
+                    inserted = true;
+                }
+                handled = inserted;
+                break;
+            }
+        }
+
+        if( handled )
+        {
+            relayoutPanels_();
+            clearEvent( event );
+        }
+        else
+            TView::handleEvent( event );
+    }
+
+protected:
+    // Caret position as (wrapped row, column) using the current rows_.
+    void caretPos( int &row, int &col )
+    {
+        row = 0; col = 0;
+        for( int i = 0; i < (int) rows_.size(); ++i )
+        {
+            size_t start = rowStart( i );
+            size_t end = start + rows_[i].size();
+            if( cursor_ <= end )
+            {
+                row = i;
+                col = (int)(cursor_ - start);
+                if( col < 0 ) col = 0;
+                return;
+            }
+            row = i;                        // fallback: last row
+        }
+        if( !rows_.empty() )
+        {
+            size_t start = rowStart( rows_.size() - 1 );
+            col = (int)(cursor_ - start);
+            if( col < 0 ) col = 0;
+        }
+    }
+
+    // Move the caret up/down one visual row, keeping the column where possible.
+    void moveVert( int dir, int w )
+    {
+        rewrap( w );
+        int row, col;
+        caretPos( row, col );
+        int target = row + dir;
+        if( target < 0 ) { cursor_ = 0; return; }
+        if( target >= (int) rows_.size() )
+        {
+            if( dir > 0 ) cursor_ = buf_.size();
+            return;
+        }
+        size_t start = rowStart( target );
+        size_t len = rows_[target].size();
+        if( (size_t) col > len ) col = (int) len;
+        cursor_ = start + col;
+    }
+
+    // Byte offset where wrapped row i begins.
+    size_t rowStart( int i )
+    {
+        size_t s = 0;
+        for( int k = 0; k < i; ++k ) s += rows_[k].size();
+        return s;
+    }
+
+    // UTF-8 aware caret stepping: treat continuation bytes (0x80..0xBF) as part
+    // of the preceding code point so Backspace/Delete and arrow keys move by a
+    // whole character. (Matches the app's "1 byte == 1 column" layout, which is
+    // exact for ASCII and degrades gracefully for wider scripts.)
+    size_t prevChar( size_t p )
+    {
+        if( p == 0 ) return 0;
+        size_t q = p - 1;
+        while( q > 0 && ((unsigned char) buf_[q] & 0xC0) == 0x80 ) --q;
+        return q;
+    }
+    size_t nextChar( size_t p )
+    {
+        size_t n = buf_.size();
+        if( p >= n ) return n;
+        size_t q = p + 1;
+        while( q < n && ((unsigned char) buf_[q] & 0xC0) == 0x80 ) ++q;
+        return q;
+    }
+
+    // Greedy word-wrap of buf_ into rows_ (each row without the trailing space).
+    // The buffer is small (a single prompt line), so we just rebuild every time
+    // rather than cache — a width-keyed cache goes stale the moment buf_ changes
+    // from anywhere other than this function.
+    void rewrap( int w )
+    {
+        rows_.clear();
+        if( w < 1 ) w = 1;
+        if( buf_.empty() ) { rows_.push_back( std::string() ); return; }
+
+        size_t i = 0, n = buf_.size();
+        while( i < n )
+        {
+            if( (int)(n - i) <= w )
+            {
+                rows_.push_back( buf_.substr( i ) );
+                break;
+            }
+            size_t brk = i + w;               // one past the last column
+            int first = (int) i;              // earliest break is after 1 char
+            size_t sp = buf_.rfind( ' ', brk );
+            size_t rowEnd;
+            if( sp != std::string::npos && (int) sp > first && sp < brk )
+                rowEnd = sp;                    // break on the last space
+            else
+                rowEnd = brk;                   // hard wrap
+            rows_.push_back( buf_.substr( i, rowEnd - i ) );
+            i = rowEnd;
+            if( i < n && buf_[i] == ' ' ) ++i;  // skip the break space
+        }
+    }
+
+    static const uchar rInput = 1;
+    static const uchar rSep   = 2;
+
+    virtual TColorAttr mapColor( uchar index )
+    {
+        const bool dark = ( currentTheme() == ThemeDark );
+        if( index == rSep )
+            return TColorAttr( TColor( 0x3A4A63 ), TColor( 0x152238 ) );
+        return TColorAttr( TColor( dark ? 0xF2E4AC : 0x000000 ),
+                           TColor( dark ? 0x152238 : 0xFFFFFF ) );
+    }
+
+    std::string              buf_;
+    size_t                   cursor_;
+    int                      top_;         // first visible wrapped row
+    std::vector<std::string> rows_;
+};
+
+
+
 class TApp : public TApplication
 {
 public:
@@ -591,10 +881,13 @@ public:
         g_keylog.flush();
 #endif
 
-        // Periodic poll of the AI token queue (timer -> evBroadcast/cmTimerExpired).
+        // Periodic: poll the AI token queue and keep the prompt/transcript
+        // split in sync with the desktop (cheap no-op when nothing changed, so
+        // it also self-heals after a terminal resize).
         if( event.what == evBroadcast && event.message.command == cmTimerExpired )
         {
             pollSink_();
+            relayoutPanels_();
             clearEvent( event );
             return;
         }
@@ -624,14 +917,15 @@ public:
             }
         }
 
-        // Intercept Enter in the chat input line and route it to the chat flow,
-        // before the input line can consume the key. Some terminals report
-        // Enter as a key-down, others as a command event; handle both.
+        // Intercept Enter in the prompt and route it to the chat flow. Some
+        // terminals report Enter as a key-down, others as a command event; the
+        // PromptInput deliberately leaves Enter unconsumed so it reaches here.
+        // Only act when the prompt itself has focus (not a modal dialog).
         bool enterPressed =
             ( event.what == evKeyDown && event.keyDown.keyCode == kbEnter ) ||
             ( event.what == evCommand  && event.message.command == kbEnter );
-        if( g_inputLine_ != 0 && enterPressed &&
-            (g_inputLine_->state & sfSelected) != 0 )
+        if( g_prompt_ != 0 && enterPressed &&
+            (g_prompt_->state & sfFocused) != 0 )
         {
             processMessage_();
             clearEvent( event );
@@ -715,19 +1009,20 @@ TDeskTop *initDeskTop_( TRect r )
     int x2 = r.b.x;
     int y2 = r.b.y;
 
-    // Layout: the input line is a single row on the bottom of the desktop;
-    // the transcript (with its vertical scrollbar) fills the rows above it.
-    // NOTE: the input rect must be exactly 1 row tall -- TInputLine::draw()
-    // repeats its single text buffer across its full height, so a taller rect
-    // paints the typed text on every row.
-    int inputRow = y2 - 2;   // last desktop row that isn't overlapped by the
-                             // status line
+    // Save the desktop rect so the transcript + prompt can be re-laid-out
+    // together as the prompt grows/shrinks (relayoutPanels_).
+    g_dX1 = x1; g_dY1 = y1; g_dX2 = x2; g_dY2 = y2;
 
-    TRect inRect( x1, inputRow, x2 - 1, inputRow + 1 );
-    TRect sbRect( x2 - 2, y1 + 1, x2 - 1, inputRow );
-    TRect trRect( x1, y1 + 1, x2 - 3, inputRow );
+    // Initial placeholder geometry; relayoutPanels_() refines it below so both
+    // panels share the desktop exactly (no gap, no overlap). The scrollbar is 3
+    // cells wide (a light frame + the bar + frame), so it occupies cols x2-3..x2-1.
+    TRect sbRect( x2 - 3, y1 + 1, x2, y2 - 1 );
+    TRect trRect( x1, y1 + 1, x2 - 3, y2 - 1 );
+    TRect inRect( x1, y2 - 2, x2 - 1, y2 - 1 );
 
     g_vBar_ = new TScrollBar( sbRect );
+    g_vBar_->options &= ~ofSelectable;  // mouse-driven only; keep keyboard focus
+                                        // on the prompt (see TranscriptView)
     d->insert( g_vBar_ );
 
     g_transcript_ = new TranscriptView( trRect, g_vBar_ );
@@ -735,8 +1030,13 @@ TDeskTop *initDeskTop_( TRect r )
     g_transcript_->setThinkingExpandAll( atui::settings::thinkingExpandAll() );
     d->insert( g_transcript_ );
 
-    g_inputLine_ = new TInputLine( inRect, 256, 0, ilMaxBytes );
-    d->insert( g_inputLine_ );
+    // Inserted last, but it is the only selectable view in the desktop, so it
+    // receives the desktop's initial keyboard focus.
+    g_prompt_ = new PromptInput( inRect );
+    d->insert( g_prompt_ );
+
+    // Size the two panels to each other (prompt starts as separator + 1 row).
+    relayoutPanels_();
 
 #ifdef ATUI_HAVE_NETWORK
     // Periodic poll of the AI token queue (worker thread -> event loop).
@@ -751,15 +1051,76 @@ TDeskTop *initDeskTop_( TRect r )
     return d;
 }
 
+// Lay out the transcript (top) and prompt (bottom) so they share the desktop
+// exactly, with no gap and no overlap. The prompt is a separator row plus as
+// many text rows as its current text needs (greedy-wrapped at the panel width),
+// clamped so the transcript keeps at least a few rows. Call whenever the prompt
+// text or the desktop size changes.
+void relayoutPanels_()
+{
+    if( g_transcript_ == 0 || g_prompt_ == 0 ) return;
+
+    // Sync with the real deskTop so a terminal resize is picked up the next
+    // time we run (the periodic timer calls this even when idle).
+    if( TProgram::deskTop )
+    {
+        const int ex = TProgram::deskTop->size.x, ey = TProgram::deskTop->size.y;
+        if( ex != g_dX2 || ey != g_dY2 )
+        {
+            g_dX1 = 0; g_dY1 = 0; g_dX2 = ex; g_dY2 = ey;
+        }
+    }
+
+    const int x1 = g_dX1, y1 = g_dY1, x2 = g_dX2, y2 = g_dY2;
+    const int pwidth = x2 - 1 - x1;
+    if( pwidth < 1 ) return;
+
+    // How many text rows the prompt needs right now (separator excluded).
+    int need = g_prompt_->rowCount( pwidth );
+    if( need < 1 ) need = 1;
+
+    const int bottom = y2 - 1;            // exclusive: last usable row is y2-2
+    int avail = bottom - (y1 + 1);        // rows shared by transcript + prompt
+    if( avail < 4 ) avail = 4;            // tiny terminal: give some room
+
+    const int MIN_TR = 2;                 // keep some transcript visible
+    int maxText = avail - 1 - MIN_TR;     // avail - separator - MIN_TR
+    if( maxText < 1 ) maxText = 1;
+
+    int textRows = need;
+    if( textRows > maxText ) textRows = maxText;
+
+    const int ptop = bottom - 1 - textRows;   // row 0 = separator, rows 1.. text
+
+    const TRect pRect( x1, ptop, x2 - 1, bottom );
+    const TRect tRect( x1, y1 + 1, x2 - 3, ptop );
+    const TRect bRect( x2 - 3, y1 + 1, x2, ptop );   // 3 cells: cols x2-3..x2-1
+
+    const bool moved = !(g_prompt_->getBounds() == pRect);
+    if( moved )
+    {
+        g_prompt_->setBounds( pRect );
+        g_transcript_->setBounds( tRect );
+        if( g_vBar_ )
+        {
+            g_vBar_->setBounds( bRect );
+            g_vBar_->drawView();   // repaint reclaimed/vacated scrollbar columns
+        }
+    }
+
+    // Always redraw the prompt (a few rows: cheap, and keeps the caret right).
+    // Only touch the transcript when the split actually moved.
+    if( moved ) g_transcript_->reflow();
+    g_prompt_->drawView();
+}
+
 void focusInput_()
 {
-    if( g_inputLine_ == 0 ) return;
-    g_inputLine_->data[0] = EOS;
-    g_inputLine_->curPos = 0;
-    g_inputLine_->firstPos = 0;
-    g_inputLine_->selStart = g_inputLine_->selEnd = 0;
-    g_inputLine_->drawView();
-    g_inputLine_->focus();
+    if( g_prompt_ == 0 ) return;
+    g_prompt_->clear();
+    relayoutPanels_();
+    g_prompt_->drawView();
+    g_prompt_->focus();
 }
 
 void appendUser_( const char *text )
@@ -838,9 +1199,10 @@ void pollSink_()
 
 void processMessage_()
 {
-    if( g_inputLine_ == 0 || g_transcript_ == 0 ) return;
+    if( g_prompt_ == 0 || g_transcript_ == 0 ) return;
 
-    String msg( g_inputLine_->data );
+    std::string text = g_prompt_->text();
+    String msg( text.c_str() );
     if( msg.size() <= 0 ) return;
 
 #ifdef ATUI_HAVE_NETWORK
@@ -866,12 +1228,10 @@ void processMessage_()
     appendReply_( reply.c_str() );
 #endif
 
-    // Clear the input line for the next message.
-    g_inputLine_->data[0] = EOS;
-    g_inputLine_->curPos = 0;
-    g_inputLine_->firstPos = 0;
-    g_inputLine_->selStart = g_inputLine_->selEnd = 0;
-    g_inputLine_->drawView();
+    // Clear the prompt (collapses it back to a single row) for the next input.
+    g_prompt_->clear();
+    relayoutPanels_();
+    g_prompt_->drawView();
 }
 
 void TApp::showHelp()
