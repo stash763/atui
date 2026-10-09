@@ -265,7 +265,21 @@ be split mid-string). `parseToolCallFrags()` (string-aware scanner) and
 
 All three tools were driven end to end in the running client against Ollama
 `0.14.3` at `http://10.196.88.167:11434`, using
-`ministral-3:8b-instruct-2512-q4_K_M` (temperature 0):
+`ministral-3:8b-instruct-2512-q4_K_M` (temperature 0). **That model is the
+standard one for tool testing** - it emits proper OpenAI `tool_calls` through
+`/v1` (re-verified 2026-10-09). Recipe:
+
+    mkdir -p /tmp/atui_tools && printf 'ALPHA stays here\n' > /tmp/atui_tools/notes.txt
+    printf '[app]\nprovider = ollama\n\n[provider:ollama]\nname = ollama\nbase_url = http://10.196.88.167:11434/v1\nmodel = ministral-3:8b-instruct-2512-q4_K_M\ntemperature = 0.0\n' > /tmp/atui_m3.ini
+    tui-test run --session m3 --cols 88 --rows 24 --cwd /tmp/atui_tools \
+        --env ATUI_CONFIG=/tmp/atui_m3.ini -- "$PWD/build/atui"
+    tui-test write --session m3 "Call the get_time tool."   # or run_command / edit_file
+    tui-test key press --session m3 Enter                   # and Alt-Y / Enter to answer
+
+Naming the tool and spelling out its arguments verbatim is what makes a small
+model comply, e.g. `Call the run_command tool with the command: uname -sr` and
+`Call the edit_file tool with path /tmp/atui_tools/notes.txt, old_text "...",
+new_text "..."`.
 
 | asked for | what happened |
 |---|---|
