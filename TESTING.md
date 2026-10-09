@@ -221,10 +221,22 @@ worker thread and the TUI handshake lives in `src/tools/approval.{h,cpp}`:
   never runs and the model gets a "declined"/"no approval UI" result.
 - The TUI installs a `TuiApprover` (`src/tui/app.cpp`). `approve()` runs on the
   worker thread: it publishes the request and blocks. `pollSink_()` (the 50 ms
-  timer on the UI thread) picks it up and shows a modal
-  `messageBox(..., mfConfirmation | mfYesButton | mfNoButton)`; Yes runs the
-  tool, No / Cancel declines. A `g_approvalShowing` guard prevents a re-entrant
+  timer on the UI thread) picks it up and shows a modal Yes/No box; Yes runs the
+  tool, anything else declines. A `g_approvalShowing` guard prevents a re-entrant
   dialog while the modal box pumps its own event loop.
+- The box is a `TDialog` built by `showApprovalDialog_()`, **not**
+  `messageBox()`: TVision's `makeRect()` sizes a message box for about three
+  rows of 33 columns and `TStaticText` silently clips the rest, which cut off
+  the one line that says what is about to run. The box wraps its message with
+  the transcript's `wrapText_()` helper and sizes itself around it.
+- Default button: `TButton::setState()` promotes the *focused* button to default
+  (`makeDefault()` on `sfFocused`), and `TGroup::insert()` prepends, so a dialog's
+  initial focus is the view inserted **last**. `Yes` is therefore inserted first
+  and `No` second: `No` ends up focused and default, so **Enter and Esc both
+  decline** and allowing takes a deliberate Alt-Y. The keystrokes are spelled out
+  in the box text.
+- Status lines (`awaiting your approval…`, `calling <tool>...`) are appended to
+  the transcript and stay there as history of what happened.
 
 Arguments are parsed with a small flat-JSON reader (`src/tools/json_args.{h,cpp}`)
 that unescapes strings and skips nested objects/arrays, so values containing
@@ -249,26 +261,54 @@ Streaming fragments arrive keyed by `index`: the first carries `id` +
 be split mid-string). `parseToolCallFrags()` (string-aware scanner) and
 `mergeToolFrags()` in `oai_client.cpp` reassemble them.
 
-Not every model supports tools. Verified against Ollama `0.14.3` at
-`http://10.196.88.167:11434` — check `GET /api/show {"model":…}` and look for
-`tools` in `capabilities`. Known tool-capable tags there:
-`ministral-3:8b-instruct-2512-q4_K_M`, `mistral:latest`, `phi4-mini:3.8b`,
-`granite4:latest`, `nemotron-mini:4b`. A tool-less model just ignores `tools`
-and answers directly (harmless).
+### Verification with a real model (through the TUI)
 
-End-to-end (real client + real tool + second round) — "What is the current
-time?" against `ministral-3:8b-instruct-2512-q4_K_M`:
+All three tools were driven end to end in the running client against Ollama
+`0.14.3` at `http://10.196.88.167:11434`, using
+`ministral-3:8b-instruct-2512-q4_K_M` (temperature 0):
+
+| asked for | what happened |
+|---|---|
+| `get_time` | no prompt (safe tool) → `calling get_time...` → answer with the real local date/time |
+| `run_command` `echo HELLO_FROM_TOOL`, allowed with Alt-Y | box showed `$ echo HELLO_FROM_TOOL` → `calling run_command...` → answer quoted the real output |
+| `run_command` `touch denied_marker`, declined with Enter | no box action, **no file created**, answer said the action was declined |
+| `run_command` `touch esc_test_file`, dismissed with Esc | same: treated as a refusal, no file |
+| `edit_file` on `notes.txt`, allowed | box showed path + `- old:` / `+ new:` → file on disk changed, model reported "1 occurrence updated" |
+| `get_time` **and** `run_command` in one turn | three rounds: `calling get_time...`, `run_command: awaiting your approval…`, `calling run_command...`, then one answer containing both real results |
+
+Model notes (worth knowing before blaming the client):
+
+- `tools` support is per model. `GET /api/show {"model":…}` lists `tools` in
+  `capabilities`, but that is not the whole story: **`phi4-mini:3.8b` advertises
+  `tools` yet, through the `/v1` OpenAI-compatible endpoint, writes the ChatML
+  tokens into the answer instead of returning `tool_calls`** — the transcript
+  then shows `[{"type": "function", ...}]u003c|/tool_call|u003e...` plus an
+  invented tool response, and nothing is executed. `ministral-3:8b-instruct-2512-q4_K_M`
+  behaves correctly; `mistral:latest`, `granite4:latest` and `nemotron-mini:4b`
+  also advertise tools.
+- A tool-capable model still decides: rephrasings of the same request sometimes
+  get a direct answer with no tool call at all (nothing to see in the transcript
+  then). Asking for the tool by name works best.
+- Small models may ask a clarifying question first (e.g. "what is the full path
+  of `notes.txt`?") instead of calling `edit_file`; the next turn then produces
+  the call, which is also a check that tool rounds keep the conversation.
+- Test in a scratch directory (`tui-test run --cwd /tmp/...`): `run_command`
+  really runs and relative `edit_file` paths resolve against the client's cwd.
+  Run one client at a time — a second client hitting the same server made a
+  follow-up round stall for minutes in testing.
+
+The same thing recorded from the request side (a debug build logging each
+round) — "What is the current time?" against that model:
 
     [round 0] finish='tool_calls'  exec get_time({}) -> 2026-10-05 22:08:34 EDT
     [round 1] finish='stop'        "The current time is **10:08 PM EDT** …"
 
-**Live confirmation check** (mock server asking for `run_command`
-`{command:"echo APPROVED_42"}`): submitting shows
-`~ run_command: awaiting your approval…` then a modal Confirm dialog
-(`$ echo APPROVED_42`, Yes/No) while the worker is blocked. Answering **Yes**
-proceeds to `~ calling run_command...` and the round-1 final answer; answering
-**No** shows the prompt but never prints `calling run_command...` — the command
-does not run and the loop continues with the "declined" result.
+The scripted-server equivalent (a mock replying with `run_command`
+`{command:"echo APPROVED_42"}`) is the way to test the box without a model: the
+transcript shows `run_command: awaiting your approval…` while the worker blocks,
+the box shows `$ echo APPROVED_42`, Alt-Y leads to `calling run_command...` and
+the final answer, and refusing never prints `calling run_command...` — the loop
+just continues with the "declined" result.
 
 Unit coverage (`--self-test`): `finish_reason: parse`, `tool: call frags split`,
 `tool: args with braces` (JSON with escaped quotes/braces in `arguments`),

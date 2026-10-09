@@ -40,7 +40,6 @@
 #define Uses_TStringCollection
 #define Uses_TTimer
 #define Uses_TScreen
-#define Uses_MsgBox
 #include <cstdio>
 #include <cstddef>
 #include <cstdlib>
@@ -118,6 +117,57 @@ namespace {
 #endif
 }
 
+// --- text helpers -------------------------------------------------------------
+
+// Wrap one logical string (split on '\n') into display rows of `width` columns,
+// breaking on spaces where possible and hard-breaking over-long words. Used by
+// the transcript and by the tool-approval box.
+static void wrapOne_( const std::string &seg, int width,
+                      std::vector<std::string> &out )
+{
+    if( width < 1 ) width = 1;
+    if( seg.empty() ) { out.push_back( "" ); return; }
+    size_t i = 0, n = seg.size();
+    while( i < n )
+    {
+        size_t k = i, cnt = 0, lastSpace = std::string::npos;
+        while( k < n && cnt < (size_t) width )
+        {
+            if( seg[k] == ' ' ) lastSpace = k;
+            ++k; ++cnt;
+        }
+        if( k < n && lastSpace != std::string::npos && lastSpace > i )
+        {
+            out.push_back( seg.substr( i, lastSpace - i ) );
+            i = lastSpace + 1;
+            while( i < n && seg[i] == ' ' ) ++i;
+        }
+        else
+        {
+            out.push_back( seg.substr( i, k - i ) );
+            i = k;
+        }
+    }
+}
+
+// The same for a whole string: each '\n' starts a new row, so blank lines in the
+// input stay blank rows in the output.
+static std::vector<std::string> wrapText_( const std::string &s, int width )
+{
+    std::vector<std::string> out;
+    size_t start = 0;
+    while( true )
+    {
+        size_t nl = s.find( '\n', start );
+        std::string seg = ( nl == std::string::npos )
+            ? s.substr( start ) : s.substr( start, nl - start );
+        wrapOne_( seg, width, out );
+        if( nl == std::string::npos ) break;
+        start = nl + 1;
+    }
+    return out;
+}
+
 // Module helpers (outer namespace; definitions appear after TApp).
 TStatusLine *initStatusLine_( TRect r );
 TMenuBar *initMenuBar_( TRect r );
@@ -146,16 +196,66 @@ std::mutex                 g_apMx;               // guards g_pendingApproval
 atui::tools::ApprovalRef   g_pendingApproval;    // worker sets, UI clears
 bool                       g_approvalShowing = false;  // re-entrancy guard
 
-// Show the confirmation dialog (modal; runs a nested event loop on this
-// thread) and return true if the user allowed it.
+// Show the confirmation dialog for a pending tool approval and return true if
+// the user allowed it. Modal: it runs a nested event loop on this thread.
+//
+// Not stock messageBox() - that sizes itself for about three lines of text and
+// silently clips the rest, which here would hide the one line saying what is
+// actually about to run. This box is laid out around the message instead, and
+// No is the default button, so Enter and Esc both decline.
 bool showApprovalDialog_( const atui::tools::ApprovalRef &req )
 {
-    std::string msg = "The model wants to run the \"" + req->tool
-                    + "\" tool.\n\n";
-    msg += req->summary;
-    msg += "\n\nAllow this to run?";
-    ushort r = ::messageBox( msg.c_str(),
-                             mfConfirmation | mfYesButton | mfNoButton );
+    // The keys are spelled out because the box is safe by default: Enter and
+    // Esc decline, so approving has to be a deliberate keystroke.
+    const std::string body = "The model wants to run the \"" + req->tool +
+                             "\" tool.\n\n" + req->summary +
+                             "\n\nAllow this to run?  (Alt-Y = yes, Enter = no)";
+
+    // Wide enough to show a command, narrow enough to keep the frame on screen.
+    const short deskW = TProgram::deskTop ? TProgram::deskTop->size.x : 80;
+    const short deskH = TProgram::deskTop ? TProgram::deskTop->size.y : 25;
+    short textW = 64;
+    if( textW > deskW - 12 ) textW = (short) ( deskW - 12 );
+    if( textW < 24 )         textW = 24;
+
+    std::vector<std::string> rows = wrapText_( body, textW );
+    // Never taller than the desktop. The command is early in the message, so an
+    // extreme clip loses the closing question rather than the command.
+    short maxRows = (short) ( deskH - 8 );
+    if( maxRows < 1 ) maxRows = 1;
+    if( (short) rows.size() > maxRows )
+    {
+        rows.resize( maxRows );
+        rows.back() += "...";
+    }
+
+    std::string text;
+    for( size_t i = 0; i < rows.size(); ++i )
+    {
+        if( i != 0 ) text += "\n";
+        text += rows[i];
+    }
+
+    const short w = (short) ( textW + 6 );
+    const short h = (short) ( (short) rows.size() + 5 );
+    const std::string title = "Confirm - " + req->tool;
+    TDialog *d = new TDialog( TRect( 0, 0, w, h ), title.c_str() );
+    d->options |= ofCentered;
+    d->insert( new TStaticText( TRect( 3, 1, (short) ( w - 2 ), (short) ( h - 4 ) ),
+                                text.c_str() ) );
+    // Buttons. TVision gives a dialog's initial focus to the view inserted
+    // LAST, and a focused TButton becomes the default (TButton::setState calls
+    // makeDefault on sfFocused) - so Yes goes in first and No second, which
+    // puts the default on No: Enter and Esc both decline, Alt-Y allows.
+    d->insert( new TButton( TRect( (short) ( w - 25 ), (short) ( h - 3 ),
+                                   (short) ( w - 15 ), (short) ( h - 1 ) ),
+                            "~Y~es", cmYes, bfNormal ) );
+    d->insert( new TButton( TRect( (short) ( w - 14 ), (short) ( h - 3 ),
+                                   (short) ( w - 4 ), (short) ( h - 1 ) ),
+                            "~N~o", cmNo, bfDefault ) );
+
+    const ushort r = TProgram::application->execView( d );
+    TObject::destroy( d );
     return r == cmYes;
 }
 
@@ -461,51 +561,6 @@ private:
             blocks_[i].open = false;
     }
 
-    // Wrap one logical string (split on '\n') into display rows of `width`.
-    static void wrapOne( const std::string &seg, int width,
-                         std::vector<std::string> &out )
-    {
-        if( width < 1 ) width = 1;
-        if( seg.empty() ) { out.push_back( "" ); return; }
-        size_t i = 0, n = seg.size();
-        while( i < n )
-        {
-            size_t k = i, cnt = 0, lastSpace = std::string::npos;
-            while( k < n && cnt < (size_t) width )
-            {
-                if( seg[k] == ' ' ) lastSpace = k;
-                ++k; ++cnt;
-            }
-            if( k < n && lastSpace != std::string::npos && lastSpace > i )
-            {
-                out.push_back( seg.substr( i, lastSpace - i ) );
-                i = lastSpace + 1;
-                while( i < n && seg[i] == ' ' ) ++i;
-            }
-            else
-            {
-                out.push_back( seg.substr( i, k - i ) );
-                i = k;
-            }
-        }
-    }
-
-    static std::vector<std::string> wrapText( const std::string &s, int width )
-    {
-        std::vector<std::string> out;
-        size_t start = 0;
-        while( true )
-        {
-            size_t nl = s.find( '\n', start );
-            std::string seg = ( nl == std::string::npos )
-                ? s.substr( start ) : s.substr( start, nl - start );
-            wrapOne( seg, width, out );
-            if( nl == std::string::npos ) break;
-            start = nl + 1;
-        }
-        return out;
-    }
-
     void relayout()
     {
         lines_.clear();
@@ -518,13 +573,13 @@ private:
             if( bl.kind == kUser )
             {
                 std::vector<std::string> w =
-                    wrapText( "> " + bl.text, width );
+                    wrapText_( "> " + bl.text, width );
                 for( size_t i = 0; i < w.size(); ++i )
                     lines_.push_back( plainLine( w[i], rUser, (int) b, false ) );
             }
             else if( bl.kind == kStatus )
             {
-                std::vector<std::string> w = wrapText( bl.text, width );
+                std::vector<std::string> w = wrapText_( bl.text, width );
                 for( size_t i = 0; i < w.size(); ++i )
                     lines_.push_back( plainLine( w[i], rStatus, (int) b, false ) );
             }
@@ -544,12 +599,12 @@ private:
                 head += std::to_string( (unsigned long) bl.text.size() );
                 head += bl.expanded ? " chars)  click/Ctrl-T to collapse"
                                     : " chars)  click/Ctrl-T to expand";
-                std::vector<std::string> hw = wrapText( head, width );
+                std::vector<std::string> hw = wrapText_( head, width );
                 for( size_t i = 0; i < hw.size(); ++i )
                     lines_.push_back( plainLine( hw[i], rHead, (int) b, true ) );
                 if( bl.expanded )
                 {
-                    std::vector<std::string> bw = wrapText( bl.text, width - 3 );
+                    std::vector<std::string> bw = wrapText_( bl.text, width - 3 );
                     for( size_t i = 0; i < bw.size(); ++i )
                         lines_.push_back(
                             plainLine( "   " + bw[i], rThinking, (int) b, true ) );
