@@ -539,8 +539,8 @@ blocks. Behavior:
 - Colors (via `TranscriptView::mapColor`): answer = yellow, thinking text = dim
   slate, thinking header = cyan, user = green, tool status = amber (dark theme;
   distinct BIOS attrs in classic).
-- Scrolling: mouse wheel or the vertical scrollbar; auto-follows the bottom
-  while streaming until you scroll up.
+- Scrolling: mouse wheel, or click/drag the vertical scrollbar; auto-follows the
+  bottom while streaming until you scroll up.
 - Whether thinking is stored and replayed to the model on later turns is the
   `thinking_resend` option (default off). When on, the assistant turn carries
   `reasoning_content` on subsequent requests (`oai_client.cpp:buildBody`).
@@ -594,10 +594,24 @@ Focus & plumbing notes (learned via `tui-test`):
 
 - The transcript and the scrollbar both set `options &= ~ofSelectable`, so the
   prompt is the desktop's only selectable view and gets the initial keyboard
-  focus.
-- The scrollbar renders 3 cells (`◄▓►`) and is sized to cols `x2-3..x2-1`; when
-  the split moves, `relayoutPanels_()` redraws it so no stale separator pixels
-  survive on rows that flip between transcript and prompt.
+  focus. Mouse input is unaffected: `TGroup` routes positional events by
+  position, not by focus, so the bar still takes clicks.
+- **A vertical `TScrollBar` has to be exactly ONE column wide.** The widget
+  picks its orientation from `size.x` (`size.x == 1` means vertical), so the
+  three-column box this app had at first was drawn - and clicked - as a
+  *horizontal* bar: `drawPos()` fills `size.x * size.y` cells from a
+  `TDrawBuffer` it only initialises for one row, which left a column of
+  uninitialised cells with a stray marker where the bar should have been
+  ("the scrollbar is invisible / does nothing"). It draws its own `▲`/`▼` end
+  arrows inside that single column, so nothing else is needed.
+- Clicking the track jumps the thumb to the cursor, the arrows step one line,
+  and the wheel scrolls by line. `TranscriptView::scrollDraw()` (the
+  `cmScrollBarChanged` hook) keeps `follow_` in step, so scrolling up while the
+  model is streaming stays up instead of being yanked back to the bottom; a new
+  message - or dragging the thumb back to the end - resumes following.
+- When the prompt grows and the split moves, `relayoutPanels_()` resizes *and*
+  redraws the bar, so no stale pixels survive on rows that flip between
+  transcript and prompt.
 - The 50 ms timer (network build) calls `relayoutPanels_()`, which re-reads the
   live `deskTop` size and therefore **self-heals the split after a terminal
   resize**.

@@ -433,6 +433,19 @@ public:
         TScroller::handleEvent( event );
     }
 
+    // The scrollbar moved the view (click or drag on the bar). Keep the
+    // "follow the bottom" flag in step with it: jumping up stays up, and
+    // returning the thumb to the end resumes following the stream. Without
+    // this, only the wheel kept follow_ correct and a bar-clicked-away view
+    // still yanked back to the bottom on the next repaint.
+    virtual void scrollDraw()
+    {
+        TScroller::scrollDraw();
+        int maxTop = (int) lines_.size() - size.y;
+        if( maxTop < 0 ) maxTop = 0;
+        follow_ = ( delta.y >= maxTop );
+    }
+
     // Re-clamp the scroll position after the view was resized (e.g. the prompt
     // grew and this view lost rows) and repaint.
     void reflow()
@@ -1116,11 +1129,13 @@ TDeskTop *initDeskTop_( TRect r )
     g_dX1 = x1; g_dY1 = y1; g_dX2 = x2; g_dY2 = y2;
 
     // Initial placeholder geometry; relayoutPanels_() refines it below so both
-    // panels share the desktop exactly (no gap, no overlap). The scrollbar is 3
-    // cells wide (a light frame + the bar + frame), so it occupies cols x2-3..x2-1.
-    TRect sbRect( x2 - 3, y1 + 1, x2, y2 - 1 );
-    TRect trRect( x1, y1 + 1, x2 - 3, y2 - 1 );
-    TRect inRect( x1, y2 - 2, x2 - 1, y2 - 1 );
+    // panels share the desktop exactly (no gap, no overlap). The scrollbar is
+    // exactly ONE column wide: TScrollBar decides its orientation from its width
+    // (size.x == 1 means vertical), so a wider box is drawn - and clicked - as a
+    // horizontal bar. Its own drawing already includes both end arrows.
+    TRect sbRect( x2 - 1, y1 + 1, x2, y2 - 1 );
+    TRect trRect( x1, y1 + 1, x2 - 1, y2 - 1 );
+    TRect inRect( x1, y2 - 2, x2, y2 - 1 );
 
     g_vBar_ = new TScrollBar( sbRect );
     g_vBar_->options &= ~ofSelectable;  // mouse-driven only; keep keyboard focus
@@ -1195,9 +1210,9 @@ void relayoutPanels_()
 
     const int ptop = bottom - 1 - textRows;   // row 0 = separator, rows 1.. text
 
-    const TRect pRect( x1, ptop, x2 - 1, bottom );
-    const TRect tRect( x1, y1 + 1, x2 - 3, ptop );
-    const TRect bRect( x2 - 3, y1 + 1, x2, ptop );   // 3 cells: cols x2-3..x2-1
+    const TRect pRect( x1, ptop, x2, bottom );
+    const TRect tRect( x1, y1 + 1, x2 - 1, ptop );
+    const TRect bRect( x2 - 1, y1 + 1, x2, ptop );   // one column, 1 == vertical
 
     const bool moved = !(g_prompt_->getBounds() == pRect);
     if( moved )
