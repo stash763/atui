@@ -7,6 +7,7 @@ which needs a real terminal (pty) to exercise.
 
     cmake --build build          # from repo root
     ./build/atui --self-test     # unit + integration tests (64/64 network build, 44/44 without)
+    # ...plus 4 live-server tests when ATUI_LIVE_BASE_URL is set (see 'Live endpoint testing')
 
 Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
 `src/settings/settings.cpp`):
@@ -158,7 +159,25 @@ build.").
 
 ## Live endpoint testing
 
-Verified end-to-end against Ollama `0.14.3` at `http://10.196.88.167:11434`:
+The standard target is the lab **llama.cpp** server:
+
+    base url  http://10.196.88.170:10001/v1
+    model     Ternary-Bonsai-2-27B-PQ2_0.gguf     (reasoning + tool calls)
+
+What its `/v1/chat/completions` stream looks like (matters to the parser):
+
+- thinking arrives as `delta.reasoning_content` chunks *before* the answer
+  (`{"choices":[{"index":0,"delta":{"reasoning_content":"…"}}]}`), which
+  `deltaReasoning()` picks up (llama.cpp is the DeepSeek-style key; Ollama uses
+  `reasoning`);
+- tool calls are proper OpenAI-shaped `delta.tool_calls` fragments keyed by
+  `index`, with `arguments` split across chunks, closed by
+  `finish_reason: "tool_calls"`;
+- `GET /v1/models` and `GET /health` answer as expected, so the model cache and
+  the Providers dialog work against it; `/props` reports the model/build.
+
+Ollama `0.14.3` at `http://10.196.88.167:11434` is the alternative target (used
+for the multi-provider and model-cache checks):
 
 - Endpoint discovery: `GET /v1/models` (OpenAI-compatible) lists the models;
   `GET /api/version` confirms Ollama.
@@ -169,7 +188,43 @@ Verified end-to-end against Ollama `0.14.3` at `http://10.196.88.167:11434`:
   `"content"`; treats `[DONE]` as terminator).
 - Two-turn context (`conv_` carry-over) — see the bug fix note below.
 
-Run against Ollama (fast tiny model, or swap in a capable one):
+### Automated live tests (`ATUI_LIVE_BASE_URL`)
+
+`tests/oai_live_test.cpp` adds four tests that a mock cannot serve: that a real
+model reasons, that a real `tool_calls` exchange round-trips, and that the
+result reaches the model. They are registered **only** when the endpoint is
+configured, so the default self-test stays offline and fast:
+
+    ATUI_LIVE_BASE_URL=http://10.196.88.170:10001/v1 ./build/atui --self-test
+    # -> live: model list / live: chat stream / live: reasoning / live: tool round trip
+    #    68 passed, 0 failed (~30 s); offline runs stay at 64 passed
+
+| test | what it asserts |
+|---|---|
+| `live: model list` | `GET <base>/models` on the real server yields ids, and one is usable |
+| `live: chat stream` | a plain prompt streams non-empty answer content and ends cleanly |
+| `live: reasoning` | thinking arrives tagged as thinking (`tkThinking`) *and* an answer follows |
+| `live: tool round trip` | registers a `live_probe` tool returning a fixed string, and the model's final answer contains that string — so the call was parsed, executed, and its result used |
+
+`ATUI_LIVE_MODEL` pins a model (default: the first one the server reports) and
+`ATUI_LIVE_API_KEY` sends a bearer token. `live: reasoning` needs a reasoning
+model; a wrong endpoint fails in seconds with a `self-test NOTE live: …` line
+naming the server and model rather than hanging.
+
+Run the TUI against it (env vars seed the provider defaults; `--cwd` matters
+for `run_command` / relative `edit_file` paths):
+
+    printf '[app]\nprovider = cpp\n\n[provider:cpp]\nname = cpp\nbase_url = http://10.196.88.170:10001/v1\nmodel = Ternary-Bonsai-2-27B-PQ2_0.gguf\ntemperature = 0.0\n' > /tmp/atui_cpp.ini
+    tui-test run --session cpp --cols 88 --rows 26 --cwd /tmp/atui_live \
+        --env ATUI_CONFIG=/tmp/atui_cpp.ini -- "$PWD/build/atui"
+
+Verified with it: a riddle prompt renders `[+] thinking (228 chars)
+click/Ctrl-T to expand` and expands to the model's step-by-step reasoning;
+`Call the run_command tool with the command: uname -sr` produced a Confirm box
+showing `$ uname -sr`, and after Alt-Y the answer quoted the real
+`Darwin 27.0.0` **plus** a thinking block about the result.
+
+Against Ollama (fast tiny model, or swap in a capable one):
 
     tui-test run --env ATUI_BASE_URL=http://10.196.88.167:11434/v1 \
                  --env ATUI_MODEL=smollm:135m \
@@ -263,18 +318,19 @@ be split mid-string). `parseToolCallFrags()` (string-aware scanner) and
 
 ### Verification with a real model (through the TUI)
 
-All three tools were driven end to end in the running client against Ollama
-`0.14.3` at `http://10.196.88.167:11434`, using
-`ministral-3:8b-instruct-2512-q4_K_M` (temperature 0). **That model is the
-standard one for tool testing** - it emits proper OpenAI `tool_calls` through
-`/v1` (re-verified 2026-10-09). Recipe:
+Run these against the llama.cpp endpoint from "Live endpoint testing" above
+(`Ternary-Bonsai-2-27B-PQ2_0.gguf`) — it reasons *and* emits proper OpenAI
+`tool_calls`, and the automated `live: tool round trip` test covers its core.
+The table below was filled in against that model and, previously, against Ollama
+`0.14.3` at `http://10.196.88.167:11434` with `ministral-3:8b-instruct-2512-q4_K_M`
+(temperature 0) — both are good targets; the checks are the same. Recipe:
 
     mkdir -p /tmp/atui_tools && printf 'ALPHA stays here\n' > /tmp/atui_tools/notes.txt
-    printf '[app]\nprovider = ollama\n\n[provider:ollama]\nname = ollama\nbase_url = http://10.196.88.167:11434/v1\nmodel = ministral-3:8b-instruct-2512-q4_K_M\ntemperature = 0.0\n' > /tmp/atui_m3.ini
-    tui-test run --session m3 --cols 88 --rows 24 --cwd /tmp/atui_tools \
-        --env ATUI_CONFIG=/tmp/atui_m3.ini -- "$PWD/build/atui"
-    tui-test write --session m3 "Call the get_time tool."   # or run_command / edit_file
-    tui-test key press --session m3 Enter                   # and Alt-Y / Enter to answer
+    printf '[app]\nprovider = cpp\n\n[provider:cpp]\nname = cpp\nbase_url = http://10.196.88.170:10001/v1\nmodel = Ternary-Bonsai-2-27B-PQ2_0.gguf\ntemperature = 0.0\n' > /tmp/atui_cpp.ini
+    tui-test run --session cpp --cols 88 --rows 24 --cwd /tmp/atui_tools \
+        --env ATUI_CONFIG=/tmp/atui_cpp.ini -- "$PWD/build/atui"
+    tui-test write --session cpp "Call the get_time tool."   # or run_command / edit_file
+    tui-test key press --session cpp Enter                  # and Alt-Y / Enter to answer
 
 Naming the tool and spelling out its arguments verbatim is what makes a small
 model comply, e.g. `Call the run_command tool with the command: uname -sr` and
@@ -489,22 +545,23 @@ blocks. Behavior:
   `thinking_resend` option (default off). When on, the assistant turn carries
   `reasoning_content` on subsequent requests (`oai_client.cpp:buildBody`).
 
-**Verified live** (localhost mock SSE server, since the served models here fold
-reasoning into `content`): sending a question renders the collapsed thinking
-block; clicking it expands to show the buffered reasoning then the answer.
+**Verified live** against the llama.cpp endpoint (`reasoning_content` deltas
+from a real thinking model) and against the localhost mock SSE server: a question
+renders `[+] thinking (228 chars)  click/Ctrl-T to expand`, and expanding shows
+the model's step-by-step reasoning above the answer.
 
-> Note: `tui-test` cannot inject Ctrl-T — its raw `0x14` byte (and named
-> combos) are dropped by tvision/ncurses before reaching the app, and `key
-> press` needs `press` (e.g. `tui-test key press <s> Enter`). Ctrl-T works in
-> real terminals; the click path exercises the identical toggle and was used
-> to verify rendering. Enter itself is delivered as `evCommand` (kbEnter) in
-> this harness, so `handleEvent` accepts both the key-down and command forms.
+> Note: `tui-test key press Ctrl+T` does reach the app (verified 2026-10-10; an
+> older note here said Ctrl-T could not be injected — that was with an older
+> harness/key syntax). Mouse clicks work too and toggle a single block. Enter
+> itself is delivered as `evCommand` (kbEnter) in this harness, so
+> `handleEvent` accepts both the key-down and command forms.
 
 Test coverage (`--self-test`, network build):
 `oai: delta reasoning parse` (both keys + null), `oai: reasoning stream`
 (content/reasoning separated, callback routing), `oai: chat thinking` (queued
 as `tkThinking`/`tkContent`), `oai: chat resend off/on` (the `reasoning_content`
-is replayed only when the option is on).
+is replayed only when the option is on), and `live: reasoning` against a real
+reasoning server.
 
 
 ## Prompt input (wrapping + auto-grow)

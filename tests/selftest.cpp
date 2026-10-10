@@ -22,6 +22,9 @@ namespace atui_test {
 
 // Defined in tests/oai_mock_test.cpp (network builds only).
 void init_network_tests();
+// Defined in tests/oai_live_test.cpp (network builds only; registers nothing
+// unless ATUI_LIVE_BASE_URL names a server).
+void init_live_tests();
 // Defined in tests/markdown_test.cpp (always built).
 void init_markdown_tests();
 
@@ -966,6 +969,12 @@ void init()
 
     // Markdown + syntax highlighting (network-independent).
     init_markdown_tests();
+
+#ifdef ATUI_HAVE_NETWORK
+    // Real-server tests, last: they retarget the process-wide provider, and
+    // they register nothing at all unless ATUI_LIVE_BASE_URL is set.
+    init_live_tests();
+#endif
 }
 
 } // namespace atui_test

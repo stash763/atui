@@ -68,6 +68,7 @@ if(ATUI_BUILD_TESTS)
         "${ATUI_TESTS_DIR}/runner.cpp"
         "${ATUI_TESTS_DIR}/selftest.cpp"
         "${ATUI_TESTS_DIR}/oai_mock_test.cpp"
+        "${ATUI_TESTS_DIR}/oai_live_test.cpp"
         "${ATUI_TESTS_DIR}/markdown_test.cpp"
     )
 endif()
