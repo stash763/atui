@@ -319,11 +319,14 @@ $ echo hello from atui             tkTool: Tool::callPreview(args)
 - The renderer (`relayout()`, `kTool` branch in `src/tui/app.cpp`) prefixes the
   first line with `$ ` and indents continuation lines under it; the result is
   indented two columns in a dimmer role (`rToolOut`).
-- More than `kToolOutLines` (8) result lines are capped with
-  `.. N more lines (click to expand)`; clicking anywhere on the record expands
-  it, like a thinking block (`lines_[].toggle` + the `kTool` case in the mouse
-  handler). While the record is open — no result yet — nothing else is drawn,
-  which is what makes a running command readable without inventing a status.
+- A collapsed record never takes more than `kToolRows` (5) rows: the command
+  line first (it *is* the record, so it is never cut), then as much of the
+  result as fits, then `.. N more lines (click to expand)`. Clicking anywhere on
+  the record shows the rest, and `(click to collapse)`, like a thinking block
+  (`lines_[].toggle` + the `kTool` case in the mouse handler). A record of five
+  rows or fewer is simply shown whole, with no hint. While the record is open —
+  no result yet — nothing else is drawn, which is what makes a running command
+  readable without inventing a status.
 - A decline is recorded too, and it is the only trace that anything was asked:
 
 ```
@@ -384,7 +387,7 @@ new_text "..."`.
 |---|---|
 | `get_time` | no prompt (safe tool) → record `$ get_time` with the time as its result → answer with the real local date/time |
 | `run_command` `echo HELLO_FROM_TOOL`, allowed with Alt-Y | box showed `$ echo HELLO_FROM_TOOL` → record `$ echo HELLO_FROM_TOOL`, `exit code 0`, `HELLO_FROM_TOOL` → answer quoted the real output |
-| `run_command` `seq 1 40`, allowed | record capped at 8 result lines + `.. 34 more lines (click to expand)`; clicking the record showed all 40, clicking again collapsed it |
+| `run_command` `seq 1 40`, allowed | record collapsed to 5 rows — `$ seq 1 40`, `exit code 0`, a blank, `1`, `.. 39 more lines (click to expand)`; clicking showed all 40, clicking again collapsed back to the same 5 rows |
 | `run_command` `touch denied_marker`, declined with Enter | record `$ touch denied_marker` + `The user declined to run 'run_command'.`, **no file created**, answer said the action was declined |
 | `run_command` `touch esc_test_file`, dismissed with Esc | same: treated as a refusal, recorded as declined, no file |
 | `edit_file` on `notes.txt`, allowed | box showed path + `- old:` / `+ new:` → record `$ edit_file "notes.txt" (first match)` with both sides plus the tool's "edited … (replaced 1 occurrence)" line → file on disk changed |

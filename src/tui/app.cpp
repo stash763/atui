@@ -607,8 +607,9 @@ private:
         r.block = b; r.toggle = g; return r;
     }
 
-    // Result lines shown for a tool call before it has to be expanded.
-    enum { kToolOutLines = 8 };
+    // Maximum height of a collapsed tool record (command, result and hint
+    // together). Anything longer starts collapsed and is expanded by a click.
+    enum { kToolRows = 5 };
 
     // Drop blank rows at both ends (tool output usually ends in a newline and
     // the model-facing result starts with one after the exit code).
@@ -652,18 +653,16 @@ private:
             }
             else if( bl.kind == kTool )
             {
-                // "$ the command", then what it returned. A long result is
-                // capped so one chatty command cannot flood the transcript; the
-                // record is clickable to read the rest (like a thinking block).
+                // "$ the command" (continuation lines indented under it), then
+                // what it returned. Collapsed, a record is kept to kToolRows
+                // rows in total so one chatty command cannot push the
+                // conversation off screen: the command first - it *is* the
+                // record, so it is never cut - then as much of the result as
+                // fits, then the hint that expands it.
                 int  outW = ( width > 12 ) ? width - 2 : width;
                 std::vector<std::string> rl = wrapText_( bl.out, outW );
                 trimBlankRows_( rl );
-                bool   foldable = (int) rl.size() > kToolOutLines;
-                size_t shown = ( foldable && !bl.expanded )
-                                 ? (size_t) kToolOutLines : rl.size();
 
-                // Continuation lines (a multi-line command, an edit's old/new
-                // pair) are indented to line up under the "$ " marker.
                 std::string cmd = "$ ";
                 for( size_t i = 0; i < bl.text.size(); ++i )
                 {
@@ -671,6 +670,16 @@ private:
                     else                     cmd += bl.text[i];
                 }
                 std::vector<std::string> cl = wrapText_( cmd, width );
+
+                bool   foldable = cl.size() + rl.size() > (size_t) kToolRows;
+                size_t shown = rl.size();
+                if( foldable && !bl.expanded )
+                {
+                    int room = kToolRows - (int) cl.size() - 1;   // -1: the hint
+                    shown = ( room > 0 ) ? (size_t) room : 0;
+                    if( shown > rl.size() ) shown = rl.size();
+                }
+
                 for( size_t i = 0; i < cl.size(); ++i )
                     lines_.push_back( plainLine( cl[i], rTool, (int) b,
                                                  foldable ) );
