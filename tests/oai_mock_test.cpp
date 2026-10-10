@@ -59,6 +59,26 @@ void drain( TokenQueue &q, std::string &out )
         out += t.text;
 }
 
+// Drain with each token's kind marked, so a test can tell a tool record from
+// answer text: "tool>" is the call, "out>" its result, "think>" reasoning.
+void drainKinds( TokenQueue &q, std::string &out )
+{
+    atui::net::Token t;
+    while( q.pop( t ) )
+    {
+        switch( t.kind )
+        {
+            case atui::net::tkThinking:   out += "think>"; break;
+            case atui::net::tkStatus:     out += "status>"; break;
+            case atui::net::tkTool:       out += "tool>";  break;
+            case atui::net::tkToolResult: out += "out>";   break;
+            case atui::net::tkContent:    break;
+        }
+        out += t.text;
+        out += "\n";
+    }
+}
+
 // Drain capturing only the thinking tokens.
 void drainThinking( TokenQueue &q, std::string &out )
 {
@@ -323,9 +343,14 @@ int test_oai_chat_tool_loop()
     std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
 
     std::string out;
-    drain( q, out );
-    if( !contains( out, "calling get_time" ) )
+    drainKinds( q, out );
+    // The call must be recorded as a tool record (with what it returned), not
+    // just a "calling ..." status line: that record is the transcript's only
+    // lasting evidence of what the agent actually did.
+    if( !contains( out, "tool>get_time" ) )
         return -3;
+    if( !contains( out, "out>" ) )
+        return -10;
     if( !contains( out, "It is high noon" ) )
         return -4;
 
@@ -661,7 +686,7 @@ int runApprovalRound( bool allow, std::string &drained,
     else
     {
         std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
-        drain( q, drained );
+        drainKinds( q, drained );
         calls = ap.calls;
         std::vector<std::string> reqs = srv.requests();
         if( reqs.size() == 2 )
@@ -683,8 +708,11 @@ int test_oai_tool_approval_allow()
         return rc;
     if( calls != 1 )
         return -5;
-    if( !contains( drained, "calling run_command" ) )
+    // The record shows the command that ran, then its output.
+    if( !contains( drained, "tool>echo hi" ) )
         return -6;
+    if( !contains( drained, "out>exit code 0" ) )
+        return -10;
     if( !contains( drained, "all done" ) )
         return -7;
     // Round 1 replays the tool result: the command actually ran (exit code 0).
@@ -703,9 +731,13 @@ int test_oai_tool_approval_deny()
         return rc;
     if( calls != 1 )
         return -5;
-    if( !contains( drained, "awaiting your approval" ) )
+    // A declined call is still recorded - with the command and the refusal -
+    // so the transcript never shows an unexplained gap.
+    if( !contains( drained, "tool>echo hi" ) )
         return -6;
-    if( contains( drained, "calling run_command" ) )
+    if( !contains( drained, "out>The user declined to run 'run_command'." ) )
+        return -10;
+    if( contains( drained, "exit code" ) )
         return -7;   // must NOT have run
     if( !contains( drained, "all done" ) )
         return -8;

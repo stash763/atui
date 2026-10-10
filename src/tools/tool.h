@@ -45,6 +45,16 @@ public:
         ( void ) argumentsJson;
         return std::string( name() );
     }
+
+    // How this call should read in the transcript, where it stays as the record
+    // of what was actually done (unlike approvalSummary, which is prose for a
+    // dialog that disappears). May span several lines: the transcript indents
+    // them. Defaults to the tool name.
+    virtual std::string callPreview( const std::string &argumentsJson ) const
+    {
+        ( void ) argumentsJson;
+        return std::string( name() );
+    }
 };
 
 } // namespace atui::tools

@@ -924,6 +924,68 @@ int test_run_command_basic()
     return 0;
 }
 
+// --- call previews (what the transcript keeps of a tool call) -----------------
+
+int test_tool_call_previews()
+{
+    // A command reads like the shell line that was run.
+    atui::tools::RunCommandTool rc;
+    if( rc.callPreview( "{\"command\":\"make test\"}" ) != "make test" )
+        return -1;
+
+    // Multi-line commands keep their line breaks; a trailing newline does not
+    // add an empty row.
+    if( rc.callPreview( "{\"command\":\"cd build\\nmake -j4\\n\"}" )
+        != "cd build\nmake -j4" )
+        return -2;
+
+    // Control bytes never reach the screen as themselves.
+    if( rc.callPreview( "{\"command\":\"cd\\tbuild\"}" ) != "cd build" )
+        return -3;
+    if( rc.callPreview( "{\"command\":\"a\\u0001b\"}" ) != "a?b" )
+        return -4;
+
+    // An over-long argument is clipped instead of flooding the transcript.
+    std::string big( 2048, 'x' );
+    std::string clipped = rc.callPreview( "{\"command\":\"" + big + "\"}" );
+    if( clipped.size() <= 1000 )
+        return -5;
+    if( clipped.compare( clipped.size() - 3, 3, "..." ) != 0 )
+        return -6;
+
+    // Nothing usable to show still names the tool.
+    if( rc.callPreview( "{}" ).find( "run_command" ) == std::string::npos )
+        return -7;
+
+    // An edit names the file, the mode and both sides of the replacement.
+    atui::tools::EditFileTool ed;
+    std::string p = ed.callPreview( "{\"path\":\"src/main.cpp\","
+        "\"old_text\":\"retrun 1\",\"new_text\":\"return 1\"}" );
+    if( !containsSub( p, "edit_file \"src/main.cpp\"" ) )
+        return -8;
+    if( !containsSub( p, "(first match)" ) )
+        return -9;
+    if( !containsSub( p, "- old: \"retrun 1\"" ) )
+        return -10;
+    if( !containsSub( p, "+ new: \"return 1\"" ) )
+        return -11;
+    p = ed.callPreview( "{\"path\":\"a.c\",\"old_text\":\"x\","
+                        "\"new_text\":\"y\",\"all\":true}" );
+    if( !containsSub( p, "(all matches)" ) )
+        return -12;
+    // Newlines inside the replaced text stay escaped, so the record is one line
+    // per side rather than a wall of text.
+    p = ed.callPreview( "{\"path\":\"a.c\",\"old_text\":\"a\\nb\",\"new_text\":\"c\"}" );
+    if( !containsSub( p, "- old: \"a\\nb\"" ) )
+        return -13;
+
+    // A tool with nothing specific to show falls back to its name.
+    atui::tools::TimeTool tm;
+    if( tm.callPreview( "{}" ) != "get_time" )
+        return -14;
+    return 0;
+}
+
 } // namespace
 
 void init()
@@ -966,6 +1028,7 @@ void init()
     register_test( "tool: edit_file first/all", &test_edit_file_first_and_all );
     register_test( "tool: edit_file errors", &test_edit_file_errors );
     register_test( "tool: run_command basic", &test_run_command_basic );
+    register_test( "tool: call previews", &test_tool_call_previews );
 
     // Markdown + syntax highlighting (network-independent).
     init_markdown_tests();

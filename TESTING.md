@@ -270,8 +270,7 @@ worker thread and the TUI handshake lives in `src/tools/approval.{h,cpp}`:
 
 - The tool loop (`oai_chat_model.cpp`) checks `requiresApproval()`. If a
   process-wide `Approver` is installed, it builds an `Approval` (tool name + a
-  one-line `approvalSummary()` preview), pushes a status line
-  (`~ <tool>: awaiting your approval…`), and blocks in `approve()` until
+  one-line `approvalSummary()` preview) and blocks in `approve()` until
   answered. No approver, or a timeout (10 min), means **refuse** — the tool
   never runs and the model gets a "declined"/"no approval UI" result.
 - The TUI installs a `TuiApprover` (`src/tui/app.cpp`). `approve()` runs on the
@@ -290,8 +289,52 @@ worker thread and the TUI handshake lives in `src/tools/approval.{h,cpp}`:
   and `No` second: `No` ends up focused and default, so **Enter and Esc both
   decline** and allowing takes a deliberate Alt-Y. The keystrokes are spelled out
   in the box text.
-- Status lines (`awaiting your approval…`, `calling <tool>...`) are appended to
-  the transcript and stay there as history of what happened.
+### What the transcript keeps of a tool call
+
+The confirmation box disappears once answered, so the transcript carries the
+record instead — a status line saying "calling run_command..." left no trace of
+*what* had been run.
+
+Each call is two tokens (`src/net/token_queue.h`): `tkTool` when the call is
+made and `tkToolResult` when it finishes. The worker pushes the first **before**
+approval, so every attempt is recorded, its outcome is filled in afterwards, and
+a command that takes a while is visible while it runs:
+
+```
+$ echo hello from atui             tkTool: Tool::callPreview(args)
+  exit code 0                      tkToolResult: the result string
+  hello from atui
+```
+
+- `Tool::callPreview()` (`src/tools/tool.h`) decides how a call reads; it is the
+  transcript's counterpart to `approvalSummary()` and may be multi-line:
+  `run_command` shows the command itself (so a record looks like shell history),
+  `edit_file` shows the file, `(first match)`/`(all matches)` and an
+  `- old:` / `+ new:` pair. A tool that does not override it is recorded by
+  name, and an unknown tool with its (clipped) raw arguments.
+- Argument text is shaped by `src/tools/preview.h` (`previewClip()`): line
+  breaks kept, tabs expanded, control bytes replaced, capped at
+  `kMaxPreview` bytes, trailing blanks dropped — the model can put anything in
+  an argument and the transcript still renders one sane row per line.
+- The renderer (`relayout()`, `kTool` branch in `src/tui/app.cpp`) prefixes the
+  first line with `$ ` and indents continuation lines under it; the result is
+  indented two columns in a dimmer role (`rToolOut`).
+- More than `kToolOutLines` (8) result lines are capped with
+  `.. N more lines (click to expand)`; clicking anywhere on the record expands
+  it, like a thinking block (`lines_[].toggle` + the `kTool` case in the mouse
+  handler). While the record is open — no result yet — nothing else is drawn,
+  which is what makes a running command readable without inventing a status.
+- A decline is recorded too, and it is the only trace that anything was asked:
+
+```
+$ whoami
+  The user declined to run 'run_command'.
+```
+
+`tool: call previews` in the self-tests covers the shaping rules; `oai: chat
+tool loop` and `oai: tool approval allow/deny` check the token pair through the
+mock server (their `drainKinds()` marks each token's kind so a record cannot be
+confused with answer text).
 
 Arguments are parsed with a small flat-JSON reader (`src/tools/json_args.{h,cpp}`)
 that unescapes strings and skips nested objects/arrays, so values containing
@@ -302,12 +345,12 @@ all on the worker thread, capped at `kMaxToolRounds = 6`:
 
 1. Send the request (with `tools`). The SSE stream is parsed for
    `delta.tool_calls` fragments and `finish_reason` (`json_extract.cpp`).
-2. If `finish_reason == "tool_calls"`: for each call, look it up. If it
-   requires approval, gate on the `Approver` (see above); otherwise (or once
-   approved) push a `~ calling <name>` status line and run
-   `ToolRegistry::find(name)->execute(args)`. Append the assistant turn (with
-   its `tool_calls`) and a `role:"tool"` result message (or the decline
-   message), then request again.
+2. If `finish_reason == "tool_calls"`: for each call, look it up, push its
+   transcript record (`tkTool` with `callPreview()`), then — if it requires
+   approval — gate on the `Approver` (see above) and run
+   `ToolRegistry::find(name)->execute(args)`. Push the outcome (`tkToolResult`),
+   append the assistant turn (with its `tool_calls`) and a `role:"tool"` result
+   message (or the decline message), then request again.
 3. Otherwise stop — that content was the final answer. The whole exchange is
    committed to `conv_` only on success.
 
@@ -339,12 +382,17 @@ new_text "..."`.
 
 | asked for | what happened |
 |---|---|
-| `get_time` | no prompt (safe tool) → `calling get_time...` → answer with the real local date/time |
-| `run_command` `echo HELLO_FROM_TOOL`, allowed with Alt-Y | box showed `$ echo HELLO_FROM_TOOL` → `calling run_command...` → answer quoted the real output |
-| `run_command` `touch denied_marker`, declined with Enter | no box action, **no file created**, answer said the action was declined |
-| `run_command` `touch esc_test_file`, dismissed with Esc | same: treated as a refusal, no file |
-| `edit_file` on `notes.txt`, allowed | box showed path + `- old:` / `+ new:` → file on disk changed, model reported "1 occurrence updated" |
-| `get_time` **and** `run_command` in one turn | three rounds: `calling get_time...`, `run_command: awaiting your approval…`, `calling run_command...`, then one answer containing both real results |
+| `get_time` | no prompt (safe tool) → record `$ get_time` with the time as its result → answer with the real local date/time |
+| `run_command` `echo HELLO_FROM_TOOL`, allowed with Alt-Y | box showed `$ echo HELLO_FROM_TOOL` → record `$ echo HELLO_FROM_TOOL`, `exit code 0`, `HELLO_FROM_TOOL` → answer quoted the real output |
+| `run_command` `seq 1 40`, allowed | record capped at 8 result lines + `.. 34 more lines (click to expand)`; clicking the record showed all 40, clicking again collapsed it |
+| `run_command` `touch denied_marker`, declined with Enter | record `$ touch denied_marker` + `The user declined to run 'run_command'.`, **no file created**, answer said the action was declined |
+| `run_command` `touch esc_test_file`, dismissed with Esc | same: treated as a refusal, recorded as declined, no file |
+| `edit_file` on `notes.txt`, allowed | box showed path + `- old:` / `+ new:` → record `$ edit_file "notes.txt" (first match)` with both sides plus the tool's "edited … (replaced 1 occurrence)" line → file on disk changed |
+| `get_time` **and** `run_command` in one turn | three rounds, two records (the shell one visible while it runs), then one answer containing both real results |
+
+Clicking a row only does what you expect once the reply has finished streaming:
+while the answer is still arriving the transcript grows underneath the pointer,
+so a row read off an older screenshot is no longer the row the app sees.
 
 Model notes (worth knowing before blaming the client):
 

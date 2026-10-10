@@ -178,6 +178,27 @@ std::string EditFileTool::approvalSummary( const std::string &argumentsJson ) co
     return s;
 }
 
+std::string EditFileTool::callPreview( const std::string &argumentsJson ) const
+{
+    std::string path, oldText, newText;
+    bool all = false;
+    jsonStringArg( argumentsJson, "path", path );
+    jsonStringArg( argumentsJson, "old_text", oldText );
+    jsonStringArg( argumentsJson, "new_text", newText );
+    jsonBoolArg( argumentsJson, "all", all );
+
+    std::string s = "edit_file \"";
+    s += path.empty() ? "?" : clip( path, 120 );
+    s += "\"";
+    s += all ? " (all matches)" : " (first match)";
+    if( !oldText.empty() || !newText.empty() )
+    {
+        s += "\n- old: \"" + clip( oldText, 160 ) + "\"";
+        s += "\n+ new: \"" + clip( newText, 160 ) + "\"";
+    }
+    return s;
+}
+
 EditFileTool g_editFileTool;
 
 } // namespace atui::tools

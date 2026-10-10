@@ -280,9 +280,11 @@ TuiApprover g_approver;
 // The chat transcript. Replaces the plain TTerminal so we can render the
 // model's answers as styled markdown (headings, emphasis, syntax-highlighted
 // code blocks, lists, tables...), show the reasoning/"thinking" stream as
-// collapsible blocks, and toggle a block with a mouse click or Ctrl-T. Derives
-// from TScroller for free scrollbar + scrolling. Rendering is span-based: each
-// row is a vector of Spans whose Role mapColor() turns into a color.
+// collapsible blocks, keep a lasting record of every tool call ("$ command"
+// plus its result, collapsible when the output is long), and toggle a block
+// with a mouse click or Ctrl-T. Derives from TScroller for free scrollbar +
+// scrolling. Rendering is span-based: each row is a vector of Spans whose Role
+// mapColor() turns into a color.
 class TranscriptView : public TScroller
 {
 public:
@@ -311,6 +313,31 @@ public:
         closeOpen();
         Block b; b.kind = kStatus; b.text = text; b.open = false; b.expanded = false;
         blocks_.push_back( b );
+        relayout();
+    }
+
+    // A tool call is being made: start a record of it. Unlike a status line this
+    // stays in the transcript, so what was run - and what it did - remains
+    // visible afterwards. The record stays open until its result arrives, which
+    // is what makes a slow command visible while it runs.
+    void appendTool( const std::string &preview )
+    {
+        closeOpen();
+        Block b;
+        b.kind = kTool; b.text = preview; b.open = true; b.expanded = false;
+        blocks_.push_back( b );
+        relayout();
+    }
+
+    // The outcome of the tool call whose record is still open. A result that
+    // arrives with no open record (e.g. after a failed turn) becomes its own.
+    void appendToolResult( const std::string &result )
+    {
+        if( blocks_.empty() || blocks_.back().kind != kTool ||
+            !blocks_.back().open )
+            appendTool( "(tool result)" );
+        blocks_.back().out = result;
+        closeOpen();
         relayout();
     }
 
@@ -421,7 +448,8 @@ public:
             {
                 int b = lines_[li].block;
                 if( b >= 0 && b < (int) blocks_.size() &&
-                    blocks_[b].kind == kThinking )
+                    ( blocks_[b].kind == kThinking ||
+                      blocks_[b].kind == kTool ) )
                 {
                     blocks_[b].expanded = !blocks_[b].expanded;
                     relayout();
@@ -485,6 +513,9 @@ public:
                 case rThinking:  return TColorAttr( TColor( 0x8A94A0 ), TColor( bg ) );
                 case rHead:      return TColorAttr( TColor( 0x74CFCF ), TColor( bg ) );
                 case rStatus:    return TColorAttr( TColor( 0xE9CB94 ), TColor( bg ) );
+                case rTool:      return TColorAttr( TColor( 0x9CDCF0 ), TColor( bg ),
+                                                    slBold );
+                case rToolOut:   return TColorAttr( TColor( 0xB6C2CF ), TColor( bg ) );
                 // markdown inline
                 case rHeading:   return TColorAttr( TColor( 0xF7D488 ), TColor( bg ),
                                                     slBold );
@@ -523,6 +554,8 @@ public:
             case rThinking:  return TColorAttr( 0x17 );
             case rHead:      return TColorAttr( 0x13 );
             case rStatus:    return TColorAttr( 0x1D );
+            case rTool:      return TColorAttr( 0x1F );   // bright white command
+            case rToolOut:   return TColorAttr( 0x17 );   // gray output
             case rHeading:   return TColorAttr( 0x1E );
             case rBold:      return TColorAttr( 0x1F );
             case rItalic:    return TColorAttr( 0x17 );
@@ -549,8 +582,14 @@ public:
     }
 
 private:
-    enum Kind { kUser, kAnswer, kThinking, kStatus };
-    struct Block { int kind; std::string text; bool expanded; bool open; };
+    enum Kind { kUser, kAnswer, kThinking, kStatus, kTool };
+    struct Block {
+        int kind;
+        std::string text;    // user text / answer / thinking / tool preview
+        std::string out;     // tool blocks: what the tool returned
+        bool expanded;
+        bool open;
+    };
     struct RLine {
         std::vector<Span> spans; int block; bool toggle;
         unsigned char bg;                    // whole-row background role
@@ -566,6 +605,21 @@ private:
     {
         RLine r; r.spans.push_back( Span( t, role ) );
         r.block = b; r.toggle = g; return r;
+    }
+
+    // Result lines shown for a tool call before it has to be expanded.
+    enum { kToolOutLines = 8 };
+
+    // Drop blank rows at both ends (tool output usually ends in a newline and
+    // the model-facing result starts with one after the exit code).
+    static void trimBlankRows_( std::vector<std::string> &v )
+    {
+        size_t a = 0, b = v.size();
+        while( a < b && v[a].find_first_not_of( " \t" ) == std::string::npos ) ++a;
+        while( b > a && v[b - 1].find_first_not_of( " \t" ) == std::string::npos )
+            --b;
+        v.erase( v.begin() + b, v.end() );
+        v.erase( v.begin(), v.begin() + a );
     }
 
     void closeOpen()
@@ -595,6 +649,43 @@ private:
                 std::vector<std::string> w = wrapText_( bl.text, width );
                 for( size_t i = 0; i < w.size(); ++i )
                     lines_.push_back( plainLine( w[i], rStatus, (int) b, false ) );
+            }
+            else if( bl.kind == kTool )
+            {
+                // "$ the command", then what it returned. A long result is
+                // capped so one chatty command cannot flood the transcript; the
+                // record is clickable to read the rest (like a thinking block).
+                int  outW = ( width > 12 ) ? width - 2 : width;
+                std::vector<std::string> rl = wrapText_( bl.out, outW );
+                trimBlankRows_( rl );
+                bool   foldable = (int) rl.size() > kToolOutLines;
+                size_t shown = ( foldable && !bl.expanded )
+                                 ? (size_t) kToolOutLines : rl.size();
+
+                // Continuation lines (a multi-line command, an edit's old/new
+                // pair) are indented to line up under the "$ " marker.
+                std::string cmd = "$ ";
+                for( size_t i = 0; i < bl.text.size(); ++i )
+                {
+                    if( bl.text[i] == '\n' ) cmd += "\n  ";
+                    else                     cmd += bl.text[i];
+                }
+                std::vector<std::string> cl = wrapText_( cmd, width );
+                for( size_t i = 0; i < cl.size(); ++i )
+                    lines_.push_back( plainLine( cl[i], rTool, (int) b,
+                                                 foldable ) );
+                for( size_t i = 0; i < shown; ++i )
+                    lines_.push_back( plainLine( "  " + rl[i], rToolOut,
+                                                 (int) b, foldable ) );
+                if( foldable )
+                {
+                    std::string hint = bl.expanded
+                        ? "  (click to collapse)"
+                        : "  .. " + std::to_string(
+                              (unsigned long) (rl.size() - shown) )
+                          + " more lines (click to expand)";
+                    lines_.push_back( plainLine( hint, rHead, (int) b, true ) );
+                }
             }
             else if( bl.kind == kAnswer )
             {
@@ -1294,9 +1385,11 @@ void pollSink_()
     {
         switch( tok.kind )
         {
-            case atui::net::tkThinking: g_transcript_->appendThinking( tok.text ); break;
-            case atui::net::tkStatus:   g_transcript_->appendStatus( tok.text );   break;
-            case atui::net::tkContent:  g_transcript_->appendAnswer( tok.text );   break;
+            case atui::net::tkThinking:   g_transcript_->appendThinking( tok.text );    break;
+            case atui::net::tkStatus:     g_transcript_->appendStatus( tok.text );      break;
+            case atui::net::tkTool:       g_transcript_->appendTool( tok.text );        break;
+            case atui::net::tkToolResult: g_transcript_->appendToolResult( tok.text );  break;
+            case atui::net::tkContent:    g_transcript_->appendAnswer( tok.text );      break;
         }
         gotToken = true;
     }

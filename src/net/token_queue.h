@@ -12,8 +12,19 @@ namespace atui {
 namespace net {
 
 // What kind of transcript item a token represents, so the UI can render each
-// distinctly (answer text, collapsible reasoning, transient tool status).
-enum TokenKind { tkContent = 0, tkThinking = 1, tkStatus = 2 };
+// distinctly (answer text, collapsible reasoning, transient status, a tool call
+// and the result it produced).
+//
+// A tool call arrives as a pair: tkTool announces the call (and is shown as soon
+// as it is made, so a long-running command is visible while it runs), tkToolResult
+// carries the outcome and closes the record.
+enum TokenKind {
+    tkContent    = 0,
+    tkThinking   = 1,
+    tkStatus     = 2,
+    tkTool       = 3,
+    tkToolResult = 4
+};
 
 struct Token {
     std::string text;

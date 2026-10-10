@@ -4,10 +4,12 @@
 // tool call (finish_reason == "tool_calls"), we execute the requested tool(s),
 // append the assistant + tool-result turns, and ask again so the model can
 // produce a final natural-language answer. All of this runs on the worker
-// thread; a status line is pushed to the queue so the UI shows tool activity.
+// thread; every tool call is pushed to the queue as a transcript record (the
+// call, then its outcome) so the UI keeps a record of what was done.
 #include "oai_chat_model.h"
 #include "oai_client.h"
 #include "provider.h"
+#include "tools/preview.h"
 #include "tools/tool_registry.h"
 #include "tools/approval.h"
 #ifdef ATUI_DEBUG_KEYS
@@ -139,6 +141,19 @@ bool OaiChatModel::ask( const std::string &userMessage, const std::string &histo
                 std::string result;
                 bool run = true;
 
+                // Record the call in the transcript the moment it is made, so
+                // what was done stays visible afterwards (a status line only
+                // says something happened) and a slow command can be seen
+                // running. Unknown tools are recorded with their raw arguments.
+                if( queue )
+                {
+                    std::string preview =
+                        tool ? tool->callPreview( tc.arguments )
+                             : tc.name + " "
+                               + atui::tools::previewClip( tc.arguments, 200 );
+                    queue->push( Token( preview, tkTool ) );
+                }
+
                 if( !tool )
                 {
                     result = "error: unknown tool '" + tc.name + "'";
@@ -147,7 +162,9 @@ bool OaiChatModel::ask( const std::string &userMessage, const std::string &histo
                 else if( tool->requiresApproval() )
                 {
                     // Sensitive tool (file write / shell). Ask the user first.
-                    // With no approver installed, or on timeout, we refuse.
+                    // With no approver installed, or on timeout, we refuse. The
+                    // dialog itself is the feedback, so no status token here;
+                    // the decline lands in the transcript record below.
                     atui::tools::Approver *ap = atui::tools::approver();
                     if( !ap )
                     {
@@ -161,10 +178,6 @@ bool OaiChatModel::ask( const std::string &userMessage, const std::string &histo
                             std::make_shared< atui::tools::Approval >();
                         req->tool    = tc.name;
                         req->summary = tool->approvalSummary( tc.arguments );
-                        if( queue )
-                            queue->push( Token( tc.name
-                                                    + ": awaiting your approval…",
-                                                tkStatus ) );
                         run = ap->approve( req );   // blocks this worker thread
                         if( !run )
                             result =
@@ -173,12 +186,12 @@ bool OaiChatModel::ask( const std::string &userMessage, const std::string &histo
                 }
 
                 if( run )
-                {
-                    if( queue )
-                        queue->push( Token( "calling " + tc.name + "...",
-                                            tkStatus ) );
                     result = tool->execute( tc.arguments );
-                }
+
+                // The outcome closes the record: exit code and output for a
+                // command, the edit summary for a file change, or the refusal.
+                if( queue )
+                    queue->push( Token( result, tkToolResult ) );
 
                 OaiMessage tr;
                 tr.role = "tool";

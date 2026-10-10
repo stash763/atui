@@ -21,6 +21,9 @@ public:
     std::string execute( const std::string &argumentsJson ) override;
     bool requiresApproval() const override { return true; }
     std::string approvalSummary( const std::string &argumentsJson ) const override;
+    // Transcript record: which file, and the old → new text, escaped onto lines
+    // so a multi-line replacement still reads as two lines.
+    std::string callPreview( const std::string &argumentsJson ) const override;
 };
 
 // Shared instance used by registerDefaults().

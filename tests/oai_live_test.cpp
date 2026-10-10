@@ -114,6 +114,7 @@ bool blank( const std::string &s )
 struct Streamed
 {
     std::string content, thinking, status;
+    std::string tool;    // tool records, marked: "call<...>" / "out<...>"
 };
 
 // Sends `prompt` and keeps draining while the worker streams. Returns false if
@@ -130,9 +131,11 @@ bool askLive( const std::string &prompt, Streamed &out, int timeoutMs )
         atui::net::Token t;
         while( q.pop( t ) )
         {
-            if( t.kind == atui::net::tkThinking )    out.thinking += t.text;
-            else if( t.kind == atui::net::tkStatus ) out.status   += t.text;
-            else                                     out.content  += t.text;
+            if( t.kind == atui::net::tkThinking )       out.thinking += t.text;
+            else if( t.kind == atui::net::tkStatus )    out.status   += t.text;
+            else if( t.kind == atui::net::tkTool )      out.tool += "call<" + t.text + ">\n";
+            else if( t.kind == atui::net::tkToolResult ) out.tool += "out<" + t.text + ">\n";
+            else                                        out.content  += t.text;
         }
     };
 
@@ -265,10 +268,17 @@ int test_live_tool_round_trip()
                            got.status + " answer: " + got.content + " )") );
         return -2;
     }
-    if( got.status.find( "calling live_probe" ) == std::string::npos )
+    // The record has to say which tool ran and what it returned: it is the only
+    // lasting trace of the call once the (here unnecessary) dialog is gone.
+    if( got.tool.find( "call<live_probe" ) == std::string::npos )
     {
-        note( "tool ran but no status line was pushed: " + got.status );
+        note( "tool ran but no transcript record was pushed: " + got.tool );
         return -3;
+    }
+    if( got.tool.find( kProbeResult ) == std::string::npos )
+    {
+        note( "transcript record has no result for the call: " + got.tool );
+        return -5;
     }
     if( got.content.find( kProbeResult ) == std::string::npos )
     {

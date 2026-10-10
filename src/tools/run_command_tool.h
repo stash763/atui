@@ -21,6 +21,9 @@ public:
     std::string execute( const std::string &argumentsJson ) override;
     bool requiresApproval() const override { return true; }
     std::string approvalSummary( const std::string &argumentsJson ) const override;
+    // The transcript record is the command itself, so it reads like a shell
+    // history line ("$ make test") and multi-line commands stay readable.
+    std::string callPreview( const std::string &argumentsJson ) const override;
 };
 
 // Shared instance used by registerDefaults().

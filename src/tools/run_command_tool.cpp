@@ -1,6 +1,7 @@
 // Implementation of the run_command tool. See run_command_tool.h.
 #include "tools/run_command_tool.h"
 #include "tools/json_args.h"
+#include "tools/preview.h"
 
 #include <cstdio>
 #include <sstream>
@@ -23,20 +24,6 @@ namespace {
 // Bound captured output so a chatty command cannot blow up memory or the
 // transcript. Everything past this is discarded (the child is still drained).
 const std::size_t kMaxOutput = 200 * 1024;
-
-std::string clip( const std::string &s, std::size_t max )
-{
-    std::string flat;
-    for( std::size_t i = 0; i < s.size() && flat.size() < max; ++i )
-    {
-        char c = s[i];
-        if( c == '\n' || c == '\r' ) flat += ' ';
-        else if( (unsigned char) c < 32 ) flat += '?';
-        else flat += c;
-    }
-    if( s.size() > max ) flat += "...";
-    return flat;
-}
 
 } // anonymous namespace
 
@@ -83,7 +70,7 @@ std::string RunCommandTool::execute( const std::string &argumentsJson )
 #endif
     FILE *pipe = ATUI_POPEN( shellCmd.c_str(), "r" );
     if( !pipe )
-        return "run_command: failed to start '" + clip( command, 80 ) + "'";
+        return "run_command: failed to start '" + oneLineClip( command, 80 ) + "'";
 
     std::string out;
     bool truncated = false;
@@ -141,7 +128,18 @@ std::string RunCommandTool::approvalSummary( const std::string &argumentsJson ) 
     jsonStringArg( argumentsJson, "command", command );
     if( command.empty() )
         return "Run a shell command (no command given)";
-    return "Run command:\n  $ " + clip( command, 200 );
+    return "Run command:\n  $ " + oneLineClip( command, 200 );
+}
+
+std::string RunCommandTool::callPreview( const std::string &argumentsJson ) const
+{
+    std::string command;
+    jsonStringArg( argumentsJson, "command", command );
+    if( command.empty() )
+        return "run_command  (no command given)";
+    // The transcript shows this after a "$ " marker, one shell command line per
+    // line of the preview.
+    return previewClip( command, kMaxPreview );
 }
 
 RunCommandTool g_runCommandTool;

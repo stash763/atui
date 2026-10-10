@@ -21,7 +21,9 @@ enum Role
     rUser,         // the "> you" prompt line
     rThinking,     // reasoning block body
     rHead,         // collapsible block header
-    rStatus,       // tool / status line
+    rStatus,       // status line
+    rTool,         // a tool call recorded in the transcript ("$ command")
+    rToolOut,      // what that tool returned
 
     // Inline markdown.
     rHeading,      // # heading text
