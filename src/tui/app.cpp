@@ -661,6 +661,12 @@ public:
     {
         options |= ofSelectable;
         eventMask |= evMouseDown;
+        // TView does NOT ask for a text caret - its state is just sfVisible, and
+        // TView::resetCursor() (computeCaretSize) only places the terminal caret
+        // when sfVisible|sfCursorVis|sfFocused are all set. Widgets that take
+        // text set the flag themselves (see TInputLine), so a custom editor has
+        // to call showCursor() or setCursor() silently does nothing.
+        showCursor();
     }
 
     // The buffer contents (bytes).
@@ -698,6 +704,9 @@ public:
         if( visRows < 1 ) visRows = 1;
         int cr = 0, cc = 0;
         caretPos( cr, cc );
+        // A row that is exactly as wide as the view leaves no cell at column
+        // size.x, and a caret outside the view is dropped instead of drawn.
+        if( cc > size.x - 1 ) cc = size.x - 1;
         // Don't allow scrolling past the last wrapped row (e.g. right after the
         // panel grew and top_ was left over from a shorter height).
         int maxTop = (int) rows_.size() - visRows;
@@ -721,7 +730,10 @@ public:
         if( (state & sfFocused) && cr >= top_ && cr < top_ + visRows )
             setCursor( cc, (short)(cr - top_ + 1) );
         else
-            hideCursor();
+            // Park the caret outside the view instead of calling hideCursor():
+            // that clears sfCursorVis permanently (only TInputLine ever puts it
+            // back), so the caret would never return after the first refocus.
+            setCursor( -1, -1 );
     }
 
     virtual void handleEvent( TEvent &event )
@@ -834,12 +846,16 @@ protected:
         cursor_ = start + col;
     }
 
-    // Byte offset where wrapped row i begins.
+    // Byte offset where wrapped row i begins. This has to come from the table
+    // rewrap() builds, not from summing the row lengths: a wrap that breaks on
+    // a space drops that space from the row, so the lengths no longer add up to
+    // the buffer offsets (each dropped space shifted the caret one column left
+    // on every wrapped row below it).
     size_t rowStart( int i )
     {
-        size_t s = 0;
-        for( int k = 0; k < i; ++k ) s += rows_[k].size();
-        return s;
+        if( i >= 0 && i < (int) rowOfs_.size() )
+            return rowOfs_[i];
+        return buf_.size();
     }
 
     // UTF-8 aware caret stepping: treat continuation bytes (0x80..0xBF) as part
@@ -869,8 +885,9 @@ protected:
     void rewrap( int w )
     {
         rows_.clear();
+        rowOfs_.clear();
         if( w < 1 ) w = 1;
-        if( buf_.empty() ) { rows_.push_back( std::string() ); return; }
+        if( buf_.empty() ) { rows_.push_back( std::string() ); rowOfs_.push_back( 0 ); return; }
 
         size_t i = 0, n = buf_.size();
         while( i < n )
@@ -878,6 +895,7 @@ protected:
             if( (int)(n - i) <= w )
             {
                 rows_.push_back( buf_.substr( i ) );
+                rowOfs_.push_back( i );
                 break;
             }
             size_t brk = i + w;               // one past the last column
@@ -889,6 +907,7 @@ protected:
             else
                 rowEnd = brk;                   // hard wrap
             rows_.push_back( buf_.substr( i, rowEnd - i ) );
+            rowOfs_.push_back( i );
             i = rowEnd;
             if( i < n && buf_[i] == ' ' ) ++i;  // skip the break space
         }
@@ -909,7 +928,8 @@ protected:
     std::string              buf_;
     size_t                   cursor_;
     int                      top_;         // first visible wrapped row
-    std::vector<std::string> rows_;
+    std::vector<std::string> rows_;        // wrapped display rows
+    std::vector<size_t>      rowOfs_;      // byte offset each wrapped row starts at
 };
 
 

@@ -589,6 +589,11 @@ Behavior:
   terminals (and bracketed paste) deliver the character only in `text` with
   `keyCode == 0`. Control bytes are skipped so Enter/Esc/accelerators still
   reach `TApp`.
+- The caret is the **real terminal cursor**: `draw()` maps the logical caret to a
+  cell and calls `setCursor( col, row )` (row + 1 because row 0 is the
+  separator). A caret sitting one past the last column of a full row is clamped
+  onto that column — the view has no cell beyond it, and a caret outside the view
+  is dropped rather than drawn.
 
 Focus & plumbing notes (learned via `tui-test`):
 
@@ -615,13 +620,35 @@ Focus & plumbing notes (learned via `tui-test`):
 - The 50 ms timer (network build) calls `relayoutPanels_()`, which re-reads the
   live `deskTop` size and therefore **self-heals the split after a terminal
   resize**.
+- **A custom text view has to ask for a caret with `showCursor()`.** `TView`'s
+  state is just `sfVisible`, and `TView::resetCursor()` (`computeCaretSize`) only
+  moves the terminal caret when `sfVisible | sfCursorVis | sfFocused` are all
+  set — `sfCursorVis` is set by `TInputLine` itself, never by `TView`. Without it
+  `setCursor()` is accepted and silently ignored: the prompt worked but showed no
+  caret. For the same reason the "no caret here" branch parks the cursor off-view
+  (`setCursor( -1, -1 )`) instead of calling `hideCursor()`, which clears
+  `sfCursorVis` for good — nothing would put it back when the view is focused
+  again (e.g. after closing a dialog).
+- `rewrap()` records the buffer offset of every wrapped row (`rowOfs_`) because
+  those offsets cannot be recovered by summing the row lengths: wrapping on a
+  space drops that space from the row, so each wrap shifted the caret one column
+  left on every row below it.
 
 Manual verification:
 
-    tui-test run --cols 80 --rows 24 -- ./build/atui
+    tui-test run --session c --cols 80 --rows 24 -- ./build/atui
     tui-test write "a long line that must wrap onto several visual rows ..."
     # the box grows; press Enter (key press Enter) -> submits and collapses back.
     tui-test resize 50 12        # network build re-tiles within ~50 ms.
+
+The caret is easiest checked through `tui-test state`, which reports the terminal
+cursor (note that `key press Alt-H` types the literal text — the key is `Alt+H`):
+
+    tui-test state --session c | grep '^cursor'   # visible:true, x/y = caret cell
+    tui-test write "hello"     # x advances to 5; Home/Left -> 0, End -> 5
+    # wrap a long line: x must land just past the last character of the last row
+    tui-test key press Alt+H   # About opens -> visible:false
+    tui-test key press Esc     # closed again -> visible:true (flag not lost)
 
 
 ## Color scheme design (follows the tvision examples)
