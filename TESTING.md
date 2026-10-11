@@ -18,7 +18,7 @@ Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
 - `ATUI_THEME` — `dark` (default) or `classic`; also switchable at runtime via
   `File ▸ Options ▸ Theme...` (Alt-T), which opens a radio-button dialog.
 - `ATUI_REQUEST_MINUTES` — how long one request may take before atui gives up on
-  it (default 120; also `Options ▸ Request timeout...`, Alt-Q). Unset, empty or
+  it (default 120; also `File ▸ Options ▸ Settings...`, Alt-I). Unset, empty or
   unparseable keeps the default.
 - `ATUI_CONFIG` — override the config file path (see Settings persistence).
 
@@ -676,7 +676,7 @@ interpreted in reasoning), `thinking: body code block` (rows, roles, backgrounds
 and the three-column indent) and `thinking: body unclosed fence`.
 
 
-## Mouse wheel scrolling (Options > Scrolling)
+## Mouse wheel scrolling (Options > Settings)
 
 One wheel notch moves the transcript `[ui] wheel_lines` lines - **3 by default**,
 clamped to 1-30 (`settings::clampWheelLines`, which every value passes through:
@@ -684,28 +684,14 @@ config file, dialog, or an edit by hand). The wheel is where most scrolling
 actually happens, so it is the one scroll setting worth a dialog; PgUp/PgDn and
 dragging the bar keep TVision's own steps.
 
-**Options > Scrolling...** (Alt-R, in the Options submenu):
-
-- Preset radio buttons (1 / 2 / 3 / 5 / 8) that *fill in the number field*:
-  clicking one, arrowing to it, or typing its digit writes its number.
-- The field is what **OK** applies, any value in the range - a preset can never
-  silently disagree with what ends up saved. A step that is not one of the
-  presets (a config file saying `4`) opens showing exactly 4 with the nearest
-  preset lit.
-- OK persists to the config file; Cancel/Esc leaves it alone, and so does a
-  field with no digits in it (cleared by mistake) rather than jumping to the
-  slowest setting.
-
-(The dialog itself is the shared `PresetNumberDialog` described under "How long a
-request may take".)
-
-No restart needed: the transcript reads the value on every wheel event.
+`File ▸ Options ▸ Settings...` (Alt-I) edits it - see "The Settings dialog"
+below. No restart needed either way: the transcript reads the value on every
+wheel event.
 
 Verified in the TUI against a transcript of numbered rows - a streamed answer of
 `ROW 001..ROW 080` inside a fenced block, so each row is exactly one line - with
 `wheel_lines` 1 / 3 / 5 / 30: one notch moved the top row back by 1 / 3 / 5 / 30
-rows. The dialog's presets, arrow-key stepping, digit hotkey, apply-and-save,
-and Cancel-writes-nothing were all clicked through with `tui-test`.
+rows.
 
 Gotchas found doing it:
 
@@ -725,7 +711,7 @@ Gotchas found doing it:
   anyway.
 
 
-## How long a request may take (Options > Request timeout)
+## How long a request may take (Options > Settings)
 
 The whole request has to finish inside one curl timeout - connect, thinking, and
 every streamed token - and a model that is still reasoning holds the connection
@@ -744,31 +730,87 @@ thinking model: `CURLOPT_CONNECTTIMEOUT` (30 s) and the model-list GET (20 s).
 A failed request is also finally *reported*: the transcript gets a status line
 with the reason, naming the limit and where to change it,
 
-    request failed: gave up after 1 min waiting for the server (Options > Request timeout)
+    request failed: gave up after 1 min waiting for the server (Options > Settings)
 
 where before the reply simply stopped and it looked like the app had hung up.
 `OaiClient::request()` takes an optional `err` out-param for this
 (`curl_easy_strerror()` for everything that is not a timeout).
 
-**Options > Request timeout...** (Alt-Q) edits it: presets 5 / 15 / 30 / 60 /
-120 (default) above a number field, same shape as Scrolling - and the same
-dialog: `PresetNumberDialog` is the shared "one number" dialog (a
-`NumberOption` description: title, question, field label, unit, presets, value,
-default to mark, hint). The field is what OK applies, presets only fill it in,
-Cancel changes nothing, and a field with no digits in it is treated as "no
-change" rather than as zero.
+`File ▸ Options ▸ Settings...` (Alt-I) edits the wait - see "The Settings dialog"
+below.
 
 Verified with a canned SSE server that sleeps 90 s before sending its first
 byte: `request_minutes = 1` cut the request off at exactly 60 s with the timeout
-status line above; `request_minutes = 2` let the same answer arrive normally. The
-dialog's presets, typing into the field, apply-and-persist and Cancel were
-clicked through with `tui-test`.
+status line above; `request_minutes = 2` let the same answer arrive normally.
 
 Test coverage (`--self-test`, both builds): `settings: request minutes` - the
 default (120) and its being inside the range, the clamp at both ends, reading
 `[app] request_minutes`, saving it back, an out-of-range value read as the
 nearest wait that works, and a missing or unparseable key leaving the wait
 already in force.
+
+
+## The Settings dialog (File > Options > Settings)
+
+The numeric preferences live in one dialog (`SettingsDialog` in `src/tui/app.cpp`,
+opened by `TApp::showSettings()` on `CmdSettings`, Alt-I):
+
+```
+┌────────────────────── Options - Settings ───────────────────────┐
+│                                                                 │
+│  Mouse wheel, lines/notch:    3      1 to 30                    │
+│                                                                 │
+│  Request timeout, minutes:    1440   1 to 1440                  │
+│                                                                 │
+│  One wheel notch scrolls the chat by that many lines;           │
+│  the timeout is how long to wait for the server on a            │
+│  prompt - per request, so a tool round gets it again.           │
+│  A field with no number in it keeps the value it has.           │
+│                                                                 │
+│                    OK          Cancel                           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+Plain entries, nothing to pick from. Scrolling and the request wait each had
+their own menu entry and their own dialog with radio-button presets, which meant
+two dialogs to remember and a short list of guesses about how fast a wheel should
+be or how long a model may think. What is left is the number: **each field prints
+the range it accepts**, since there is no longer a list to imply it.
+
+The rules, all of them per field:
+
+ - **OK** applies both fields, each clamped into the range it prints (5000 minutes
+   becomes 1440, 99 lines becomes 30), then saves both.
+ - A field with no digits in it - cleared by mistake - keeps the setting it has,
+   so a half-edited dialog loses nothing rather than jumping to an extreme.
+ - Cancel/Esc applies nothing at all.
+ - The wheel step takes effect on the next notch (the transcript reads the value
+   per event); the wait on the next request. Neither needs a restart.
+
+Adding a setting means one label, one field, one range, and one line in
+`showSettings()` - which is the point of keeping them in one place.
+
+Gotchas found doing it:
+
+ - A `TInputLine`'s constructor limit **counts the terminating NUL**, and the
+   widget spends its **first and last column on scroll arrows**. So `n` digits
+   need a limit of `n + 1` and a field `n + 2` columns wide; asking for 4 digits
+   in a 5 column field let only 3 through, silently - `1440` could not be typed
+   and `1441` came back as `144`. The fields here hold 5 digits in 7 columns, and
+   `SettingsDialog`'s constructor says so where they are built.
+ - Backspace in a `TInputLine` deletes *before the caret*, and a click puts the
+   caret where it was clicked rather than at the end (no select-all on click). A
+   test that clicks mid-value and backspaces twice is not clearing the field -
+   press End first.
+ - `tui-test` clicks on a field: aim at its text, not its leftmost column, and
+   confirm with `state` (the cursor is `visible: true` only once the field has
+   focus) before concluding the dialog is broken.
+
+Verified with `tui-test`: 4-digit `1440` typed and stored; `5000` → `1440` and
+wheel `99` → `30` through the clamp; one OK applying both fields (45 and 6); an
+empty wheel field leaving `wheel_lines = 30` while the timeout in the same dialog
+was applied; Escape leaving both alone; and `File ▸ Options` showing
+Providers / Settings / ─ / Theme with the two old entries gone.
 
 
 ## Prompt input (wrapping + auto-grow)

@@ -311,7 +311,7 @@ bool OaiClient::request( const std::string &baseUrl,
             char msg[ 128 ];
             snprintf( msg, sizeof msg,
                       "gave up after %d min waiting for the server "
-                      "(Options > Request timeout)", requestMinutes() );
+                      "(Options > Settings)", requestMinutes() );
             *err = msg;
         }
         else
