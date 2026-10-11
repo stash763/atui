@@ -590,6 +590,19 @@ blocks. Behavior:
 - Colors (via `TranscriptView::mapColor`): answer = yellow, thinking text = dim
   slate, thinking header = cyan, user = green, tool status = amber (dark theme;
   distinct BIOS attrs in classic).
+- **Fenced code blocks inside reasoning are recognized.** Models routinely think
+  *in* code — a snippet they are about to write, a command, a diff — and as
+  prose that is unreadable. `tui/thinking.cpp:splitThinking` cuts the reasoning
+  into prose and `` ``` ``/`~~~` segments (the fence lines themselves are not
+  shown); `renderThinkingBody` lays the prose out as plain `rThinking` text and
+  hands each code segment to the markdown/syntax pipeline, so it gets exactly
+  what an answer's code block gets: highlighting plus the code background
+  filling the row. Everything stays indented three columns, so the block still
+  reads as one piece. Nothing else in reasoning is interpreted — `**bold**` and
+  `` `inline` `` stay literal, only fences are. An unterminated fence (normal
+  mid-stream) renders as code to the end, and a fence whose body contains
+  backticks is re-fenced one character longer, so the snippet cannot close
+  itself.
 - Scrolling: mouse wheel, or click/drag the vertical scrollbar; auto-follows the
   bottom while streaming until you scroll up.
 - Whether thinking is stored and replayed to the model on later turns is the
@@ -600,6 +613,42 @@ blocks. Behavior:
 from a real thinking model) and against the localhost mock SSE server: a question
 renders `[+] thinking (228 chars)  click/Ctrl-T to expand`, and expanding shows
 the model's step-by-step reasoning above the answer.
+
+To see a code block inside reasoning deterministically (whether a real model
+puts one there is up to the model), serve a canned SSE response whose
+`reasoning_content` contains a fenced block and point a provider at it:
+
+```python
+# fake_sse.py - reasoning with a ```c block, then an answer
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+REASONING = ("Let me write the helper first:\n```c\n"
+             "int sum(int n) {\n    int s = 0;   // accumulate\n"
+             "    return s;\n}\n```\nand that is it.\n")
+
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        emit = lambda o: self.wfile.write(b"data: " + json.dumps(o).encode() + b"\n\n")
+        emit({"choices": [{"index": 0, "delta": {"role": "assistant",
+                                                 "reasoning_content": REASONING}}]})
+        emit({"choices": [{"index": 0, "delta": {"content": "Answer: 30.\n"}}]})
+        emit({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+        self.wfile.write(b"data: [DONE]\n\n"); self.wfile.flush()
+    def log_message(self, *a): pass
+
+HTTPServer(("127.0.0.1", 8799), H).serve_forever()
+```
+
+with `base_url = http://127.0.0.1:8799/v1` and `[ui] thinking_expand = true`.
+Checked with `tui-test cells` (it reports the truecolour the app emits, unlike a
+screenshot): the prose rows carry the normal background `#152238`, the code rows
+the code background `#0c1626` edge-to-edge — including the three-column indent —
+with `int` in the keyword colour, `sum` as a function, `0` as a number and
+`// accumulate` as a comment, and the prose after the block back on normal.
 
 > Note: `tui-test key press Ctrl+T` does reach the app (verified 2026-10-10; an
 > older note here said Ctrl-T could not be injected — that was with an older
@@ -612,7 +661,14 @@ Test coverage (`--self-test`, network build):
 (content/reasoning separated, callback routing), `oai: chat thinking` (queued
 as `tkThinking`/`tkContent`), `oai: chat resend off/on` (the `reasoning_content`
 is replayed only when the option is on), and `live: reasoning` against a real
-reasoning server.
+reasoning server. The segmentation and layout have their own tests, offline and
+in both builds: `thinking: prose only`, `thinking: code between prose` (info
+string, indent, fence lines dropped), `thinking: unclosed fence`,
+`thinking: fence length rules` (a shorter run cannot close a block; a fence line
+with a trailing word is content), `thinking: fenced markdown renders` (the
+re-fence grows past backticks inside), `thinking: body prose` (markdown is *not*
+interpreted in reasoning), `thinking: body code block` (rows, roles, backgrounds
+and the three-column indent) and `thinking: body unclosed fence`.
 
 
 ## Prompt input (wrapping + auto-grow)

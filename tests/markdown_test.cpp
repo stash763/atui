@@ -3,6 +3,7 @@
 #include "tui/markdown.h"
 #include "tui/md_style.h"
 #include "tui/syntax.h"
+#include "tui/thinking.h"
 
 #include <string>
 #include <vector>
@@ -169,6 +170,148 @@ int test_md_unclosed_fence()
     return 0;
 }
 
+// --- thinking text: prose/code segmentation ---------------------------------
+
+using atui::tui::splitThinking;
+using atui::tui::fencedMarkdown;
+using atui::tui::ThinkingSeg;
+
+int test_thinking_prose_only()
+{
+    std::vector<ThinkingSeg> s = splitThinking( "just reasoning\nover two lines" );
+    if( s.size() != 1 ) return -1;
+    if( s[0].code ) return -2;
+    if( s[0].text != "just reasoning\nover two lines" ) return -3;
+    if( splitThinking( "" ).size() != 0 ) return -4;
+    return 0;
+}
+
+int test_thinking_code_between_prose()
+{
+    std::vector<ThinkingSeg> s = splitThinking(
+        "look:\n```cpp\nint x;\n```\nso yes\n" );
+    if( s.size() != 3 ) return -1;
+    if( s[0].code || s[0].text != "look:\n" ) return -2;
+    if( !s[1].code || s[1].info != "cpp" || s[1].text != "int x;\n" ) return -3;
+    if( s[2].code || s[2].text != "so yes\n" ) return -4;
+
+    // Indented fences count, and only the first info word is the language.
+    s = splitThinking( "  ```python title=x\ncode\n  ```\n" );
+    if( s.size() != 1 ) return -5;
+    if( !s[0].code || s[0].info != "python" || s[0].text != "code\n" ) return -6;
+    return 0;
+}
+
+int test_thinking_unclosed_fence_streams_as_code()
+{
+    // Caught mid-block, everything after the fence is code.
+    std::vector<ThinkingSeg> s = splitThinking( "typing\n```\nabc\n" );
+    if( s.size() != 2 ) return -1;
+    if( !s[1].code || s[1].text != "abc\n" ) return -2;
+
+    // Tildes work too, and a body with no final newline keeps none.
+    s = splitThinking( "x\n~~~sh\ncd /tmp" );
+    if( s.size() != 2 ) return -3;
+    if( !s[1].code || s[1].info != "sh" || s[1].text != "cd /tmp" ) return -4;
+    return 0;
+}
+
+int test_thinking_fence_length_rules()
+{
+    // A shorter run inside a block cannot close it (CommonMark).
+    std::vector<ThinkingSeg> s = splitThinking( "````\n```\nstill code\n````\nafter\n" );
+    if( s.size() != 2 ) return -1;
+    if( !s[0].code || s[0].text != "```\nstill code\n" ) return -2;
+    if( s[1].code || s[1].text != "after\n" ) return -3;
+
+    // A fence-looking line with a trailing word does not close a block.
+    s = splitThinking( "```c\nx\n``` more\ny\n```\nz\n" );
+    if( s.size() != 2 || !s[0].code ) return -4;
+    if( s[0].text != "x\n``` more\ny\n" ) return -5;
+    if( s[1].text != "z\n" ) return -6;
+    return 0;
+}
+
+int test_thinking_fenced_markdown_renders()
+{
+    // The fence used for re-rendering is longer than anything inside, so the
+    // code cannot close its own block.
+    ThinkingSeg c;
+    c.code = true; c.info = "python"; c.text = "def f():\n    return 1\n";
+    std::string md = fencedMarkdown( c );
+    if( md != "```python\ndef f():\n    return 1\n```\n" ) return -1;
+
+    std::vector<Line> ls = render( md, 40 );
+    if( !hasRoleText( ls, atui::tui::rKeyword, "def" ) ) return -2;
+    if( !hasRoleText( ls, atui::tui::rKeyword, "return" ) ) return -3;
+    for( size_t i = 0; i < ls.size(); ++i )
+        if( ls[i].bg != atui::tui::rCode ) return -4;   // code background rows
+
+    // Backticks inside the code: the fence grows past them.
+    c.info = "cpp"; c.text = "auto f = `` ``` ``;\n";
+    md = fencedMarkdown( c );
+    if( md != "````cpp\nauto f = `` ``` ``;\n````\n" ) return -5;
+    ls = render( md, 60 );
+    if( !anyContains( ls, "```" ) ) return -6;
+
+    // A body missing its final newline still closes cleanly.
+    c.info = ""; c.text = "plain";
+    if( fencedMarkdown( c ) != "```\nplain\n```\n" ) return -7;
+    return 0;
+}
+
+int test_thinking_body_prose()
+{
+    // Reasoning is laid out as indented plain text with a normal background.
+    std::vector<Line> ls = atui::tui::renderThinkingBody( "line one\nline two\n", 40 );
+    if( ls.size() != 3 ) return -1;             // two lines + the trailing blank
+    if( textOf( ls[0] ) != "   line one" ) return -2;
+    if( textOf( ls[1] ) != "   line two" ) return -3;
+    if( !hasRole( ls[0], atui::tui::rThinking ) ) return -4;
+    if( ls[0].bg != atui::tui::rNormal ) return -5;
+
+    // Only code blocks are interpreted: markdown syntax stays as typed.
+    ls = atui::tui::renderThinkingBody( "# not a heading, **not bold**\n", 60 );
+    if( ls.empty() || textOf( ls[0] ) != "   # not a heading, **not bold**" )
+        return -6;
+    if( hasRole( ls[0], atui::tui::rHeading ) ) return -7;
+    return 0;
+}
+
+int test_thinking_body_code_block()
+{
+    std::vector<Line> ls = atui::tui::renderThinkingBody(
+        "let me write:\n```python\ndef f(x):\n    return x\n```\nso that is it\n",
+        40 );
+    // Fence markers never reach the screen.
+    if( anyContains( ls, "```" ) ) return -1;
+    // prose, two code rows, then prose again.
+    if( ls.size() != 5 ) return -2;
+    if( textOf( ls[0] ) != "   let me write:" ) return -3;
+    if( ls[0].bg != atui::tui::rNormal ) return -4;
+    if( textOf( ls[1] ) != "   def f(x):" ) return -5;
+    if( ls[1].bg != atui::tui::rCode || ls[2].bg != atui::tui::rCode ) return -6;
+    if( !hasRoleText( ls, atui::tui::rKeyword, "def" ) ) return -7;
+    if( !hasRoleText( ls, atui::tui::rKeyword, "return" ) ) return -8;
+    if( textOf( ls[3] ) != "   so that is it" ) return -9;
+    if( ls[3].bg != atui::tui::rNormal ) return -10;
+    // Every row keeps the three-column reasoning indent.
+    for( size_t i = 0; i < ls.size(); ++i )
+        if( textOf( ls[i] ).compare( 0, 3, "   " ) != 0 ) return -11;
+    return 0;
+}
+
+int test_thinking_body_unclosed_fence()
+{
+    // Mid-stream: the reasoning so far after an open fence is code.
+    std::vector<Line> ls = atui::tui::renderThinkingBody( "think\n```\nx = 1\n", 40 );
+    if( ls.size() != 2 ) return -1;
+    if( ls[0].bg != atui::tui::rNormal ) return -2;
+    if( ls[1].bg != atui::tui::rCode ) return -3;
+    if( textOf( ls[1] ) != "   x = 1" ) return -4;
+    return 0;
+}
+
 int test_md_code_bg_and_blank_lines()
 {
     // Code rows must carry the code background role (so the fill spans the
@@ -267,6 +410,14 @@ void init_markdown_tests()
     register_test( "syntax: detect lang", &test_detect_lang );
     register_test( "syntax: block comment state", &test_syntax_block_comment_state );
     register_test( "syntax: json keys", &test_syntax_json_keys );
+    register_test( "thinking: prose only", &test_thinking_prose_only );
+    register_test( "thinking: code between prose", &test_thinking_code_between_prose );
+    register_test( "thinking: unclosed fence", &test_thinking_unclosed_fence_streams_as_code );
+    register_test( "thinking: fence length rules", &test_thinking_fence_length_rules );
+    register_test( "thinking: fenced markdown renders", &test_thinking_fenced_markdown_renders );
+    register_test( "thinking: body prose", &test_thinking_body_prose );
+    register_test( "thinking: body code block", &test_thinking_body_code_block );
+    register_test( "thinking: body unclosed fence", &test_thinking_body_unclosed_fence );
 }
 
 } // namespace atui_test

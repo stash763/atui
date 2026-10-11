@@ -35,6 +35,10 @@ set(ATUI_SOURCES
     # Markdown + syntax highlighting for the transcript. Network-independent.
     "${ATUI_SRC_DIR}/tui/markdown.cpp"
     "${ATUI_SRC_DIR}/tui/syntax.cpp"
+    # Reasoning text: prose/code segmentation (code gets the treatment above).
+    "${ATUI_SRC_DIR}/tui/thinking.cpp"
+    # The wrapping rule shared by the transcript, the approval box and thinking.
+    "${ATUI_SRC_DIR}/tui/wrap.cpp"
     "${ATUI_SRC_DIR}/core/string.cpp"
     "${ATUI_SRC_DIR}/core/ai.cpp"
     # Settings persistence: INI helper + glue. Always built so provider/theme

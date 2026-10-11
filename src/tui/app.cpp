@@ -56,6 +56,8 @@
 #include "tui/theme.h"
 #include "tui/md_style.h"
 #include "tui/markdown.h"
+#include "tui/thinking.h"
+#include "tui/wrap.h"
 #include "net/provider.h"
 #include "settings/settings.h"
 
@@ -119,53 +121,11 @@ namespace {
 
 // --- text helpers -------------------------------------------------------------
 
-// Wrap one logical string (split on '\n') into display rows of `width` columns,
-// breaking on spaces where possible and hard-breaking over-long words. Used by
-// the transcript and by the tool-approval box.
-static void wrapOne_( const std::string &seg, int width,
-                      std::vector<std::string> &out )
-{
-    if( width < 1 ) width = 1;
-    if( seg.empty() ) { out.push_back( "" ); return; }
-    size_t i = 0, n = seg.size();
-    while( i < n )
-    {
-        size_t k = i, cnt = 0, lastSpace = std::string::npos;
-        while( k < n && cnt < (size_t) width )
-        {
-            if( seg[k] == ' ' ) lastSpace = k;
-            ++k; ++cnt;
-        }
-        if( k < n && lastSpace != std::string::npos && lastSpace > i )
-        {
-            out.push_back( seg.substr( i, lastSpace - i ) );
-            i = lastSpace + 1;
-            while( i < n && seg[i] == ' ' ) ++i;
-        }
-        else
-        {
-            out.push_back( seg.substr( i, k - i ) );
-            i = k;
-        }
-    }
-}
-
-// The same for a whole string: each '\n' starts a new row, so blank lines in the
-// input stay blank rows in the output.
+// Wrapping lives in tui/wrap.{h,cpp}, shared with the reasoning renderer; this
+// keeps the transcript's and the approval box's callsites short.
 static std::vector<std::string> wrapText_( const std::string &s, int width )
 {
-    std::vector<std::string> out;
-    size_t start = 0;
-    while( true )
-    {
-        size_t nl = s.find( '\n', start );
-        std::string seg = ( nl == std::string::npos )
-            ? s.substr( start ) : s.substr( start, nl - start );
-        wrapOne_( seg, width, out );
-        if( nl == std::string::npos ) break;
-        start = nl + 1;
-    }
-    return out;
+    return atui::tui::wrapText( s, width );
 }
 
 // Module helpers (outer namespace; definitions appear after TApp).
@@ -623,6 +583,16 @@ private:
         v.erase( v.begin(), v.begin() + a );
     }
 
+    // The body of an expanded thinking block. Everything about how reasoning
+    // looks - plain prose, code blocks like an answer's, three-column indent -
+    // lives in tui/thinking.cpp, where it can be tested without a terminal.
+    void emitThinking_( const Block &bl, int b, int width )
+    {
+        std::vector<Line> body = atui::tui::renderThinkingBody( bl.text, width );
+        for( size_t i = 0; i < body.size(); ++i )
+            lines_.push_back( RLine( body[i].spans, b, true, body[i].bg ) );
+    }
+
     void closeOpen()
     {
         for( size_t i = 0; i < blocks_.size(); ++i )
@@ -716,12 +686,7 @@ private:
                 for( size_t i = 0; i < hw.size(); ++i )
                     lines_.push_back( plainLine( hw[i], rHead, (int) b, true ) );
                 if( bl.expanded )
-                {
-                    std::vector<std::string> bw = wrapText_( bl.text, width - 3 );
-                    for( size_t i = 0; i < bw.size(); ++i )
-                        lines_.push_back(
-                            plainLine( "   " + bw[i], rThinking, (int) b, true ) );
-                }
+                    emitThinking_( bl, (int) b, width );
             }
         }
 
