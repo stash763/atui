@@ -243,5 +243,35 @@ void replaceProviders( const std::vector<ProviderSettings> &list,
     }
 }
 
+namespace {
+
+// A whole-number environment variable, or `fallback` when it is unset, empty
+// or not a number.
+int envMinutes( const char *name, int fallback )
+{
+    const char *v = getenv( name );
+    if( !v || !v[0] ) return fallback;
+    char *end = 0;
+    const long n = std::strtol( v, &end, 10 );
+    if( end == v ) return fallback;
+    return (int) n;
+}
+
+} // anonymous namespace
+
+int &requestMinutes()
+{
+    static int minutes = clampRequestMinutes(
+        envMinutes( "ATUI_REQUEST_MINUTES", kDefaultRequestMinutes ) );
+    return minutes;
+}
+
+int clampRequestMinutes( int minutes )
+{
+    if( minutes < kMinRequestMinutes ) return kMinRequestMinutes;
+    if( minutes > kMaxRequestMinutes ) return kMaxRequestMinutes;
+    return minutes;
+}
+
 } // namespace net
 } // namespace atui

@@ -17,6 +17,9 @@ Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
   to the model on later turns (default off; also a Providers-dialog checkbox).
 - `ATUI_THEME` — `dark` (default) or `classic`; also switchable at runtime via
   `File ▸ Options ▸ Theme...` (Alt-T), which opens a radio-button dialog.
+- `ATUI_REQUEST_MINUTES` — how long one request may take before atui gives up on
+  it (default 120; also `Options ▸ Request timeout...`, Alt-Q). Unset, empty or
+  unparseable keeps the default.
 - `ATUI_CONFIG` — override the config file path (see Settings persistence).
 
 ## Settings persistence (INI)
@@ -42,6 +45,7 @@ the active one):
 
     [app]
     provider = ollama       # active provider name
+    request_minutes = 120   # how long one request may take (1-1440)
 
     [provider:ollama]       # section name is lower-cased; `name` keeps the case
     name     = ollama
@@ -692,6 +696,9 @@ dragging the bar keep TVision's own steps.
   field with no digits in it (cleared by mistake) rather than jumping to the
   slowest setting.
 
+(The dialog itself is the shared `PresetNumberDialog` described under "How long a
+request may take".)
+
 No restart needed: the transcript reads the value on every wheel event.
 
 Verified in the TUI against a transcript of numbered rows - a streamed answer of
@@ -716,6 +723,52 @@ Gotchas found doing it:
 - `TStaticText` clips rather than wraps, so dialog copy has to be counted out
   against the dialog's width - and the settings range belongs in that copy
   anyway.
+
+
+## How long a request may take (Options > Request timeout)
+
+The whole request has to finish inside one curl timeout - connect, thinking, and
+every streamed token - and a model that is still reasoning holds the connection
+open the entire time. That limit used to be a hard-coded 300 s, which is how a
+long prompt "appeared to time out": nothing had gone wrong, the wait was just
+shorter than the model.
+
+Now it is `[app] request_minutes` - **120 by default**, clamped 1-1440 by
+`net::clampRequestMinutes`, which every value passes through (config file,
+dialog, `ATUI_REQUEST_MINUTES`, hand edit). It bounds **one request**, so a tool
+round is a request of its own and gets the whole wait again; the app has only one
+in flight at a time. Read per request, so a change applies to the next prompt.
+Two other waits stay short on purpose - they mean a dead socket rather than a
+thinking model: `CURLOPT_CONNECTTIMEOUT` (30 s) and the model-list GET (20 s).
+
+A failed request is also finally *reported*: the transcript gets a status line
+with the reason, naming the limit and where to change it,
+
+    request failed: gave up after 1 min waiting for the server (Options > Request timeout)
+
+where before the reply simply stopped and it looked like the app had hung up.
+`OaiClient::request()` takes an optional `err` out-param for this
+(`curl_easy_strerror()` for everything that is not a timeout).
+
+**Options > Request timeout...** (Alt-Q) edits it: presets 5 / 15 / 30 / 60 /
+120 (default) above a number field, same shape as Scrolling - and the same
+dialog: `PresetNumberDialog` is the shared "one number" dialog (a
+`NumberOption` description: title, question, field label, unit, presets, value,
+default to mark, hint). The field is what OK applies, presets only fill it in,
+Cancel changes nothing, and a field with no digits in it is treated as "no
+change" rather than as zero.
+
+Verified with a canned SSE server that sleeps 90 s before sending its first
+byte: `request_minutes = 1` cut the request off at exactly 60 s with the timeout
+status line above; `request_minutes = 2` let the same answer arrive normally. The
+dialog's presets, typing into the field, apply-and-persist and Cancel were
+clicked through with `tui-test`.
+
+Test coverage (`--self-test`, both builds): `settings: request minutes` - the
+default (120) and its being inside the range, the clamp at both ends, reading
+`[app] request_minutes`, saving it back, an out-of-range value read as the
+nearest wait that works, and a missing or unparseable key leaving the wait
+already in force.
 
 
 ## Prompt input (wrapping + auto-grow)

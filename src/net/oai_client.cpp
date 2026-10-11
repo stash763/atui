@@ -1,11 +1,13 @@
 // Definitions for the OpenAI-compatible streaming HTTP client.
 #include "oai_client.h"
 #include "json_extract.h"
+#include "provider.h"
 #ifdef ATUI_DEBUG_KEYS
 #include "dbg.h"
 #endif
 
 #include <curl/curl.h>
+#include <cstdio>
 #include <cstring>
 #include <cstdlib>
 #include <stdexcept>
@@ -223,15 +225,25 @@ bool OaiClient::request( const std::string &baseUrl,
                          const OaiRequest &req,
                          TokenCallback cb,
                          void *ctx,
-                         OaiResponse *out )
+                         OaiResponse *out,
+                         std::string *err )
 {
+    if( err ) err->clear();
+
     CURL *curl = curl_easy_init();
     if( !curl )
+    {
+        if( err ) *err = "could not start a request (curl init failed)";
         return false;
+    }
 
     std::string url;
     if( baseUrl.empty() )
+    {
+        if( err ) *err = "no server URL set";
+        curl_easy_cleanup( curl );   // the handle exists at this point
         return false;
+    }
     url = baseUrl;
     if( !url.empty() && url.back() != '/' )
         url += "/";
@@ -265,7 +277,12 @@ bool OaiClient::request( const std::string &baseUrl,
     curl_easy_setopt( curl, CURLOPT_WRITEFUNCTION, writeData );
     curl_easy_setopt( curl, CURLOPT_WRITEDATA, &sp );
     curl_easy_setopt( curl, CURLOPT_FOLLOWLOCATION, 1L );
-    curl_easy_setopt( curl, CURLOPT_TIMEOUT, 300L );
+    // The whole request - connect, thinking, and every streamed token - has to
+    // finish inside this (Options > Request timeout). A model that is still
+    // reasoning has the connection open, so a short limit here is what makes a
+    // long prompt "time out".
+    curl_easy_setopt( curl, CURLOPT_TIMEOUT,
+                      (long) requestMinutes() * 60L );
     curl_easy_setopt( curl, CURLOPT_CONNECTTIMEOUT, 30L );
 
     // Allow HTTP to be used (local llama.cpp server is plain HTTP).
@@ -284,6 +301,24 @@ bool OaiClient::request( const std::string &baseUrl,
     atui::net::dbg( "request done res=%d (msg=%s) sp_done=%d",
                     (int)res, curl_easy_strerror( res ), (int)sp.done );
 #endif
+
+    if( res != CURLE_OK && err )
+    {
+        // A timeout is the one failure the user can do something about, so say
+        // how long it waited and where that is set.
+        if( res == CURLE_OPERATION_TIMEDOUT )
+        {
+            char msg[ 128 ];
+            snprintf( msg, sizeof msg,
+                      "gave up after %d min waiting for the server "
+                      "(Options > Request timeout)", requestMinutes() );
+            *err = msg;
+        }
+        else
+        {
+            *err = curl_easy_strerror( res );
+        }
+    }
 
     return res == CURLE_OK;
 }

@@ -12,6 +12,7 @@
 //
 //   [app]
 //   provider = ollama            # active provider
+//   request_minutes = 120        # how long one request may take
 //
 //   [provider:ollama]            # one section per provider
 //   name     = ollama            # display name (case preserved here)
@@ -57,6 +58,10 @@ bool &thinkingExpandAll();
 // flinging the view past everything at once.
 const int kMinWheelLines = 1;
 const int kMaxWheelLines = 30;
+
+// What a fresh install scrolls at: one line a notch reads as stalled next to
+// how fast a wheel turns. The options dialog marks this as the default.
+const int kDefaultWheelLines = 3;
 
 // How far one mouse wheel notch scrolls the chat transcript, in lines.
 // Backed by a process-wide value; seeded by loadAll() from [ui] wheel_lines,

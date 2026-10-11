@@ -80,7 +80,7 @@ using atui::core::String;
 // uses a range: the command encodes the index of the picked provider, whose
 // configured model comes with it.
 enum { CmdHelp = 1000, CmdTheme = 1004, CmdProviders = 1003,
-       CmdScrolling = 1005,
+       CmdScrolling = 1005, CmdRequestTimeout = 1006,
        CmdRefreshModels = 2000,
        CmdSwitchModelBase = 2200 };  // + provider index
 
@@ -89,6 +89,7 @@ const int kMaxSwitchModels = 40;
 
 class TranscriptView;   // defined below; used via pointer in the globals
 class PromptInput;      // defined below; used via pointer in the globals
+struct NumberOption;    // a numeric option as a dialog; defined with them
 
 namespace {
     TranscriptView *g_transcript_ = 0;
@@ -1101,6 +1102,10 @@ public:
                     showScrolling();
                     clearEvent( event );
                     break;
+                case CmdRequestTimeout:
+                    showRequestTimeout();
+                    clearEvent( event );
+                    break;
                 case cmQuit:
                     clearEvent( event );
                     endModal( cmQuit );
@@ -1134,6 +1139,11 @@ private:
     void showProviders();
     void showTheme();
     void showScrolling();
+    void showRequestTimeout();
+
+    // Opens one of the "a single number" option dialogs (see NumberOption) and
+    // returns the value to apply, or 0 when nothing should change.
+    static int chooseNumber_( const NumberOption &opt );
 
     virtual TPalette& getPalette() const
     {
@@ -1201,7 +1211,10 @@ TMenuBar *initMenuBar_( TRect r )
                   + *new TMenuItem( "~T~heme...", CmdTheme, kbAltT,
                                     hcNoContext, "Alt-T" )
                   + *new TMenuItem( "Sc~r~olling...", CmdScrolling, kbAltR,
-                                    hcNoContext, "Alt-R" ) ) )
+                                    hcNoContext, "Alt-R" )
+                  + *new TMenuItem( "Re~q~uest timeout...",
+                                    CmdRequestTimeout, kbAltQ,
+                                    hcNoContext, "Alt-Q" ) ) )
         + newLine()
         + *new TMenuItem( "E~xit...",  cmQuit,  kbAltX, hcNoContext, "Alt-X" )
         + newLine()
@@ -2084,136 +2097,231 @@ void TApp::showTheme()
     destroy( d );
 }
 
-// Options > Scrolling: how far one mouse wheel notch moves the transcript.
+// --- a numeric option as a dialog -------------------------------------------
 //
-// The number field holds the value that is applied; the presets above it are
-// shortcuts that fill it in, so the field alone decides what OK means and the
-// two can never disagree. A step that is not one of the presets - a config file
-// saying 4, say - still shows exactly what it is.
-static const int kWheelPresets[] = { 1, 2, 3, 5, 8 };
-static const size_t kWheelPresetCount =
-    sizeof( kWheelPresets ) / sizeof( kWheelPresets[0] );
-
-// The preset row to light up for a step: the closest one (the field beside it
-// keeps the exact number either way).
-static int wheelPresetRow_( int lines )
+// The two small options below are each one number, so they share a dialog:
+// preset buttons above a number field. The field holds the value that is
+// applied and a preset only ever fills it in, so the two can never disagree
+// about what OK means. A value that is not one of the presets - a config file
+// saying 4, say - opens with the field showing exactly that and the closest
+// preset lit.
+struct NumberOption
 {
-    int best = 0;
-    for( size_t i = 1; i < kWheelPresetCount; ++i )
+    const char *title;       // window title, e.g. "Options - Scrolling"
+    const char *question;    // the line above the presets
+    const char *fieldLabel;  // label beside the number field
+    const char *unit;        // singular: "line" becomes "lines" per value
+    const int  *presets;
+    size_t      presetCount;
+    int         value;       // what the field opens with
+    int         fallback;    // the built-in default, marked in the list
+    const char *hint;        // the paragraph under the field
+};
+
+// The preset row to light up for a value: the closest one. The field beside it
+// keeps the exact number either way.
+static int presetRow_( const int *presets, size_t count, int value )
+{
+    size_t best = 0;
+    for( size_t i = 1; i < count; ++i )
     {
-        int di = kWheelPresets[ i ] - lines; if( di < 0 ) di = -di;
-        int db = kWheelPresets[ best ] - lines; if( db < 0 ) db = -db;
-        if( di < db ) best = (int) i;
+        int di = presets[ i ] - value;     if( di < 0 ) di = -di;
+        int db = presets[ best ] - value;  if( db < 0 ) db = -db;
+        if( di < db ) best = i;
     }
-    return best;
+    return (int) best;
 }
 
 // A radio group that reports its selection without redrawing: TCluster only
 // hands the value out through getData(), which repaints, and this is read after
 // every event.
-class WheelPresets : public TRadioButtons
+class PresetButtons : public TRadioButtons
 {
 public:
-    WheelPresets( const TRect& bounds, TSItem *items ) noexcept
+    PresetButtons( const TRect& bounds, TSItem *items ) noexcept
         : TRadioButtons( bounds, items ) {}
 
     int current() const { return (int) value; }
 };
 
-class ScrollingDialog : public TDialog
+class PresetNumberDialog : public TDialog
 {
 public:
-    TInputLine   *lines  = 0;
-    WheelPresets *presets = 0;
-    int           shown = 0;    // preset row the field was last filled from
+    PresetNumberDialog( const NumberOption &opt );
 
-    ScrollingDialog();
+    // The field as a number, or 0 when it holds none: clearing the field is not
+    // a change, and 0 is outside every option's range.
+    int value() const;
 
     virtual void handleEvent( TEvent& event );
+
+private:
+    void setField_( int v );
+
+    TInputLine    *field_   = 0;
+    PresetButtons *buttons_ = 0;
+    const int     *list_    = 0;
+    size_t         count_   = 0;
+    int            shown_   = 0;   // preset the field was last filled from
 };
 
-ScrollingDialog::ScrollingDialog()
+PresetNumberDialog::PresetNumberDialog( const NumberOption &opt )
     : TWindowInit( &TDialog::initFrame ),
-      TDialog( TRect( 0, 0, 50, 18 ), "Options - Scrolling" )
+      TDialog( TRect( 0, 0, 50, (short) (14 + (int) opt.presetCount) ),
+               opt.title ),
+      list_( opt.presets ), count_( opt.presetCount )
 {
     options |= ofCentered;
 
-    insert( new TStaticText( TRect( 3, 1, size.x - 3, 2 ),
-        "One mouse wheel notch scrolls the chat by:" ) );
+    const short top = 3;                                  // first preset row
+    const short row = (short) (top + (short) count_ + 1); // the number field
 
-    presets = new WheelPresets( TRect( 5, 3, 32, 8 ),
-        new TSItem( "~1~ line",
-        new TSItem( "~2~ lines",
-        new TSItem( "~3~ lines  (default)",
-        new TSItem( "~5~ lines",
-        new TSItem( "~8~ lines", NULL ) ) ) ) ) );
-    insert( presets );
+    insert( new TStaticText( TRect( 3, 1, size.x - 3, 2 ), opt.question ) );
 
-    insert( new TStaticText( TRect( 3, 9, 21, 10 ), "Lines per notch:" ) );
-    lines = new TInputLine( TRect( 22, 9, 26, 10 ), 2 );
-    insert( lines );
+    // Preset rows read "1 line", "3 lines  (default)", ... with the first digit
+    // of each number as its hotkey; presets that start with the same digit
+    // share a hotkey, which is fine next to the mouse and the arrow keys.
+    TSItem *items = NULL;
+    for( size_t i = count_; i-- > 0; )
+    {
+        char digits[ 12 ];
+        snprintf( digits, sizeof digits, "%d", list_[ i ] );
+        std::string label( "~" );
+        label += digits[ 0 ];
+        label += "~";
+        label += digits + 1;
+        label += " ";
+        label += opt.unit;
+        if( list_[ i ] != 1 ) label += "s";
+        if( list_[ i ] == opt.fallback ) label += "  (default)";
+        items = new TSItem( label.c_str(), items );
+    }
+    buttons_ = new PresetButtons(
+        TRect( 5, top, 34, (short) (top + (short) count_) ), items );
+    insert( buttons_ );
 
-    const int cur = atui::settings::wheelLines();
-    char num[ 8 ];
-    snprintf( num, sizeof num, "%d", cur );
-    setInput_( lines, num );
-    ushort row = (ushort) wheelPresetRow_( cur );
-    presets->setData( &row );
-    shown = (int) row;
+    insert( new TStaticText( TRect( 3, row, 21, (short) (row + 1) ),
+                             opt.fieldLabel ) );
+    field_ = new TInputLine( TRect( 22, row, 27, (short) (row + 1) ), 4 );
+    insert( field_ );
 
-    // Lines kept short enough for this dialog: TStaticText clips rather than
-    // wraps, and the settings range belongs in the text.
+    setField_( opt.value );
+    ushort sel = (ushort) presetRow_( list_, count_, opt.value );
+    buttons_->setData( &sel );
+    shown_ = (int) sel;
+
+    // TStaticText clips rather than wraps, so the hint is written out in lines
+    // that fit this width.
+    insert( new TStaticText( TRect( 3, (short) (row + 2), size.x - 3,
+                                    (short) (row + 6) ), opt.hint ) );
+
+    TButton *ok = new TButton( TRect( 12, (short) (row + 7), 24,
+                                      (short) (row + 9) ), "~O~K",
+                               cmOK, bfDefault );
+    TButton *cancel = new TButton( TRect( 26, (short) (row + 7), 40,
+                                          (short) (row + 9) ), "Cancel",
+                                   cmCancel, bfNormal );
+    insert( ok );
+    insert( cancel );
+}
+
+void PresetNumberDialog::setField_( int v )
+{
+    char num[ 12 ];
+    snprintf( num, sizeof num, "%d", v );
+    setInput_( field_, num );
+}
+
+int PresetNumberDialog::value() const
+{
+    const std::string text( field_->data );
+    const size_t digits = text.find_first_of( "0123456789" );
+    if( digits == std::string::npos ) return 0;
+    return std::atoi( text.c_str() + digits );
+}
+
+void PresetNumberDialog::handleEvent( TEvent& event )
+{
+    TDialog::handleEvent( event );
+
+    // A preset - clicked, arrowed to, or typed as its digit - fills its number
+    // into the field. Typing in the field never moves the presets: they only
+    // write when they themselves change.
+    const int now = buttons_->current();
+    if( now != shown_ && now >= 0 && (size_t) now < count_ )
+    {
+        shown_ = now;
+        setField_( list_[ now ] );
+    }
+}
+
+// Opens a numeric option and returns the value to apply, or 0 when nothing
+// should change: cancelled, or a field with no number in it.
+int TApp::chooseNumber_( const NumberOption &opt )
+{
+    PresetNumberDialog *d = new PresetNumberDialog( opt );
+    const int chosen = ( deskTop->execView( d ) == cmOK ) ? d->value() : 0;
+    destroy( d );
+    return chosen;
+}
+
+// Options > Scrolling: how far one mouse wheel notch moves the transcript.
+void TApp::showScrolling()
+{
+    static const int presets[] = { 1, 2, 3, 5, 8 };
     char hint[ 176 ];
     snprintf( hint, sizeof hint,
         "The number is what OK applies (%d to %d).\n"
         "Bigger if the wheel feels slow, smaller if\n"
         "it skips past the text you were after.",
         atui::settings::kMinWheelLines, atui::settings::kMaxWheelLines );
-    insert( new TStaticText( TRect( 3, 11, size.x - 3, 14 ), hint ) );
 
-    TButton *ok     = new TButton( TRect( 12, 15, 24, 17 ), "~O~K",
-                                   cmOK, bfDefault );
-    TButton *cancel = new TButton( TRect( 26, 15, 40, 17 ), "Cancel",
-                                   cmCancel, bfNormal );
-    insert( ok );
-    insert( cancel );
+    NumberOption opt;
+    opt.title       = "Options - Scrolling";
+    opt.question    = "One mouse wheel notch scrolls the chat by:";
+    opt.fieldLabel  = "Lines per notch:";
+    opt.unit        = "line";
+    opt.presets     = presets;
+    opt.presetCount = sizeof( presets ) / sizeof( presets[0] );
+    opt.value       = atui::settings::wheelLines();
+    opt.fallback    = atui::settings::kDefaultWheelLines;
+    opt.hint        = hint;
+
+    const int v = chooseNumber_( opt );
+    if( v <= 0 ) return;
+    atui::settings::wheelLines() = atui::settings::clampWheelLines( v );
+    atui::settings::saveAll();
 }
 
-void ScrollingDialog::handleEvent( TEvent& event )
+// Options > Request timeout: how long to wait for the server before giving up
+// on a prompt. A model that is still thinking holds the connection open, so
+// this is what a "timed out" prompt is about.
+void TApp::showRequestTimeout()
 {
-    TDialog::handleEvent( event );
+    static const int presets[] = { 5, 15, 30, 60, 120 };
+    char hint[ 208 ];
+    snprintf( hint, sizeof hint,
+        "OK applies this, from %d to %d minutes.\n"
+        "The wait is per request, so a tool round\n"
+        "gets it again. Raise it when a big prompt\n"
+        "is cut off before the answer arrives.",
+        atui::net::kMinRequestMinutes, atui::net::kMaxRequestMinutes );
 
-    // A preset - clicked, or stepped to with the arrow keys - fills its number
-    // into the field. Typing in the field never moves the presets: they only
-    // ever write when they themselves change.
-    const int now = presets->current();
-    if( now != shown && now >= 0 && (size_t) now < kWheelPresetCount )
-    {
-        shown = now;
-        char num[ 8 ];
-        snprintf( num, sizeof num, "%d", kWheelPresets[ now ] );
-        setInput_( lines, num );
-    }
-}
+    NumberOption opt;
+    opt.title       = "Options - Request timeout";
+    opt.question    = "Give up on a request after this long:";
+    opt.fieldLabel  = "Minutes:";
+    opt.unit        = "minute";
+    opt.presets     = presets;
+    opt.presetCount = sizeof( presets ) / sizeof( presets[0] );
+    opt.value       = atui::net::requestMinutes();
+    opt.fallback    = atui::net::kDefaultRequestMinutes;
+    opt.hint        = hint;
 
-void TApp::showScrolling()
-{
-    ScrollingDialog *d = new ScrollingDialog;
-    if( deskTop->execView( d ) == cmOK )
-    {
-        // The field is a couple of digits; anything without one (cleared by
-        // mistake, say) leaves the current speed alone rather than silently
-        // jumping to the slowest setting.
-        const std::string text( d->lines->data );
-        const size_t digits = text.find_first_of( "0123456789" );
-        if( digits != std::string::npos )
-        {
-            atui::settings::wheelLines() = atui::settings::clampWheelLines(
-                std::atoi( text.c_str() + digits ) );
-            atui::settings::saveAll();
-        }
-    }
-    destroy( d );
+    const int v = chooseNumber_( opt );
+    if( v <= 0 ) return;
+    atui::net::requestMinutes() = atui::net::clampRequestMinutes( v );
+    atui::settings::saveAll();
 }
 
 int run_app()

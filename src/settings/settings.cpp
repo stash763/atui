@@ -79,6 +79,9 @@ bool loadAll()
         active = net::providerSettings().name;   // keep the env-seeded store
     net::replaceProviders( list, active );
 
+    net::requestMinutes() = net::clampRequestMinutes(
+        ini.getInt( "app", "request_minutes", net::requestMinutes() ) );
+
     // Color theme (only override when the file actually specifies one).
     std::string theme = ini.getString( "ui", "theme", std::string() );
     if( theme == "classic" )   tui::setTheme( tui::ThemeClassic );
@@ -99,9 +102,7 @@ bool &thinkingExpandAll()
 
 int &wheelLines()
 {
-    // Three lines a notch: one is what TVision would scroll and it reads as
-    // stalled next to how fast the wheel turns.
-    static int lines = 3;
+    static int lines = kDefaultWheelLines;
     return lines;
 }
 
@@ -137,6 +138,7 @@ bool saveAll()
     }
 
     ini.setString( "app", "provider", net::providerSettings().name );
+    ini.setInt( "app", "request_minutes", net::requestMinutes() );
 
     ini.setString( "ui", "theme", tui::themeName( tui::currentTheme() ) );
     ini.setBool( "ui", "thinking_expand", thinkingExpandAll() );

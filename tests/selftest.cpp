@@ -292,8 +292,9 @@ void writeFile( const std::string &path, const char *content )
 
 // --- multiple providers -------------------------------------------------------
 
-// Restores the provider store, the theme, the wheel speed and $ATUI_CONFIG
-// after a test that rewrites them (they are process-wide singletons).
+// Restores the provider store, the theme, the wheel speed and the request
+// timeout - plus $ATUI_CONFIG - after a test that rewrites them (they are
+// process-wide singletons).
 class StoreGuard
 {
 public:
@@ -301,7 +302,8 @@ public:
         : list_( atui::net::providers() ),
           active_( atui::net::providerSettings().name ),
           theme_( atui::tui::currentTheme() ),
-          wheel_( atui::settings::wheelLines() )
+          wheel_( atui::settings::wheelLines() ),
+          wait_( atui::net::requestMinutes() )
     {
         const char *p = std::getenv( "ATUI_CONFIG" );
         if( p ) { hadConfig_ = true; savedConfig_ = p; }
@@ -311,6 +313,7 @@ public:
         atui::net::replaceProviders( list_, active_ );
         atui::tui::setTheme( theme_ );
         atui::settings::wheelLines() = wheel_;
+        atui::net::requestMinutes() = wait_;
         if( hadConfig_ ) setenv( "ATUI_CONFIG", savedConfig_.c_str(), 1 );
         else unsetenv( "ATUI_CONFIG" );
     }
@@ -320,6 +323,7 @@ private:
     std::string active_;
     atui::tui::Theme theme_;
     int wheel_ = 0;
+    int wait_ = 0;
     bool hadConfig_ = false;
     std::string savedConfig_;
 };
@@ -535,6 +539,60 @@ int test_settings_wheel_lines()
     if( !atui::settings::loadAll() ) return -1;
     if( atui::settings::wheelLines() != atui::settings::kMaxWheelLines )
         return -3;
+
+    std::remove( path.c_str() );
+    return 0;
+}
+
+// [app] request_minutes: how long the app waits for a server before giving up
+// on a prompt.
+int test_settings_request_minutes()
+{
+    StoreGuard guard;
+    const std::string path = tmpIniPath();
+    setenv( "ATUI_CONFIG", path.c_str(), 1 );
+
+    // The defaults are a promise to the user (a long prompt must survive a slow
+    // model), so pin them - and make sure they are inside the range.
+    if( atui::net::kDefaultRequestMinutes != 120 ) return -1;
+    if( atui::settings::clampWheelLines( atui::settings::kDefaultWheelLines )
+        != atui::settings::kDefaultWheelLines ) return -2;
+    if( atui::net::clampRequestMinutes( atui::net::kDefaultRequestMinutes )
+        != atui::net::kDefaultRequestMinutes ) return -3;
+
+    // The clamp: no wait at all and a wait of weeks are both refused, the
+    // range's own ends pass through.
+    if( atui::net::clampRequestMinutes( 0 )
+        != atui::net::kMinRequestMinutes ) return -1;
+    if( atui::net::clampRequestMinutes( -7 )
+        != atui::net::kMinRequestMinutes ) return -1;
+    if( atui::net::clampRequestMinutes( 45 ) != 45 ) return -1;
+    if( atui::net::clampRequestMinutes( atui::net::kMaxRequestMinutes )
+        != atui::net::kMaxRequestMinutes ) return -1;
+    if( atui::net::clampRequestMinutes( 99999 )
+        != atui::net::kMaxRequestMinutes ) return -1;
+
+    // Read from the file, and back out of it.
+    writeFile( path, "[app]\nrequest_minutes = 45\n" );
+    if( !atui::settings::loadAll() ) return -1;
+    if( atui::net::requestMinutes() != 45 ) return -1;
+    if( !atui::settings::saveAll() ) return -1;
+    atui::settings::IniFile saved( path );
+    if( !saved.load() ) return -1;
+    if( saved.getInt( "app", "request_minutes", 0 ) != 45 ) return -1;
+
+    // Out of range in the file reads as the nearest wait that works; a key that
+    // is missing or not a number leaves the wait already in force.
+    writeFile( path, "[app]\nrequest_minutes = 99999\n" );
+    if( !atui::settings::loadAll() ) return -1;
+    if( atui::net::requestMinutes() != atui::net::kMaxRequestMinutes ) return -1;
+
+    writeFile( path, "[app]\nrequest_minutes = soon\n" );
+    if( !atui::settings::loadAll() ) return -1;
+    if( atui::net::requestMinutes() != atui::net::kMaxRequestMinutes ) return -2;
+    writeFile( path, "[ui]\ntheme = dark\n" );
+    if( !atui::settings::loadAll() ) return -1;
+    if( atui::net::requestMinutes() != atui::net::kMaxRequestMinutes ) return -3;
 
     std::remove( path.c_str() );
     return 0;
@@ -1060,6 +1118,7 @@ void init()
     register_test( "settings: legacy [provider] section",
                    &test_settings_legacy_provider_section );
     register_test( "settings: wheel lines", &test_settings_wheel_lines );
+    register_test( "settings: request minutes", &test_settings_request_minutes );
     register_test( "ini: parse", &test_ini_parse );
     register_test( "ini: typed defaults", &test_ini_typed_defaults );
     register_test( "ini: save round-trip", &test_ini_save_roundtrip );

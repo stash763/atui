@@ -60,10 +60,13 @@ struct OaiResponse {
 typedef void (*TokenCallback)( const char *token, bool thinking, void *ctx );
 
 // Performs a streaming chat-completion request. Blocks until the stream is
-// complete or the connection fails. `cb`/`ctx` receive each delta.content
-// token. When `out` is non-null it receives the assembled content, the final
-// finish_reason and any tool calls.
-// Returns true on success (HTTP 2xx and stream finished), false on error.
+// complete, the connection fails, or the request has been waiting longer than
+// requestMinutes() (Options > Request timeout). `cb`/`ctx` receive each
+// delta.content token. When `out` is non-null it receives the assembled
+// content, the final finish_reason and any tool calls.
+// Returns true on success (HTTP 2xx and stream finished), false on error; when
+// `err` is non-null it then holds a short human-readable reason, naming the
+// timeout limit when that is what gave up.
 class OaiClient {
 public:
     bool request( const std::string &baseUrl,
@@ -71,7 +74,8 @@ public:
                   const OaiRequest &req,
                   TokenCallback cb,
                   void *ctx,
-                  OaiResponse *out = 0 );
+                  OaiResponse *out = 0,
+                  std::string *err = 0 );
 };
 
 // Fetches the provider's model list via a synchronous GET of

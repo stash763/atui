@@ -80,6 +80,36 @@ std::string uniqueProviderName( const std::string &base );
 void replaceProviders( const std::vector<ProviderSettings> &list,
                        const std::string &activeName );
 
+// --- how long a prompt may take ---------------------------------------------
+// A model on slow hardware can sit on a prompt for minutes on end before the
+// first token arrives, so the wait is a setting rather than a constant. It
+// bounds one request - a tool round is a request of its own and gets the whole
+// wait again - and the app only has one in flight at a time.
+//
+// Lives here rather than with the HTTP client because the client needs libcurl:
+// this module is built either way, so the option is readable, editable and
+// persistable in both builds.
+const int kMinRequestMinutes = 1;
+const int kMaxRequestMinutes = 1440;   // a day
+
+// What a fresh install waits: two hours. Enough for a big prompt on a
+// CPU-served model to reason its way through, short enough that a dead
+// connection does not sit there until tomorrow. The dialog marks this.
+const int kDefaultRequestMinutes = 120;
+
+// Minutes to wait for a request before giving up on it. Backed by a
+// process-wide value; seeded by settings::loadAll() from
+// [app] request_minutes, written by saveAll(), and adjusted by
+// Options > Request timeout. Read per request, so a change applies to the next
+// prompt. Reference it as a variable.
+int &requestMinutes();
+
+// Waits outside the range above are not worth honoring: under a minute a slow
+// model never gets to answer, and past a day a hung connection just holds the
+// transcript open. Every value - config file, dialog, edit by hand - comes
+// through here.
+int clampRequestMinutes( int minutes );
+
 } // namespace net
 } // namespace atui
 

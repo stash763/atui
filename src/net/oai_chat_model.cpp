@@ -105,15 +105,22 @@ bool OaiChatModel::ask( const std::string &userMessage, const std::string &histo
             cctx.queue = queue;
 
             OaiClient client;
+            std::string err;
             ok = client.request( cfg.baseUrl, cfg.apiKey, req,
-                                 pushToken, &cctx, &resp );
+                                 pushToken, &cctx, &resp, &err );
 #ifdef ATUI_DEBUG_KEYS
             atui::net::dbg( "worker round %d: ok=%d content=%zu tools=%zu finish='%s'",
                             round, (int)ok, resp.content.size(),
                             resp.toolCalls.size(), resp.finishReason.c_str() );
 #endif
             if( !ok )
+            {
+                // Say why: a silent stop reads as the app hanging up, and a
+                // timeout in particular is something the user can raise.
+                if( queue )
+                    queue->push( Token( "request failed: " + err, tkStatus ) );
                 break;
+            }
 
             // Record the assistant turn (text and/or tool calls). Its
             // thinking text is kept for replay only when the option is on.
