@@ -162,6 +162,16 @@ std::string EditFileTool::execute( const std::string &argumentsJson )
     return r.str();
 }
 
+PermissionSubject EditFileTool::permissionSubject(
+    const std::string &argumentsJson ) const
+{
+    std::string path;
+    jsonStringArg( argumentsJson, "path", path );
+    // An empty path stays psPath with no value: the policy reports that as
+    // "cannot be checked" and asks, which is right for a call that names nothing.
+    return PermissionSubject( psPath, path );
+}
+
 std::string EditFileTool::approvalSummary( const std::string &argumentsJson ) const
 {
     std::string path, oldText, newText;

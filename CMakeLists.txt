@@ -50,6 +50,11 @@ set(ATUI_SOURCES
     "${ATUI_SRC_DIR}/tools/tool_registry.cpp"
     "${ATUI_SRC_DIR}/tools/json_args.cpp"
     "${ATUI_SRC_DIR}/tools/approval.cpp"
+    # Who decides whether a tool call has to be asked about: the policy (pure,
+    # so both build configs can be tested) and the agent interface its answer
+    # feeds into.
+    "${ATUI_SRC_DIR}/tools/permissions.cpp"
+    "${ATUI_SRC_DIR}/tools/judge.cpp"
     "${ATUI_SRC_DIR}/tools/time_tool.cpp"
     "${ATUI_SRC_DIR}/tools/edit_file_tool.cpp"
     "${ATUI_SRC_DIR}/tools/run_command_tool.cpp"

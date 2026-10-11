@@ -20,6 +20,10 @@ public:
     const char *parametersSchema() const override;
     std::string execute( const std::string &argumentsJson ) override;
     bool requiresApproval() const override { return true; }
+    // The command line itself: containment decides the paths it names, and the
+    // permission agent describes the rest.
+    PermissionSubject permissionSubject(
+        const std::string &argumentsJson ) const override;
     std::string approvalSummary( const std::string &argumentsJson ) const override;
     // The transcript record is the command itself, so it reads like a shell
     // history line ("$ make test") and multi-line commands stay readable.

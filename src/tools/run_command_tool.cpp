@@ -122,6 +122,16 @@ std::string RunCommandTool::execute( const std::string &argumentsJson )
     return r.str();
 }
 
+PermissionSubject RunCommandTool::permissionSubject(
+    const std::string &argumentsJson ) const
+{
+    std::string command;
+    jsonStringArg( argumentsJson, "command", command );
+    // The model's own text, not the `exec 2>&1;` wrapper execute() adds: the
+    // policy is judging what was asked for.
+    return PermissionSubject( psCommand, command );
+}
+
 std::string RunCommandTool::approvalSummary( const std::string &argumentsJson ) const
 {
     std::string command;

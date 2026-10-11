@@ -20,6 +20,10 @@ public:
     const char *parametersSchema() const override;
     std::string execute( const std::string &argumentsJson ) override;
     bool requiresApproval() const override { return true; }
+    // One path, so containment decides this call exactly - which is why the
+    // permission agent is never consulted about an edit.
+    PermissionSubject permissionSubject(
+        const std::string &argumentsJson ) const override;
     std::string approvalSummary( const std::string &argumentsJson ) const override;
     // Transcript record: which file, and the old → new text, escaped onto lines
     // so a multi-line replacement still reads as two lines.

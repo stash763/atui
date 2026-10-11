@@ -14,6 +14,23 @@
 namespace atui {
 namespace tools {
 
+// What the permission policy can look at in one call.
+//
+// A file tool names a single path, which containment answers exactly. A shell
+// tool hands over a command line, which is a much weaker thing to reason about -
+// sh is not confined by a working directory. A tool that reports psUnknown is
+// always asked about, because the policy cannot say what it would do.
+enum PermissionSubjectKind { psUnknown = 0, psPath = 1, psCommand = 2 };
+
+struct PermissionSubject {
+    PermissionSubjectKind kind;
+    std::string value;      // the path, or the command line
+
+    PermissionSubject() : kind( psUnknown ) {}
+    PermissionSubject( PermissionSubjectKind k, const std::string &v )
+        : kind( k ), value( v ) {}
+};
+
 class Tool {
 public:
     virtual ~Tool() {}
@@ -36,6 +53,18 @@ public:
     // touch the file system or run commands return true; the chat loop then
     // consults the process-wide Approver before executing. Defaults to false.
     virtual bool requiresApproval() const { return false; }
+
+    // What the permission policy should examine for this call: the path a file
+    // tool touches, or the command line a shell tool would run. It does not
+    // replace requiresApproval(), it says what this particular call would affect,
+    // which is what decides whether anybody has to be asked about it. The default
+    // (psUnknown) means "cannot be checked", and the policy then always asks.
+    virtual PermissionSubject permissionSubject(
+        const std::string &argumentsJson ) const
+    {
+        ( void ) argumentsJson;
+        return PermissionSubject();
+    }
 
     // A short, human-readable one-line preview of what this specific call will
     // do, shown in the confirmation prompt. `argumentsJson` is the raw
