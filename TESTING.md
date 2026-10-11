@@ -38,6 +38,7 @@ the active one):
     [ui]
     theme = dark            # dark | classic
     thinking_expand = false # show reasoning blocks expanded at startup
+    wheel_lines = 3         # lines one mouse wheel notch scrolls (1-30)
 
     [app]
     provider = ollama       # active provider name
@@ -669,6 +670,52 @@ with a trailing word is content), `thinking: fenced markdown renders` (the
 re-fence grows past backticks inside), `thinking: body prose` (markdown is *not*
 interpreted in reasoning), `thinking: body code block` (rows, roles, backgrounds
 and the three-column indent) and `thinking: body unclosed fence`.
+
+
+## Mouse wheel scrolling (Options > Scrolling)
+
+One wheel notch moves the transcript `[ui] wheel_lines` lines - **3 by default**,
+clamped to 1-30 (`settings::clampWheelLines`, which every value passes through:
+config file, dialog, or an edit by hand). The wheel is where most scrolling
+actually happens, so it is the one scroll setting worth a dialog; PgUp/PgDn and
+dragging the bar keep TVision's own steps.
+
+**Options > Scrolling...** (Alt-R, in the Options submenu):
+
+- Preset radio buttons (1 / 2 / 3 / 5 / 8) that *fill in the number field*:
+  clicking one, arrowing to it, or typing its digit writes its number.
+- The field is what **OK** applies, any value in the range - a preset can never
+  silently disagree with what ends up saved. A step that is not one of the
+  presets (a config file saying `4`) opens showing exactly 4 with the nearest
+  preset lit.
+- OK persists to the config file; Cancel/Esc leaves it alone, and so does a
+  field with no digits in it (cleared by mistake) rather than jumping to the
+  slowest setting.
+
+No restart needed: the transcript reads the value on every wheel event.
+
+Verified in the TUI against a transcript of numbered rows - a streamed answer of
+`ROW 001..ROW 080` inside a fenced block, so each row is exactly one line - with
+`wheel_lines` 1 / 3 / 5 / 30: one notch moved the top row back by 1 / 3 / 5 / 30
+rows. The dialog's presets, arrow-key stepping, digit hotkey, apply-and-save,
+and Cancel-writes-nothing were all clicked through with `tui-test`.
+
+Gotchas found doing it:
+
+- `TScrollBar` claims `evMouseWheel` too and scrolls by its *own* arrow step,
+  which nothing in the app could tune. Wheel events are not routed by pointer
+  position (`TView::positionalEvents = evMouse & ~evMouseWheel`), so `TGroup`
+  offers one to every view that claims it, and `TranscriptView` - iterated
+  before the bar, because `TGroup::insert` prepends - handles it and
+  `clearEvent()`s it. Drop that clear and the bar's fixed step wins.
+- `tui-test mouse scroll up|down` sends **3** wheel events by default; use
+  `--amount 1` to move a single notch.
+- `tui-test key press NAME` types the name literally when it does not know it:
+  `key press ArrowDown` typed `ArrowDown` into whatever had focus (`Down` is the
+  key). Read "arrow keys insert junk" as a harness artifact until checked twice.
+- `TStaticText` clips rather than wraps, so dialog copy has to be counted out
+  against the dialog's width - and the settings range belongs in that copy
+  anyway.
 
 
 ## Prompt input (wrapping + auto-grow)

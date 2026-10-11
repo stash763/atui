@@ -86,6 +86,8 @@ bool loadAll()
 
     thinkingExpandAll() = ini.getBool( "ui", "thinking_expand",
                                        thinkingExpandAll() );
+    wheelLines() = clampWheelLines( ini.getInt( "ui", "wheel_lines",
+                                                wheelLines() ) );
     return had;
 }
 
@@ -93,6 +95,21 @@ bool &thinkingExpandAll()
 {
     static bool expandAll = false; // collapsed by default
     return expandAll;
+}
+
+int &wheelLines()
+{
+    // Three lines a notch: one is what TVision would scroll and it reads as
+    // stalled next to how fast the wheel turns.
+    static int lines = 3;
+    return lines;
+}
+
+int clampWheelLines( int lines )
+{
+    if( lines < kMinWheelLines ) return kMinWheelLines;
+    if( lines > kMaxWheelLines ) return kMaxWheelLines;
+    return lines;
 }
 
 bool saveAll()
@@ -123,6 +140,7 @@ bool saveAll()
 
     ini.setString( "ui", "theme", tui::themeName( tui::currentTheme() ) );
     ini.setBool( "ui", "thinking_expand", thinkingExpandAll() );
+    ini.setInt( "ui", "wheel_lines", wheelLines() );
 
     return ini.save();
 }

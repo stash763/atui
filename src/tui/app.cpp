@@ -80,6 +80,7 @@ using atui::core::String;
 // uses a range: the command encodes the index of the picked provider, whose
 // configured model comes with it.
 enum { CmdHelp = 1000, CmdTheme = 1004, CmdProviders = 1003,
+       CmdScrolling = 1005,
        CmdRefreshModels = 2000,
        CmdSwitchModelBase = 2200 };  // + provider index
 
@@ -384,8 +385,12 @@ public:
     {
         if( event.what == evMouseWheel )
         {
-            int d = ( event.mouse.wheel & mwDown ) ? 1
-                  : ( ( event.mouse.wheel & mwUp ) ? -1 : 0 );
+            // A notch moves as many lines as the user set (Options >
+            // Scrolling); one line reads as stalled next to how fast a wheel
+            // turns.
+            const int step = atui::settings::wheelLines();
+            int d = ( event.mouse.wheel & mwDown ) ? step
+                  : ( ( event.mouse.wheel & mwUp ) ? -step : 0 );
             if( d != 0 )
             {
                 int maxTop = (int) lines_.size() - size.y;
@@ -1092,6 +1097,10 @@ public:
                     showTheme();
                     clearEvent( event );
                     break;
+                case CmdScrolling:
+                    showScrolling();
+                    clearEvent( event );
+                    break;
                 case cmQuit:
                     clearEvent( event );
                     endModal( cmQuit );
@@ -1124,6 +1133,7 @@ private:
     void showHelp();
     void showProviders();
     void showTheme();
+    void showScrolling();
 
     virtual TPalette& getPalette() const
     {
@@ -1189,7 +1199,9 @@ TMenuBar *initMenuBar_( TRect r )
                                   hcNoContext, "Alt-P" )
                   + newLine()
                   + *new TMenuItem( "~T~heme...", CmdTheme, kbAltT,
-                                    hcNoContext, "Alt-T" ) ) )
+                                    hcNoContext, "Alt-T" )
+                  + *new TMenuItem( "Sc~r~olling...", CmdScrolling, kbAltR,
+                                    hcNoContext, "Alt-R" ) ) )
         + newLine()
         + *new TMenuItem( "E~xit...",  cmQuit,  kbAltX, hcNoContext, "Alt-X" )
         + newLine()
@@ -2068,6 +2080,138 @@ void TApp::showTheme()
         if( setTheme( chosen == 0 ? ThemeClassic : ThemeDark ) )
             setScreenMode( TScreen::screenMode );
         atui::settings::saveAll();
+    }
+    destroy( d );
+}
+
+// Options > Scrolling: how far one mouse wheel notch moves the transcript.
+//
+// The number field holds the value that is applied; the presets above it are
+// shortcuts that fill it in, so the field alone decides what OK means and the
+// two can never disagree. A step that is not one of the presets - a config file
+// saying 4, say - still shows exactly what it is.
+static const int kWheelPresets[] = { 1, 2, 3, 5, 8 };
+static const size_t kWheelPresetCount =
+    sizeof( kWheelPresets ) / sizeof( kWheelPresets[0] );
+
+// The preset row to light up for a step: the closest one (the field beside it
+// keeps the exact number either way).
+static int wheelPresetRow_( int lines )
+{
+    int best = 0;
+    for( size_t i = 1; i < kWheelPresetCount; ++i )
+    {
+        int di = kWheelPresets[ i ] - lines; if( di < 0 ) di = -di;
+        int db = kWheelPresets[ best ] - lines; if( db < 0 ) db = -db;
+        if( di < db ) best = (int) i;
+    }
+    return best;
+}
+
+// A radio group that reports its selection without redrawing: TCluster only
+// hands the value out through getData(), which repaints, and this is read after
+// every event.
+class WheelPresets : public TRadioButtons
+{
+public:
+    WheelPresets( const TRect& bounds, TSItem *items ) noexcept
+        : TRadioButtons( bounds, items ) {}
+
+    int current() const { return (int) value; }
+};
+
+class ScrollingDialog : public TDialog
+{
+public:
+    TInputLine   *lines  = 0;
+    WheelPresets *presets = 0;
+    int           shown = 0;    // preset row the field was last filled from
+
+    ScrollingDialog();
+
+    virtual void handleEvent( TEvent& event );
+};
+
+ScrollingDialog::ScrollingDialog()
+    : TWindowInit( &TDialog::initFrame ),
+      TDialog( TRect( 0, 0, 50, 18 ), "Options - Scrolling" )
+{
+    options |= ofCentered;
+
+    insert( new TStaticText( TRect( 3, 1, size.x - 3, 2 ),
+        "One mouse wheel notch scrolls the chat by:" ) );
+
+    presets = new WheelPresets( TRect( 5, 3, 32, 8 ),
+        new TSItem( "~1~ line",
+        new TSItem( "~2~ lines",
+        new TSItem( "~3~ lines  (default)",
+        new TSItem( "~5~ lines",
+        new TSItem( "~8~ lines", NULL ) ) ) ) ) );
+    insert( presets );
+
+    insert( new TStaticText( TRect( 3, 9, 21, 10 ), "Lines per notch:" ) );
+    lines = new TInputLine( TRect( 22, 9, 26, 10 ), 2 );
+    insert( lines );
+
+    const int cur = atui::settings::wheelLines();
+    char num[ 8 ];
+    snprintf( num, sizeof num, "%d", cur );
+    setInput_( lines, num );
+    ushort row = (ushort) wheelPresetRow_( cur );
+    presets->setData( &row );
+    shown = (int) row;
+
+    // Lines kept short enough for this dialog: TStaticText clips rather than
+    // wraps, and the settings range belongs in the text.
+    char hint[ 176 ];
+    snprintf( hint, sizeof hint,
+        "The number is what OK applies (%d to %d).\n"
+        "Bigger if the wheel feels slow, smaller if\n"
+        "it skips past the text you were after.",
+        atui::settings::kMinWheelLines, atui::settings::kMaxWheelLines );
+    insert( new TStaticText( TRect( 3, 11, size.x - 3, 14 ), hint ) );
+
+    TButton *ok     = new TButton( TRect( 12, 15, 24, 17 ), "~O~K",
+                                   cmOK, bfDefault );
+    TButton *cancel = new TButton( TRect( 26, 15, 40, 17 ), "Cancel",
+                                   cmCancel, bfNormal );
+    insert( ok );
+    insert( cancel );
+}
+
+void ScrollingDialog::handleEvent( TEvent& event )
+{
+    TDialog::handleEvent( event );
+
+    // A preset - clicked, or stepped to with the arrow keys - fills its number
+    // into the field. Typing in the field never moves the presets: they only
+    // ever write when they themselves change.
+    const int now = presets->current();
+    if( now != shown && now >= 0 && (size_t) now < kWheelPresetCount )
+    {
+        shown = now;
+        char num[ 8 ];
+        snprintf( num, sizeof num, "%d", kWheelPresets[ now ] );
+        setInput_( lines, num );
+    }
+}
+
+void TApp::showScrolling()
+{
+    ScrollingDialog *d = new ScrollingDialog;
+    if( deskTop->execView( d ) == cmOK )
+    {
+        // The field is a couple of digits; anything without one (cleared by
+        // mistake, say) leaves the current speed alone rather than silently
+        // jumping to the slowest setting.
+        const std::string text( d->lines->data );
+        const size_t digits = text.find_first_of( "0123456789" );
+        if( digits != std::string::npos )
+        {
+            atui::settings::wheelLines() = atui::settings::clampWheelLines(
+                std::atoi( text.c_str() + digits ) );
+            atui::settings::saveAll();
+        }
     }
     destroy( d );
 }

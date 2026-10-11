@@ -292,15 +292,16 @@ void writeFile( const std::string &path, const char *content )
 
 // --- multiple providers -------------------------------------------------------
 
-// Restores the provider store, the theme and $ATUI_CONFIG after a test that
-// rewrites them (they are process-wide singletons).
+// Restores the provider store, the theme, the wheel speed and $ATUI_CONFIG
+// after a test that rewrites them (they are process-wide singletons).
 class StoreGuard
 {
 public:
     StoreGuard()
         : list_( atui::net::providers() ),
           active_( atui::net::providerSettings().name ),
-          theme_( atui::tui::currentTheme() )
+          theme_( atui::tui::currentTheme() ),
+          wheel_( atui::settings::wheelLines() )
     {
         const char *p = std::getenv( "ATUI_CONFIG" );
         if( p ) { hadConfig_ = true; savedConfig_ = p; }
@@ -309,6 +310,7 @@ public:
     {
         atui::net::replaceProviders( list_, active_ );
         atui::tui::setTheme( theme_ );
+        atui::settings::wheelLines() = wheel_;
         if( hadConfig_ ) setenv( "ATUI_CONFIG", savedConfig_.c_str(), 1 );
         else unsetenv( "ATUI_CONFIG" );
     }
@@ -317,6 +319,7 @@ private:
     std::vector<atui::net::ProviderSettings> list_;
     std::string active_;
     atui::tui::Theme theme_;
+    int wheel_ = 0;
     bool hadConfig_ = false;
     std::string savedConfig_;
 };
@@ -486,6 +489,54 @@ int test_settings_legacy_provider_section()
     // The selected model is offered even though no model list was stored.
     if( atui::net::providerSettings().models.size() != 1 ||
         atui::net::providerSettings().models[0] != "old-model" ) return -1;
+    return 0;
+}
+
+// [ui] wheel_lines: the mouse wheel speed, read clamped and saved back.
+int test_settings_wheel_lines()
+{
+    StoreGuard guard;
+    const std::string path = tmpIniPath();
+    setenv( "ATUI_CONFIG", path.c_str(), 1 );
+
+    // The clamp: nothing that scrolls no distance, nothing that flings the
+    // whole transcript past at once, and the range's own ends untouched.
+    if( atui::settings::clampWheelLines( 0 )
+        != atui::settings::kMinWheelLines ) return -1;
+    if( atui::settings::clampWheelLines( -5 )
+        != atui::settings::kMinWheelLines ) return -1;
+    if( atui::settings::clampWheelLines( 7 ) != 7 ) return -1;
+    if( atui::settings::clampWheelLines( atui::settings::kMaxWheelLines )
+        != atui::settings::kMaxWheelLines ) return -1;
+    if( atui::settings::clampWheelLines( 9999 )
+        != atui::settings::kMaxWheelLines ) return -1;
+
+    // A step from the file, and back out of it.
+    writeFile( path, "[ui]\nwheel_lines = 9\n" );
+    if( !atui::settings::loadAll() ) return -1;
+    if( atui::settings::wheelLines() != 9 ) return -1;
+    if( !atui::settings::saveAll() ) return -1;
+    atui::settings::IniFile saved( path );
+    if( !saved.load() ) return -1;
+    if( saved.getInt( "ui", "wheel_lines", 0 ) != 9 ) return -1;
+
+    // Out of range in the file reads as the nearest step that works.
+    writeFile( path, "[ui]\nwheel_lines = 900\n" );
+    if( !atui::settings::loadAll() ) return -1;
+    if( atui::settings::wheelLines() != atui::settings::kMaxWheelLines )
+        return -1;
+
+    // Not a number, or not there at all: the speed already in force stays.
+    writeFile( path, "[ui]\nwheel_lines = fast\n" );
+    if( !atui::settings::loadAll() ) return -1;
+    if( atui::settings::wheelLines() != atui::settings::kMaxWheelLines )
+        return -2;
+    writeFile( path, "[ui]\ntheme = dark\n" );
+    if( !atui::settings::loadAll() ) return -1;
+    if( atui::settings::wheelLines() != atui::settings::kMaxWheelLines )
+        return -3;
+
+    std::remove( path.c_str() );
     return 0;
 }
 
@@ -1008,6 +1059,7 @@ void init()
                    &test_settings_provider_roundtrip );
     register_test( "settings: legacy [provider] section",
                    &test_settings_legacy_provider_section );
+    register_test( "settings: wheel lines", &test_settings_wheel_lines );
     register_test( "ini: parse", &test_ini_parse );
     register_test( "ini: typed defaults", &test_ini_typed_defaults );
     register_test( "ini: save round-trip", &test_ini_save_roundtrip );

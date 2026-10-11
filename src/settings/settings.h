@@ -8,6 +8,7 @@
 //   [ui]
 //   theme = dark
 //   thinking_expand = false
+//   wheel_lines = 3
 //
 //   [app]
 //   provider = ollama            # active provider
@@ -50,6 +51,24 @@ bool saveAll();
 // transcript. Backed by a process-wide flag; seeded by loadAll() and written
 // by saveAll(). Toggle at runtime with Ctrl-T. Reference this as a variable.
 bool &thinkingExpandAll();
+
+// Supported range for wheelLines(): one line per notch at slowest, and at
+// fastest a notch that still lands inside a normal transcript instead of
+// flinging the view past everything at once.
+const int kMinWheelLines = 1;
+const int kMaxWheelLines = 30;
+
+// How far one mouse wheel notch scrolls the chat transcript, in lines.
+// Backed by a process-wide value; seeded by loadAll() from [ui] wheel_lines,
+// written by saveAll(), and adjusted by Options > Scrolling. The transcript
+// reads it per wheel event, so a change applies immediately. Reference it as a
+// variable.
+int &wheelLines();
+
+// Wheel steps outside the range above do nobody any good (a notch that moves
+// nothing, or one that overshoots the whole transcript), so every value - from
+// a config file, from a dialog, from an edit by hand - comes through here.
+int clampWheelLines( int lines );
 
 } // namespace atui::settings
 } // namespace atui
