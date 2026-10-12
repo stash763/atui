@@ -17,13 +17,16 @@ namespace net {
 //
 // A tool call arrives as a pair: tkTool announces the call (and is shown as soon
 // as it is made, so a long-running command is visible while it runs), tkToolResult
-// carries the outcome and closes the record.
+// carries the outcome and closes the record. Between them tkToolNote says who
+// allowed it and why ("auto: inside the project", "agent: runs the tests"), which
+// is the difference between atui having checked and atui having guessed.
 enum TokenKind {
     tkContent    = 0,
     tkThinking   = 1,
     tkStatus     = 2,
     tkTool       = 3,
-    tkToolResult = 4
+    tkToolResult = 4,
+    tkToolNote   = 5
 };
 
 struct Token {

@@ -58,6 +58,22 @@ std::string buildBody( const OaiRequest &req )
     body += ( req.stream ? "true" : "false" );
     body += ",\"temperature\":";
     body += std::to_string( req.temperature );
+    // Only sent when the caller asked for a cap: servers disagree about the
+    // default and some reject a field they do not implement, so an ordinary chat
+    // request stays exactly as it was.
+    if( req.maxTokens > 0 )
+    {
+        body += ",\"max_tokens\":";
+        body += std::to_string( req.maxTokens );
+    }
+    // Servers disagree about how to say "skip the chain of thought", so all three
+    // spellings go out and the ones that are not understood are ignored.
+    if( req.disableThinking )
+    {
+        body += ",\"reasoning_effort\":\"none\"";
+        body += ",\"think\":false";
+        body += ",\"chat_template_kwargs\":{\"enable_thinking\":false}";
+    }
 
     body += ",\"messages\":[";
     for( size_t i = 0; i < req.messages.size(); ++i )
@@ -280,9 +296,13 @@ bool OaiClient::request( const std::string &baseUrl,
     // The whole request - connect, thinking, and every streamed token - has to
     // finish inside this (Options > Request timeout). A model that is still
     // reasoning has the connection open, so a short limit here is what makes a
-    // long prompt "time out".
+    // long prompt "time out". A request with its own budget (the permission
+    // agent) is measured in seconds instead: waiting minutes for a decision
+    // would be the wrong trade on purpose.
     curl_easy_setopt( curl, CURLOPT_TIMEOUT,
-                      (long) requestMinutes() * 60L );
+                      req.timeoutSeconds > 0
+                          ? (long) req.timeoutSeconds
+                          : (long) requestMinutes() * 60L );
     curl_easy_setopt( curl, CURLOPT_CONNECTTIMEOUT, 30L );
 
     // Allow HTTP to be used (local llama.cpp server is plain HTTP).

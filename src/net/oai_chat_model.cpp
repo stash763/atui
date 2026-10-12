@@ -8,10 +8,12 @@
 // call, then its outcome) so the UI keeps a record of what was done.
 #include "oai_chat_model.h"
 #include "oai_client.h"
+#include "permission_judge.h"
 #include "provider.h"
 #include "tools/preview.h"
 #include "tools/tool_registry.h"
 #include "tools/approval.h"
+#include "tools/permissions.h"
 #ifdef ATUI_DEBUG_KEYS
 #include "dbg.h"
 #endif
@@ -41,6 +43,31 @@ void pushToken( const char *tok, bool thinking, void *ctx )
 
 // Guard against a model that keeps requesting tools without ever finishing.
 const int kMaxToolRounds = 6;
+
+// Asks whether one approval-requiring call may go ahead without bothering
+// anybody: the facts first, then the permission agent for the shell commands the
+// facts cannot settle. `note` says which rule answered, for the transcript and
+// for the dialog when the question ends up with the user.
+//
+// Nothing here denies. The answer is "run it" or "ask", which is what keeps an
+// unreliable or unreachable agent safe: it can widen what reaches the user and
+// cannot narrow it either, and a confused model never runs a command.
+atui::tools::Permission permissionForCall( const atui::tools::Tool *tool,
+                                           const std::string &toolName,
+                                           const std::string &arguments,
+                                           std::string &note )
+{
+    const std::string agent = permissionAgentModel();
+    long agentMs = 0;
+    const atui::tools::Permission p = atui::tools::decideWithAgent(
+        tool->permissionSubject( arguments ), toolName, arguments, agent,
+        agentMs );
+
+    note = atui::tools::decisionNote( p );
+    atui::tools::logDecision( toolName, p, agent, agentMs,
+                              tool->callPreview( arguments ) );
+    return p;
+}
 
 } // anonymous namespace
 
@@ -168,28 +195,74 @@ bool OaiChatModel::ask( const std::string &userMessage, const std::string &histo
                 }
                 else if( tool->requiresApproval() )
                 {
-                    // Sensitive tool (file write / shell). Ask the user first.
-                    // With no approver installed, or on timeout, we refuse. The
-                    // dialog itself is the feedback, so no status token here;
-                    // the decline lands in the transcript record below.
-                    atui::tools::Approver *ap = atui::tools::approver();
-                    if( !ap )
+                    // Somebody has to be okay with this. The policy decides from
+                    // the project's boundaries; when it cannot, the user does.
+                    // An earlier "allow this session" for the identical call
+                    // outranks both, and is the only thing that does.
+                    std::string note;
+                    bool cleared = false;
+
+                    if( atui::tools::isAllowed( tc.name, tc.arguments ) )
                     {
-                        result = "error: tool '" + tc.name + "' requires "
-                                 "approval but no approval UI is available";
-                        run = false;
+                        cleared = true;
+                        note    = "allowed for this session";
+
+                        // Still logged. A run that happened because of an
+                        // approval remembered from earlier in the session
+                        // belongs in the audit trail exactly as much as one the
+                        // policy decided, or the log says nothing about half of
+                        // what the app did.
+                        atui::tools::Permission remembered;
+                        remembered.outcome = atui::tools::poRun;
+                        remembered.rung    = atui::tools::prSessionAllowed;
+                        remembered.reason  = note;
+                        atui::tools::logDecision(
+                            tc.name, remembered, std::string(), 0,
+                            tool->callPreview( tc.arguments ) );
                     }
                     else
                     {
-                        atui::tools::ApprovalRef req =
-                            std::make_shared< atui::tools::Approval >();
-                        req->tool    = tc.name;
-                        req->summary = tool->approvalSummary( tc.arguments );
-                        run = ap->approve( req );   // blocks this worker thread
-                        if( !run )
-                            result =
-                                "The user declined to run '" + tc.name + "'.";
+                        const atui::tools::Permission p = permissionForCall(
+                            tool, tc.name, tc.arguments, note );
+                        cleared = ( p.outcome == atui::tools::poRun );
+
+                        if( !cleared )
+                        {
+                            // The policy could not clear it, so the question is
+                            // the user's. No approver installed, or a timeout,
+                            // means no answer, and no answer is a refusal.
+                            atui::tools::Approver *ap = atui::tools::approver();
+                            if( !ap )
+                            {
+                                result = "error: tool '" + tc.name + "' requires "
+                                         "approval but no approval UI is available";
+                                note  += " (no approval UI to ask)";
+                                run    = false;
+                            }
+                            else
+                            {
+                                atui::tools::ApprovalRef req =
+                                    std::make_shared< atui::tools::Approval >();
+                                req->tool    = tc.name;
+                                req->summary = tool->approvalSummary( tc.arguments );
+                                req->reason  = note;
+                                run = ap->approve( req );   // blocks this thread
+                                if( run && req->allowSession() )
+                                    atui::tools::rememberAllowed( tc.name,
+                                                                  tc.arguments );
+                                note += run ? " (you allowed it)"
+                                            : " (you declined)";
+                                if( !run )
+                                    result = "The user declined to run '"
+                                             + tc.name + "'.";
+                            }
+                        }
                     }
+
+                    // One note per call, saying who answered: the difference
+                    // between atui having checked and atui having guessed.
+                    if( queue && !note.empty() )
+                        queue->push( Token( note, tkToolNote ) );
                 }
 
                 if( run )

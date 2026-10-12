@@ -22,19 +22,27 @@ namespace tools {
 // One confirmation request. Created by the worker thread, answered by the UI.
 class Approval {
 public:
-    Approval() : answered_( false ), allow_( false ) {}
+    Approval() : answered_( false ), allow_( false ), allowSession_( false ) {}
 
     // Filled by the worker before the request is shown.
     std::string tool;      // tool name, e.g. "run_command"
     std::string summary;   // human-readable preview of the call
+    // Why the policy is asking at all ("outside the project: /Users/u/.ssh").
+    // Somebody deciding should not have to guess which rule fired: this is the
+    // same sentence the transcript records and the log writes.
+    std::string reason;
 
-    // UI thread: record the decision and wake any blocked worker.
-    void answer( bool allow )
+    // UI thread: record the decision and wake any blocked worker. `session`
+    // means "and anything identical to this for the rest of the run", which the
+    // caller stores with permissions::rememberAllowed() - matched on the exact
+    // tool and arguments, never on a pattern.
+    void answer( bool allow, bool session = false )
     {
         {
             std::lock_guard< std::mutex > lock( m_ );
-            allow_    = allow;
-            answered_ = true;
+            allow_       = allow;
+            allowSession_ = allow && session;
+            answered_    = true;
         }
         cv_.notify_all();
     }
@@ -49,11 +57,19 @@ public:
         return answered_;
     }
 
+    // True when the user allowed this call and identical ones for the run.
+    bool allowSession() const
+    {
+        std::lock_guard< std::mutex > lock( m_ );
+        return allowSession_;
+    }
+
 private:
     mutable std::mutex m_;
     std::condition_variable cv_;
     bool answered_;
     bool allow_;
+    bool allowSession_;
 };
 
 typedef std::shared_ptr< Approval > ApprovalRef;

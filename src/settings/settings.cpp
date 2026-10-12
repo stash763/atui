@@ -3,6 +3,7 @@
 
 #include "ini.h"
 #include "net/provider.h"
+#include "tools/permissions.h"
 #include "tui/theme.h"
 
 #include <cstdlib>
@@ -87,6 +88,27 @@ bool loadAll()
     if( theme == "classic" )   tui::setTheme( tui::ThemeClassic );
     else if( theme == "dark" ) tui::setTheme( tui::ThemeDark );
 
+    // Permissions: what atui may do without asking. A name it does not know is
+    // left alone rather than guessed at, so a typo keeps the safe default.
+    std::string mode = ini.getString( "permissions", "mode", std::string() );
+    if( !mode.empty() )
+        tools::permissionModeFromName( mode, tools::permissionMode() );
+    std::string net = ini.getString( "permissions", "network", std::string() );
+    if( !net.empty() )
+        tools::networkPolicyFromName( net, tools::networkPolicy() );
+    tools::judgeModelOverride() =
+        ini.getString( "permissions", "judge_model",
+                       tools::judgeModelOverride() );
+    tools::judgeSeconds() = tools::clampJudgeSeconds(
+        ini.getInt( "permissions", "judge_seconds", tools::judgeSeconds() ) );
+    tools::logDecisions() = ini.getBool( "permissions", "log",
+                                         tools::logDecisions() );
+    // The audit trail lives beside the config file it is configured in. Decisions
+    // are written as they are made, so this is just where to put them.
+    tools::decisionLogPath() =
+        configPath().substr( 0, configPath().find_last_of( "/\\" ) + 1 ) +
+        "permissions.log";
+
     thinkingExpandAll() = ini.getBool( "ui", "thinking_expand",
                                        thinkingExpandAll() );
     wheelLines() = clampWheelLines( ini.getInt( "ui", "wheel_lines",
@@ -139,6 +161,15 @@ bool saveAll()
 
     ini.setString( "app", "provider", net::providerSettings().name );
     ini.setInt( "app", "request_minutes", net::requestMinutes() );
+
+    ini.setString( "permissions", "mode",
+                   tools::permissionModeName( tools::permissionMode() ) );
+    ini.setString( "permissions", "network",
+                   tools::networkPolicyName( tools::networkPolicy() ) );
+    ini.setString( "permissions", "judge_model",
+                   tools::judgeModelOverride() );
+    ini.setInt( "permissions", "judge_seconds", tools::judgeSeconds() );
+    ini.setBool( "permissions", "log", tools::logDecisions() );
 
     ini.setString( "ui", "theme", tui::themeName( tui::currentTheme() ) );
     ini.setBool( "ui", "thinking_expand", thinkingExpandAll() );

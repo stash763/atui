@@ -66,6 +66,7 @@ if(ATUI_HAVE_NETWORK)
     list(APPEND ATUI_SOURCES
         "${ATUI_SRC_DIR}/net/oai_client.cpp"
         "${ATUI_SRC_DIR}/net/oai_chat_model.cpp"
+        "${ATUI_SRC_DIR}/net/permission_judge.cpp"
         "${ATUI_SRC_DIR}/net/json_extract.cpp"
         "${ATUI_SRC_DIR}/net/token_queue.cpp"
         "${ATUI_SRC_DIR}/net/dbg.cpp"
@@ -103,8 +104,10 @@ if(ATUI_HAVE_NETWORK)
     )
 endif()
 
-# Version string, consumed via the ATUI_VERSION macro.
+# Version string, consumed via the ATUI_VERSION macro, and the source root so a
+# self-test can read the permission corpus that ships with the tree.
 add_compile_definitions(ATUI_VERSION="${PROJECT_VERSION}")
+add_compile_definitions(ATUI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
 install(TARGETS atui
     RUNTIME DESTINATION bin

@@ -5,6 +5,13 @@
 // that *use* settings (net/provider, tui/theme) need no changes: they keep
 // exposing their normal accessors and this glue reads/writes them.
 //
+//   [permissions]
+//   mode          = agent      # ask_all | exact | agent
+//   network       = agent      # agent | ask | allow
+//   judge_model   = mini-q4    # empty = the active provider's model
+//   judge_seconds = 5          # how long one judgement may take
+//   log           = true       # append each decision to permissions.log
+//
 //   [ui]
 //   theme = dark
 //   thinking_expand = false

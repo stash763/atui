@@ -55,8 +55,9 @@ const char *judgePromptVersion()
 {
     // Bumped whenever the question asked of the agent changes (its wording or
     // its expected keys), so a build with a different prompt can never reuse a
-    // plan cached under the old one.
-    return "1";
+    // plan cached under the old one. "2" is the prompt that spells out what EXEC
+    // is not, because "it runs the tests" was being read as running foreign code.
+    return "2";
 }
 
 std::string planCacheKey( const std::string &toolName,

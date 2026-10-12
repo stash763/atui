@@ -269,6 +269,11 @@ tools are registered by default:
 
 ### Confirmation prompt for sensitive tools
 
+> Superseded in part: whether to ask at all is now a policy decision - see
+> `PERMISSIONS.md` and "Permissions: modes, the judging agent, and the log"
+> below. The handshake described here is what the question uses once the policy
+> decides to ask it.
+
 `edit_file` and `run_command` touch the file system / shell, so they set
 `Tool::requiresApproval()` and the loop asks the user before running them. The
 worker thread and the TUI handshake lives in `src/tools/approval.{h,cpp}`:
@@ -813,6 +818,93 @@ was applied; Escape leaving both alone; and `File ▸ Options` showing
 Providers / Settings / ─ / Theme with the two old entries gone.
 
 
+## Permissions: modes, the judging agent, and the log
+
+The policy itself - the ladder, the deny-list, the agent contract, the config
+keys - is in `PERMISSIONS.md`. This section is how it is checked.
+
+### Offline, both builds (no model, no network)
+
+`decide()` is pure function of (mode, root, subject, plan), so the entire truth
+table is a unit test:
+
+```console
+./build/atui --self-test 2>&1 | grep permission
+```
+
+Covering: containment (relative, absolute, `..` escape, symlink out of the tree,
+symlink inside pointing inside, macOS `/tmp` realpath, the root itself, a path
+whose parent does not exist), the deny-list, the presence checks *and their false
+positives*, `rootTooBroad`, `publishesOutside` both directions (`git push` yes,
+`git pushed` and `npm run build` no), every plan flag against a fake judge, exfil
+outranking `network = allow`, the cache hit/miss and prompt-version invalidation,
+the `[permissions]` round-trip and clamps, and the log line's shape.
+
+The loop around it - policy, then approver, then the transcript note - runs
+against the localhost mock server (`tests/oai_mock_test.cpp`): exact edits in
+tree run, commands ask, an agent that clears a command clears it, one answer per
+call, a flagged effect asks, an unreadable reply asks, and `Remember` is exact to
+the arguments.
+
+**Every failure shape must produce a question, never an allow.** That is the
+property these tests exist for; a change that makes an unreadable answer mean
+"run" should be treated as a vulnerability, not a flake.
+
+### The dry run: `--judge-check`
+
+Nothing is executed, so it is safe on a corpus of `rm -rf`:
+
+```console
+atui --judge-check 'make -C . test' 'cat ~/.ssh/id_ed25519'
+atui --judge-check tests/permission_cases.txt      # exit 1 on any mismatch
+atui --judge-check --json -                        # JSONL
+atui --judge-check --root /some/other/tree 'cat ../x'
+```
+
+With no server configured, the facts-decidable lines still report correctly and
+every judged line reports `rung 8/9` - which is the honest answer, not a broken
+tool. The header prints the root, the mode and the agent it would ask, so a run
+that quietly used the wrong config is visible in the first line.
+
+Malformed corpus lines are an error with a file:line, and the self-test parses the
+corpus too: the runner *skips* what it cannot parse, so without that guard a
+typo turns 32 checks into 31 and the run still says it passed.
+
+### Live, with a real model
+
+```console
+ATUI_CONFIG=/private/tmp/none.ini \
+ATUI_BASE_URL=http://10.196.88.170:10001/v1 \
+ATUI_MODEL=Ternary-Bonsai-2-27B-PQ2_0.gguf \
+ATUI_JUDGE_SECONDS=60 \
+./build/atui --judge-check tests/permission_cases.txt
+```
+
+Last run: 32/32, 24 of them without a model call, judged calls 1.4-3.6s. Kept out
+of the default suite like the other live tests.
+
+Add `ATUI_JUDGE_DEBUG=1` to see the raw reply for every judgement on stderr - the
+only way to tell "the model said EXEC yes" apart from "the model returned a code
+fence" or "the model thought for 300 tokens and said nothing". Prompt wording is
+tuned by watching that against the corpus, and `judgePromptVersion()` must be
+bumped whenever the question changes, or stale cached plans answer under a prompt
+they were not produced by.
+
+Two model behaviours worth remembering when a corpus run goes wrong: a reasoning
+model needs thinking switched off or it spends the whole budget before answering
+(`OaiRequest::disableThinking`), and the answer only arrives over SSE - a
+non-streaming request parses as empty content.
+
+### Through the TUI (tui-test)
+
+Verified with `tui-test`: in-tree `echo in-project` runs unattended with the
+record `# agent: prints a greeting for the user` and a matching
+`permissions.log` line; a plan flagged `ELEVATED` raises the dialog quoting the
+reason; Alt-Y runs it, Enter and Esc both decline; clicking `~R~emember` allows
+it and the *same* call again shows `# allowed for this session` with no dialog,
+while a different command still asks; Settings ▸ mode radio persists
+`mode = exact` and the status line changes to `perm: exact` without a restart.
+
 ## Prompt input (wrapping + auto-grow)
 
 The message box is a custom `PromptInput` view (a `TView` subclass in
@@ -972,6 +1064,22 @@ Recreate from /tmp/opencode/atui_pty_test.py pattern:
 - TVision **redirects stderr to a pipe** when it is a tty
   (`tvision/source/platform/errredir.cpp`), so debug fprintf(stderr, ...)
   vanishes. Log to a file instead — and remember to remove the logging.
+- A `TDialog` only closes on `cmOK` / `cmCancel` / `cmYes` / `cmNo`. A button
+  wired to a custom command id is silently swallowed - the click lands, the
+  handler runs, and the dialog stays open looking broken. Reuse one of the four
+  and read which one it was.
+- `TButton` hotkeys (`~Y~es`) do work through Alt+letter, but **Alt-S is the
+  "Switch model" menu**, so it is not available to dialogs. Free letters so far:
+  B C D E G J K L M N Q R U V W Y Z.
+- A dialog executed on `TProgram::application` gets the keyboard but **no working
+  mouse hit-testing**. Every atui dialog goes through `deskTop->execView()`;
+  anything else works fine until the first click.
+- `TStaticText` clips silently — a `TDialog` sized by `makeRect()` fits about
+  three rows of 33 columns and the rest of the message simply is not there. Count
+  the wrapped lines and size the dialog around them.
+- A `TInputLine` `limit` counts the NUL, and only `width - 2` columns are
+  visible: n digits need `limit = n + 1` and `width = n + 2`, or a 4-field value
+  scrolls off its own field and looks like a failure to save.
 - `TERM=xterm-256color` → truecolor SGR (`38;2`/`48;2`) for RGB palette
   entries; BIOS palette entries become plain 16-color SGR.
 - Alt keys arrive as `ESC` + letter in raw pty input; tui-test `key press

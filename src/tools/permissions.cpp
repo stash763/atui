@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -175,9 +176,17 @@ std::string absolutePath( const std::string &path )
     std::string p = trimmed( path );
     if( p.empty() ) return std::string();
 
+    // `$HOME/x` and `${HOME}/x` mean the same thing to the shell as `~/x`, and a
+    // command that reaches $HOME is reaching out of the project whatever spelling
+    // it uses.
+    const char *h = homeDir();
+    if( p.compare( 0, 5, "$HOME" ) == 0 && h[0] )
+        p = std::string( h ) + p.substr( 5 );
+    else if( p.compare( 0, 7, "${HOME}") == 0 && h[0] )
+        p = std::string( h ) + p.substr( 7 );
+
     if( p[0] == '~' )
     {
-        const char *h = homeDir();
         if( !h[0] ) return std::string();
         p = std::string( h ) + p.substr( 1 );
     }
@@ -307,35 +316,171 @@ bool anyDenyListed( const std::vector< std::string > &paths,
     return false;
 }
 
+// Two-word command phrases with word boundaries at both ends: "git push" matches
+// `git push origin main` and not "logistics pushback".
+bool hasPhrase( const std::string &cmd, const char *phrase )
+{
+    std::size_t at = 0;
+    const std::size_t n = std::strlen( phrase );
+    while( ( at = cmd.find( phrase, at ) ) != std::string::npos )
+    {
+        const bool left  = ( at == 0 || !std::isalnum( (unsigned char) cmd[at - 1] ) );
+        const std::size_t after = at + n;
+        const bool right = ( after == cmd.size() ||
+                             !std::isalnum( (unsigned char) cmd[after] ) );
+        if( left && right ) return true;
+        ++at;
+    }
+    return false;
+}
+
+const char *kPublishPhrases[] = {
+        "git push", "git send-email", "hg push", "npm publish", "yarn publish",
+        "pnpm publish", "twine upload", "docker push", "podman push",
+        "helm push", "gh release", "kubectl apply", "kubectl delete",
+        "kubectl create", "terraform apply", "terraform destroy",
+        "aws s3 sync", "aws s3 cp", "aws deploy", "gsutil rsync"
+    };
 } // anonymous namespace
+
+// Commands whose whole point is to change something this policy cannot see:
+// another machine. Containment is about directories, and `git push` is not
+// reaching a directory anybody would call "outside the project" - it is
+// publishing. So these are asked about even when the plan is otherwise clean.
+//
+// Deliberately narrow, and deliberately one-sided: a missed entry only means the
+// judge gets to describe the command, while an over-eager one costs a question.
+// Package installation is *not* on it - `cargo build`, `npm ci` and `pip install
+// -r` into a project's own venv are the ordinary work this feature exists to stop
+// interrupting, and a system-wide install shows up as an out-of-tree path or as
+// `sudo`, both of which are already refused.
+bool publishesOutside( const std::string &command, std::string &why )
+{
+    for( std::size_t i = 0;
+         i < sizeof kPublishPhrases / sizeof kPublishPhrases[0]; ++i )
+    {
+        if( hasPhrase( command, kPublishPhrases[i] ) )
+        {
+            why = kPublishPhrases[i];
+            return true;
+        }
+    }
+    // Copying to another machine: the destination is not a directory here, so
+    // containment has nothing to say about it either way.
+    const char *copies[] = { "scp", "sftp", "rsync" };
+    for( std::size_t i = 0; i < sizeof copies / sizeof copies[0]; ++i )
+    {
+        if( hasToken( command, copies[i] ) )
+        {
+            why = copies[i];
+            return true;
+        }
+    }
+    return false;
+}
+
+int parsePermissionCase( const std::string &line, std::string &expect,
+                         std::string &command )
+{
+    const std::size_t from = line.find_first_not_of( " \t" );
+    if( from == std::string::npos ) return kPermissionCaseSkip;
+    if( line[from] == '#' ) return kPermissionCaseSkip;
+
+    const std::size_t sep = line.find_first_of( " \t", from );
+    if( sep == std::string::npos ) return kPermissionCaseBad;
+
+    const std::string head = line.substr( from, sep - from );
+    if( head != "run" && head != "ask" ) return kPermissionCaseBad;
+
+    const std::size_t start = line.find_first_not_of( " \t", sep );
+    if( start == std::string::npos ) return kPermissionCaseBad;
+
+    expect  = head;
+    command = line.substr( start );
+    const std::size_t end = command.find_last_not_of( " \t\r\n" );
+    if( end != std::string::npos ) command.erase( end + 1 );
+    return kPermissionCaseOk;
+}
 
 // --- configuration -------------------------------------------------------------
 
+namespace {
+
+const char *envOrNone( const char *name )
+{
+    const char *v = std::getenv( name );
+    return ( v && v[0] ) ? v : 0;
+}
+
+// Environment seeding for the accessors below: env vars come first, then the
+// config file overrides them (settings::loadAll), exactly as the provider and
+// theme singletons work.
+template <typename T>
+T envEnum( const char *name, T current, bool (*parse)( const std::string &, T & ) )
+{
+    const char *v = envOrNone( name );
+    if( !v ) return current;
+    T out = current;
+    return parse( std::string( v ), out ) ? out : current;
+}
+
+int envInt( const char *name, int current )
+{
+    const char *v = envOrNone( name );
+    if( !v ) return current;
+    char *end = 0;
+    const long n = std::strtol( v, &end, 10 );
+    return ( end && end != v ) ? (int) n : current;
+}
+
+bool envBool( const char *name, bool current )
+{
+    const char *v = envOrNone( name );
+    if( !v ) return current;
+    const std::string s = lowered( std::string( v ) );
+    if( s == "1" || s == "true" || s == "yes" || s == "on" )  return true;
+    if( s == "0" || s == "false" || s == "no" || s == "off" ) return false;
+    return current;
+}
+
+} // anonymous namespace
+
 PermissionMode &permissionMode()
 {
-    // The historical behaviour, and the right fallback everywhere the agent is
-    // not available: asking is always correct, just not always welcome.
-    // settings::loadAll() raises this to pmAgent, which is also the default a
-    // network build wants.
-    static PermissionMode mode = pmAskAll;
+    // Shipped default: in-project work goes ahead, anything reaching outside it
+    // is asked about. This is safe by construction rather than by judgement -
+    // `decide()` only reaches "run" by falling through every veto, and a build or
+    // a session with no model to ask degrades to asking about commands, which is
+    // what this default used to be everywhere.
+    //
+    // ATUI_PERMISSIONS=ask_all is the one-command way back, and Settings keeps
+    // the same three choices.
+    static PermissionMode mode =
+        envEnum<PermissionMode>( "ATUI_PERMISSIONS", pmAgent,
+                                 permissionModeFromName );
     return mode;
 }
 
 NetworkPolicy &networkPolicy()
 {
-    static NetworkPolicy policy = npAgent;
+    static NetworkPolicy policy =
+        envEnum<NetworkPolicy>( "ATUI_PERMISSION_NETWORK", npAgent,
+                                networkPolicyFromName );
     return policy;
 }
 
 int &judgeSeconds()
 {
-    static int seconds = kDefaultJudgeSeconds;
+    static int seconds = clampJudgeSeconds(
+        envInt( "ATUI_JUDGE_SECONDS", kDefaultJudgeSeconds ) );
     return seconds;
 }
 
 bool &logDecisions()
 {
-    static bool enabled = true;
+    // On by default: a decision nobody can look back at is a decision nobody can
+    // audit after the fact, and the file is a few hundred bytes per run.
+    static bool enabled = envBool( "ATUI_PERMISSION_LOG", true );
     return enabled;
 }
 
@@ -350,6 +495,8 @@ std::string &decisionLogPath()
 std::string &judgeModelOverride()
 {
     static std::string model;
+    const char *seed = envOrNone( "ATUI_JUDGE_MODEL" );
+    if( model.empty() && seed ) model = seed;
     return model;
 }
 
@@ -486,14 +633,22 @@ void pathsMentioned( const std::string &text,
         const std::string::size_type eq = token.find_last_of( '=' );
         if( eq != std::string::npos ) token = token.substr( eq + 1 );
 
-        if( token.size() < 2 ) continue;
+        // `@file` is how curl names a file to send (--data @secrets), so the
+        // sigil is stripped before asking whether this names a path: a token
+        // that means "read this file" to the shell means "read this file" here.
+        std::string candidate = token;
+        if( !candidate.empty() && candidate[0] == '@' )
+            candidate.erase( 0, 1 );
+
+        if( candidate.size() < 2 ) continue;
         const bool pathLike =
-            token[0] == '/' || token[0] == '.' || token[0] == '~' ||
-            token.find( '/' ) != std::string::npos;
+            candidate[0] == '/' || candidate[0] == '.' || candidate[0] == '~' ||
+            candidate[0] == '$' ||
+            candidate.find( '/' ) != std::string::npos;
         if( !pathLike ) continue;
 
-        if( std::find( out.begin(), out.end(), token ) == out.end() )
-            out.push_back( token );
+        if( std::find( out.begin(), out.end(), candidate ) == out.end() )
+            out.push_back( candidate );
     }
 }
 
@@ -614,6 +769,59 @@ bool denyListed( const std::string &path, std::string &why )
 
 // --- the decision --------------------------------------------------------------
 
+namespace {
+
+std::mutex &allowMutex()
+{
+    static std::mutex m;
+    return m;
+}
+
+// Tool name and arguments joined on a newline: exact-match keys, no hashing,
+// for the same reason the plan cache does not hash.
+std::vector< std::string > &allowed()
+{
+    static std::vector< std::string > list;
+    return list;
+}
+
+std::string allowKey( const std::string &toolName, const std::string &argumentsJson )
+{
+    return toolName + "\n" + argumentsJson;
+}
+
+// Enough for a long session of distinct calls. Past it the answer is still "run
+// it" for anything already listed, so refusing to grow is not a correctness
+// problem, only a slightly surprising re-ask.
+const std::size_t kMaxAllowed = 1024;
+
+} // anonymous namespace
+
+void rememberAllowed( const std::string &toolName,
+                      const std::string &argumentsJson )
+{
+    std::lock_guard< std::mutex > lock( allowMutex() );
+    const std::string key = allowKey( toolName, argumentsJson );
+    if( std::find( allowed().begin(), allowed().end(), key ) != allowed().end() )
+        return;
+    if( allowed().size() >= kMaxAllowed ) return;
+    allowed().push_back( key );
+}
+
+bool isAllowed( const std::string &toolName, const std::string &argumentsJson )
+{
+    std::lock_guard< std::mutex > lock( allowMutex() );
+    const std::string key = allowKey( toolName, argumentsJson );
+    return std::find( allowed().begin(), allowed().end(), key )
+           != allowed().end();
+}
+
+void clearAllowed()
+{
+    std::lock_guard< std::mutex > lock( allowMutex() );
+    allowed().clear();
+}
+
 Permission decide( const PermissionSubject &subject, const EffectPlan *plan )
 {
     Permission p;
@@ -692,6 +900,16 @@ Permission decide( const PermissionSubject &subject, const EffectPlan *plan )
         return p;
     }
 
+    // prPublish: writing to another machine is outside the project in the only
+    // way that matters, whatever the paths in the command look like.
+    if( publishesOutside( subject.value, why ) )
+    {
+        p.outcome = poAsk;
+        p.rung    = prPublish;
+        p.reason  = "it publishes to somewhere else (" + why + ")";
+        return p;
+    }
+
     // 7. Any path it names that lands outside the tree.
     std::string outside;
     if( anyOutside( paths, outside ) )
@@ -715,9 +933,12 @@ Permission decide( const PermissionSubject &subject, const EffectPlan *plan )
     }
     if( !plan )
     {
-        p.outcome = poAsk;
+        // Not a question for the user yet: this says "the facts run out here and,
+        // in this mode, something else can answer". A caller with no agent turns
+        // it back into poAsk, which is what rung 8 means.
+        p.outcome = poAgent;
         p.rung    = prNoAgent;
-        p.reason  = "no permission agent was consulted";
+        p.reason  = "the facts alone do not settle it";
         return p;
     }
 
@@ -807,14 +1028,58 @@ Permission decide( const PermissionSubject &subject, const EffectPlan *plan )
     // 13. Described, contained, and nothing was flagged.
     p.outcome = poRun;
     p.rung    = prPlanCleared;
-    p.reason  = plan->summary.empty() ? std::string( "the permission agent "
-                              "found nothing outside the project" )
-                                      : plan->summary;
+    p.reason  = plan->summary.empty()
+        ? std::string( "found nothing outside the project" )
+        : plan->summary;
+    return p;
+}
+
+Permission decideWithAgent( const PermissionSubject &subject,
+                            const std::string &toolName,
+                            const std::string &argumentsJson,
+                            const std::string &agentLabel,
+                            long &agentMs )
+{
+    agentMs = 0;
+    Permission p = decide( subject );
+    if( p.outcome != poAgent ) return p;
+
+    PermissionJudge *judge = permissionJudge();
+    if( !judge )
+    {
+        // "Ask the agent" with nobody to ask is a question for the user, and the
+        // reason says so: a permission system that fails silently is one nobody
+        // can trust two minutes later.
+        p.outcome = poAsk;
+        p.reason  = "no permission agent is available to check it";
+        return p;
+    }
+
+    const std::string key = planCacheKey( toolName, argumentsJson, agentLabel,
+                                          projectRoot() );
+    EffectPlan plan;
+    const bool cached = cachedPlan( key, plan );
+    if( !cached )
+    {
+        const std::chrono::steady_clock::time_point start =
+            std::chrono::steady_clock::now();
+        judge->plan( toolName, argumentsJson, plan );
+        agentMs = (long) std::chrono::duration_cast< std::chrono::milliseconds >(
+            std::chrono::steady_clock::now() - start ).count();
+        rememberPlan( key, plan );
+    }
+
+    p = decide( subject, &plan );
+    if( cached ) p.reason += " (as before)";
     return p;
 }
 
 std::string decisionNote( const Permission &p )
 {
+    // A call the user already allowed does not need a rule explained: the note
+    // says where the answer came from and stops there.
+    if( p.rung == prSessionAllowed ) return p.reason;
+
     if( p.outcome == poRun )
         return std::string( p.rung == prPlanCleared ? "agent: " : "auto: " ) +
                p.reason;

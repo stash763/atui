@@ -16,12 +16,22 @@
 #include "net/provider.h"
 #include "net/json_extract.h"
 #include "tools/approval.h"
+#include "tools/permissions.h"
+#include "net/permission_judge.h"
 
 #include <chrono>
+#include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <thread>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#endif
 
 namespace atui_test {
 
@@ -60,7 +70,8 @@ void drain( TokenQueue &q, std::string &out )
 }
 
 // Drain with each token's kind marked, so a test can tell a tool record from
-// answer text: "tool>" is the call, "out>" its result, "think>" reasoning.
+// answer text: "tool>" is the call, "note>" who allowed it and why, "out>" its
+// result, "think>" reasoning.
 void drainKinds( TokenQueue &q, std::string &out )
 {
     atui::net::Token t;
@@ -71,6 +82,7 @@ void drainKinds( TokenQueue &q, std::string &out )
             case atui::net::tkThinking:   out += "think>"; break;
             case atui::net::tkStatus:     out += "status>"; break;
             case atui::net::tkTool:       out += "tool>";  break;
+            case atui::net::tkToolNote:   out += "note>";  break;
             case atui::net::tkToolResult: out += "out>";   break;
             case atui::net::tkContent:    break;
         }
@@ -640,15 +652,19 @@ int test_oai_fetch_models()
 struct TestApprover : public atui::tools::Approver
 {
     bool decision;
+    bool session;          // answer "yes, and for the rest of the run"
     int  calls;
     std::string lastTool;
     std::string lastSummary;
-    TestApprover() : decision( true ), calls( 0 ) {}
+    std::string lastReason;   // what the policy said it could not clear
+    TestApprover() : decision( true ), session( false ), calls( 0 ) {}
     virtual bool approve( const atui::tools::ApprovalRef &req )
     {
         ++calls;
         lastTool    = req->tool;
         lastSummary = req->summary;
+        lastReason  = req->reason;
+        req->answer( decision, session );   // as the real UI thread would
         return decision;
     }
 };
@@ -747,6 +763,401 @@ int test_oai_tool_approval_deny()
     return 0;
 }
 
+// --- permission modes in the chat loop -----------------------------------------
+//
+// tools/permissions.cpp is tested rung by rung in selftest.cpp; what is tested
+// here is the seam: that the loop asks the policy at all, that a call the policy
+// clears never reaches the approver, that the transcript says who answered, and
+// that every way the agent can fail ends in a question rather than a run.
+
+// Restores the process-wide permission state, and starts each test with no
+// cached judgements and no session allowances, so tests cannot lean on each
+// other through the caches.
+class PermissionReset
+{
+public:
+    PermissionReset()
+        : mode_( atui::tools::permissionMode() ),
+          root_( atui::tools::projectRoot() )
+    {
+        atui::tools::setPermissionJudge( 0 );
+        atui::tools::clearPlanCache();
+        atui::tools::clearAllowed();
+    }
+    ~PermissionReset()
+    {
+        atui::tools::setPermissionJudge( 0 );
+        atui::tools::permissionMode() = mode_;
+        atui::tools::setProjectRoot( root_ );
+        atui::tools::clearPlanCache();
+        atui::tools::clearAllowed();
+    }
+
+private:
+    atui::tools::PermissionMode mode_;
+    std::string root_;
+};
+
+// A scratch project: <tmp>/atui_perm_mock/proj with one text file in it.
+// edit_file only edits files that exist, and containment is only worth testing
+// against directories that do.
+class ScratchProject
+{
+public:
+    std::string base;
+    std::string root;
+    std::string file;
+    bool ok;
+
+    ScratchProject() : ok( false )
+    {
+        const char *tmp = std::getenv( "TMPDIR" );
+        if( !tmp || !*tmp ) tmp = "/tmp";
+        base = std::string( tmp );
+        while( base.size() > 1 && base[ base.size() - 1 ] == '/' )
+            base.erase( base.size() - 1 );
+        base += "/atui_perm_mock";
+        ::mkdir( base.c_str(), 0755 );   // may already exist
+
+        root = base + "/proj";
+        ::mkdir( root.c_str(), 0755 );
+        file = root + "/target.txt";
+        std::ofstream out( file.c_str() );
+        out << "alpha\n";
+        if( !out ) return;
+        out.close();
+
+        atui::tools::setProjectRoot( root );
+        root = atui::tools::projectRoot();
+        ok   = ( !root.empty() && root.find( "atui_perm_mock" ) != std::string::npos );
+    }
+
+    ~ScratchProject()
+    {
+        std::remove( file.c_str() );
+        ::rmdir( root.c_str() );
+        ::rmdir( base.c_str() );
+    }
+
+    std::string contents() const
+    {
+        std::ifstream in( file.c_str() );
+        return std::string( (std::istreambuf_iterator<char>( in )),
+                            std::istreambuf_iterator<char>() );
+    }
+};
+
+// A judge that answers from a canned reply: no HTTP, no latency, and the same
+// parse path the real one uses, so a wrong contract shows up here rather than in
+// front of the user.
+class FakeJudge : public atui::tools::PermissionJudge
+{
+public:
+    std::string reply;
+    int calls;
+    FakeJudge() : reply( "SUMMARY harmless\nNET no" ), calls( 0 ) {}
+    virtual void plan( const std::string &, const std::string &,
+                       atui::tools::EffectPlan &out )
+    {
+        ++calls;
+        atui::net::parseEffectPlan( reply, out );
+    }
+};
+
+// Quotes a JSON blob for the "arguments" string of a tool_call payload.
+std::string payloadQuote( const std::string &json )
+{
+    std::string out;
+    for( std::size_t i = 0; i < json.size(); ++i )
+    {
+        const char c = json[i];
+        if( c == '"' )       out += "\\\"";
+        else if( c == '\\' ) out += "\\\\";
+        else                 out += c;
+    }
+    return out;
+}
+
+// One round 0 that asks for `toolName`( `args` ), optionally twice over with the
+// identical arguments.
+std::string toolCallRound( const std::string &toolName,
+                           const std::string &args, bool twice )
+{
+    std::string calls =
+        "{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{"
+        "\"name\":\"" + toolName + "\",\"arguments\":\"" +
+        payloadQuote( args ) + "\"}}";
+    if( twice )
+        calls +=
+            ",{\"index\":1,\"id\":\"c2\",\"type\":\"function\",\"function\":{"
+            "\"name\":\"" + toolName + "\",\"arguments\":\"" +
+            payloadQuote( args ) + "\"}}";
+
+    return std::string( "{\"choices\":[{\"index\":0,\"delta\":{\"role\":"
+                        "\"assistant\",\"tool_calls\":[" ) + calls +
+                        "]}},\"finish_reason\":\"tool_calls\"}]}";
+}
+
+// Drives one ask() whose first round requests a single tool, with the approver
+// answering `allow` (and `session` for identical calls later).
+int runPermissionRound( const std::string &toolName, const std::string &args,
+                        bool twice, bool allow, bool session,
+                        std::string &drained, int &approvals )
+{
+    MockOpenAiServer srv;
+    if( !srv.start() )
+        return -1;
+    srv.enqueue( MockOpenAiServer::sse( { toolCallRound( toolName, args,
+                                                         twice ) } ) );
+    srv.enqueue( MockOpenAiServer::sse( {
+        "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"all done\","
+        "\"finish_reason\":\"stop\"}]}" } ) );
+
+    useMock( srv );
+    TestApprover ap;
+    ap.decision = allow;
+    ap.session  = session;
+    atui::tools::setApprover( &ap );
+
+    int rc = 0;
+    {
+        TokenQueue q;
+        atui::net::OaiChatModel model;
+        if( !model.ask( "do it", "", &q ) )
+            rc = -2;
+        else if( !waitFor( [&] { return model.isDone(); } ) )
+            rc = -3;
+        else
+        {
+            std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+            drainKinds( q, drained );
+        }
+    }
+
+    approvals = ap.calls;
+    atui::tools::setApprover( 0 );
+    srv.stop();
+    return rc;
+}
+
+// exact mode: a file inside the project is decided by containment, so the user
+// is never asked and the edit still happens.
+int test_oai_exact_mode_edits_in_tree()
+{
+    PermissionReset reset;
+    ScratchProject tree;
+    if( !tree.ok )
+        return -1;
+    atui::tools::permissionMode() = atui::tools::pmExact;
+
+    std::string drained; int approvals = 0;
+    const int rc = runPermissionRound(
+        "edit_file",
+        "{\"path\":\"" + tree.file + "\",\"old_text\":\"alpha\","
+        "\"new_text\":\"omega\"}",
+        false, true, false, drained, approvals );
+    if( rc != 0 )
+        return rc;
+    if( approvals != 0 )
+        return -2;   // asking means the policy did not decide
+    if( !contains( drained, "note>auto: inside the project" ) )
+        return -3;
+    if( tree.contents().find( "omega" ) == std::string::npos )
+        return -4;   // it must actually have run
+    return 0;
+}
+
+// exact mode: the same mode still asks about a command, because the facts cannot
+// say what `echo` reaches, and says that in the reason.
+int test_oai_exact_mode_asks_about_commands()
+{
+    PermissionReset reset;
+    ScratchProject tree;
+    if( !tree.ok )
+        return -1;
+    atui::tools::permissionMode() = atui::tools::pmExact;
+
+    std::string drained; int approvals = 0;
+    int rc = runPermissionRound( "run_command",
+                                 "{\"command\":\"echo hi\"}",
+                                 false, true, false, drained, approvals );
+    if( rc != 0 )
+        return rc;
+    if( approvals != 1 )
+        return -2;
+    if( !contains( drained, "note>nothing outside the project" ) )
+        return -3;
+    if( !contains( drained, "(you allowed it)" ) )
+        return -4;
+    if( !contains( drained, "out>exit code 0" ) )
+        return -5;
+    return 0;
+}
+
+// agent mode: a described, contained command runs with the agent's own words in
+// the record, and the user is not interrupted.
+int test_oai_agent_clears_described_command()
+{
+    PermissionReset reset;
+    ScratchProject tree;
+    if( !tree.ok )
+        return -1;
+    atui::tools::permissionMode() = atui::tools::pmAgent;
+    FakeJudge judge;
+    judge.reply = "SUMMARY prints a greeting\nNET no";
+    atui::tools::setPermissionJudge( &judge );
+
+    std::string drained; int approvals = 0;
+    const int rc = runPermissionRound( "run_command",
+                                       "{\"command\":\"echo hi\"}",
+                                       false, true, false, drained, approvals );
+    if( rc != 0 )
+        return rc;
+    if( judge.calls != 1 )
+        return -2;
+    if( approvals != 0 )
+        return -3;
+    if( !contains( drained, "note>agent: prints a greeting" ) )
+        return -4;
+    if( !contains( drained, "out>exit code 0" ) )
+        return -5;
+    return 0;
+}
+
+// agent mode, twice the same call: one question to the model, not two. A
+// permission agent that costs a round-trip per keystroke of a build loop is a
+// permission agent that gets turned off.
+int test_oai_agent_answers_once_per_call()
+{
+    PermissionReset reset;
+    ScratchProject tree;
+    if( !tree.ok )
+        return -1;
+    atui::tools::permissionMode() = atui::tools::pmAgent;
+    FakeJudge judge;
+    judge.reply = "SUMMARY prints a greeting\nNET no";
+    atui::tools::setPermissionJudge( &judge );
+
+    std::string drained; int approvals = 0;
+    const int rc = runPermissionRound( "run_command",
+                                       "{\"command\":\"echo hi\"}",
+                                       true, true, false, drained, approvals );
+    if( rc != 0 )
+        return rc;
+    if( judge.calls != 1 )
+        return -2;   // the second identical call came from the cache
+    if( approvals != 0 )
+        return -3;
+    if( !contains( drained, "as before" ) )
+        return -4;   // the record says the answer was reused
+    return 0;
+}
+
+// An agent that reports privileges is a question, not a run.
+int test_oai_agent_flagged_effect_asks()
+{
+    PermissionReset reset;
+    ScratchProject tree;
+    if( !tree.ok )
+        return -1;
+    atui::tools::permissionMode() = atui::tools::pmAgent;
+    FakeJudge judge;
+    judge.reply = "SUMMARY installs a system package\nELEVATED yes";
+    atui::tools::setPermissionJudge( &judge );
+
+    std::string drained; int approvals = 0;
+    TestApprover ap;
+    ap.decision = false;
+    atui::tools::setApprover( &ap );
+
+    MockOpenAiServer srv;
+    if( !srv.start() )
+        return -2;
+    srv.enqueue( MockOpenAiServer::sse( { toolCallRound(
+        "run_command", "{\"command\":\"echo hi\"}", false ) } ) );
+    srv.enqueue( MockOpenAiServer::sse( {
+        "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\","
+        "\"finish_reason\":\"stop\"}]}" } ) );
+    useMock( srv );
+
+    TokenQueue q;
+    atui::net::OaiChatModel model;
+    if( !model.ask( "do it", "", &q ) )
+        return -3;
+    if( !waitFor( [&] { return model.isDone(); } ) )
+        return -4;
+    std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+    drainKinds( q, drained );
+    srv.stop();
+
+    approvals = ap.calls;
+    atui::tools::setApprover( 0 );
+    if( approvals != 1 )
+        return -5;
+    if( !contains( ap.lastReason, "elevated" ) )
+        return -6;
+    if( !contains( drained, "(you declined)" ) )
+        return -7;
+    if( contains( drained, "exit code" ) )
+        return -8;   // must not have run
+    return 0;
+}
+
+// An answer that cannot be read is not a description: fail to a question.
+int test_oai_agent_unreadable_reply_asks()
+{
+    PermissionReset reset;
+    ScratchProject tree;
+    if( !tree.ok )
+        return -1;
+    atui::tools::permissionMode() = atui::tools::pmAgent;
+    FakeJudge judge;
+    judge.reply = "I'm sorry, but I cannot determine what that does.";
+    atui::tools::setPermissionJudge( &judge );
+
+    std::string drained; int approvals = 0;
+    int rc = runPermissionRound( "run_command",
+                                 "{\"command\":\"echo hi\"}",
+                                 false, false, false, drained, approvals );
+    if( rc != 0 )
+        return rc;
+    if( approvals != 1 )
+        return -2;
+    if( !contains( drained, "could not describe" ) )
+        return -3;
+    if( contains( drained, "exit code" ) )
+        return -4;
+    return 0;
+}
+
+// "Allow this session" outranks the policy for the identical call and only that
+// call: the second copy is not asked about, and nothing else is covered.
+int test_oai_allow_this_session_is_exact()
+{
+    PermissionReset reset;
+    ScratchProject tree;
+    if( !tree.ok )
+        return -1;
+    atui::tools::permissionMode() = atui::tools::pmAskAll;
+
+    std::string drained; int approvals = 0;
+    int rc = runPermissionRound( "run_command",
+                                 "{\"command\":\"echo hi\"}",
+                                 true, true, true, drained, approvals );
+    if( rc != 0 )
+        return rc;
+    if( approvals != 1 )
+        return -2;   // asked once, not twice
+    if( !contains( drained, "note>allowed for this session" ) )
+        return -3;
+    std::size_t first = drained.find( "exit code 0" );
+    if( first == std::string::npos )
+        return -4;
+    if( drained.find( "exit code 0", first + 1 ) == std::string::npos )
+        return -5;   // both calls ran
+    return 0;
+}
+
 } // anonymous namespace
 
 void init_network_tests()
@@ -758,6 +1169,20 @@ void init_network_tests()
     register_test( "oai: message serialization", &test_oai_message_serialization );
     register_test( "oai: connection refused", &test_oai_connection_refused );
     register_test( "oai: chat tool loop", &test_oai_chat_tool_loop );
+    register_test( "oai: exact mode edits in tree",
+                   &test_oai_exact_mode_edits_in_tree );
+    register_test( "oai: exact mode asks about commands",
+                   &test_oai_exact_mode_asks_about_commands );
+    register_test( "oai: agent clears described command",
+                   &test_oai_agent_clears_described_command );
+    register_test( "oai: agent answers once per call",
+                   &test_oai_agent_answers_once_per_call );
+    register_test( "oai: agent flagged effect asks",
+                   &test_oai_agent_flagged_effect_asks );
+    register_test( "oai: agent unreadable reply asks",
+                   &test_oai_agent_unreadable_reply_asks );
+    register_test( "oai: allow this session is exact",
+                   &test_oai_allow_this_session_is_exact );
     register_test( "oai: chat context carry", &test_oai_chat_context_carry );
     register_test( "oai: delta reasoning parse", &test_oai_delta_reasoning_parse );
     register_test( "oai: reasoning stream", &test_oai_reasoning_stream );

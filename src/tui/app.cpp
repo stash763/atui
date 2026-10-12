@@ -60,10 +60,12 @@
 #include "tui/wrap.h"
 #include "net/provider.h"
 #include "settings/settings.h"
+#include "tools/permissions.h"
 
 #ifdef ATUI_HAVE_NETWORK
 #include "net/oai_chat_model.h"
 #include "net/oai_client.h"
+#include "net/permission_judge.h"
 #include "net/token_queue.h"
 #include "tools/approval.h"
 #include <mutex>
@@ -105,6 +107,7 @@ namespace {
     // "provider | model".
     TSubMenu *g_switchModelMenu_ = 0;
     TStatusItem *g_statusProvider_ = 0;
+    TStatusItem *g_statusPermission_ = 0;
 
     // M2 streaming state (only used when ATUI_HAVE_NETWORK).
 #ifdef ATUI_HAVE_NETWORK
@@ -142,6 +145,7 @@ void pollSink_();
 TMenu *buildSwitchModelMenu_();
 void refreshSwitchModelMenu_();
 void updateProviderStatus_();
+void updatePermissionStatus_();
 void showProvidersDialog_();
 void pickSwitchModel_( int index );
 
@@ -157,20 +161,32 @@ std::mutex                 g_apMx;               // guards g_pendingApproval
 atui::tools::ApprovalRef   g_pendingApproval;    // worker sets, UI clears
 bool                       g_approvalShowing = false;  // re-entrancy guard
 
-// Show the confirmation dialog for a pending tool approval and return true if
-// the user allowed it. Modal: it runs a nested event loop on this thread.
+// What the user made of a confirmation request. The third answer is not "allow
+// this kind of thing": it is this call, tool and arguments included, for the
+// rest of the run - the same key the plan cache uses, so a build loop that runs
+// `make test` forty times asks once and not forty times.
+enum ApprovalAnswer { apNo = 0, apOnce = 1, apSession = 2 };
+
+// Show the confirmation dialog for a pending tool approval. Modal: it runs a
+// nested event loop on this thread.
 //
 // Not stock messageBox() - that sizes itself for about three lines of text and
 // silently clips the rest, which here would hide the one line saying what is
 // actually about to run. This box is laid out around the message instead, and
 // No is the default button, so Enter and Esc both decline.
-bool showApprovalDialog_( const atui::tools::ApprovalRef &req )
+int showApprovalDialog_( const atui::tools::ApprovalRef &req )
 {
     // The keys are spelled out because the box is safe by default: Enter and
     // Esc decline, so approving has to be a deliberate keystroke.
-    const std::string body = "The model wants to run the \"" + req->tool +
-                             "\" tool.\n\n" + req->summary +
-                             "\n\nAllow this to run?  (Alt-Y = yes, Enter = no)";
+    std::string body = "The model wants to run the \"" + req->tool +
+                       "\" tool.\n\n" + req->summary;
+    // Why it is asking in the first place: the same sentence the transcript
+    // records and the log writes, so "what rule put this in front of me" gets
+    // answered where the decision is made.
+    if( !req->reason.empty() )
+        body += "\n\nWhy it is asking: " + req->reason;
+    body += "\n\nAllow this to run?\n"
+            "(Alt-Y yes, Alt-R yes and remember this exact command, Enter no)";
 
     // Wide enough to show a command, narrow enough to keep the frame on screen.
     const short deskW = TProgram::deskTop ? TProgram::deskTop->size.x : 80;
@@ -206,18 +222,46 @@ bool showApprovalDialog_( const atui::tools::ApprovalRef &req )
                                 text.c_str() ) );
     // Buttons. TVision gives a dialog's initial focus to the view inserted
     // LAST, and a focused TButton becomes the default (TButton::setState calls
-    // makeDefault on sfFocused) - so Yes goes in first and No second, which
-    // puts the default on No: Enter and Esc both decline, Alt-Y allows.
-    d->insert( new TButton( TRect( (short) ( w - 25 ), (short) ( h - 3 ),
-                                   (short) ( w - 15 ), (short) ( h - 1 ) ),
+    // makeDefault on sfFocused) - so the declining button goes in last, and
+    // Enter and Esc both decline while Alt-Y allows.
+    //
+    // The session button needs three button widths of room; on a terminal too
+    // narrow for that the dialog degrades to yes/no rather than overlapping.
+    const bool room = ( w >= 50 );
+    short xSession = (short) ( w - 37 );
+    short xYes     = room ? xSession : (short) ( w - 25 );
+    d->insert( new TButton( TRect( xYes, (short) ( h - 3 ),
+                                   (short) ( xYes + 10 ), (short) ( h - 1 ) ),
                             "~Y~es", cmYes, bfNormal ) );
+    if( room )
+    {
+        d->insert( new TButton( TRect( (short) ( w - 26 ), (short) ( h - 3 ),
+                                       (short) ( w - 15 ), (short) ( h - 1 ) ),
+                                // Alt-S is the "Switch model" menu, so this
+                                // button is "Remember", on a keystroke that is
+                                // free. Its command has to be one of the four
+                                // TDialog recognises as ending a dialog
+                                // (cmOK/cmCancel/cmYes/cmNo) - anything else is
+                                // swallowed and the button does nothing - and
+                                // cmOK is the one this box does not otherwise
+                                // use.
+                                "~R~emember", cmOK, bfNormal ) );
+    }
     d->insert( new TButton( TRect( (short) ( w - 14 ), (short) ( h - 3 ),
                                    (short) ( w - 4 ), (short) ( h - 1 ) ),
                             "~N~o", cmNo, bfDefault ) );
 
-    const ushort r = TProgram::application->execView( d );
+    // The desktop, not the application group: this is what every other dialog in
+    // atui does, and it is what makes the box clickable - a view executed on
+    // TProgram::application gets keyboard but its mouse hit-testing is off by the
+    // desktop's own frame, so clicks land nowhere.
+    const ushort r = TProgram::deskTop
+        ? TProgram::deskTop->execView( d )
+        : TProgram::application->execView( d );
     TObject::destroy( d );
-    return r == cmYes;
+    if( r == cmYes ) return apOnce;
+    if( r == cmOK )  return apSession;
+    return apNo;
 }
 
 // Approver installed process-wide. approve() runs on the worker thread.
@@ -287,6 +331,19 @@ public:
         Block b;
         b.kind = kTool; b.text = preview; b.open = true; b.expanded = false;
         blocks_.push_back( b );
+        relayout();
+    }
+
+    // Who let the open tool record through, and why. Kept separate from the
+    // command line because the two arrive at different moments: the call is
+    // announced, then decided, then run - and the record should say which rule
+    // answered, or a permission system is indistinguishable from a lucky guess.
+    void appendToolNote( const std::string &note )
+    {
+        if( blocks_.empty() || blocks_.back().kind != kTool ||
+            !blocks_.back().open )
+            return;
+        blocks_.back().note = note;
         relayout();
     }
 
@@ -552,6 +609,7 @@ private:
         int kind;
         std::string text;    // user text / answer / thinking / tool preview
         std::string out;     // tool blocks: what the tool returned
+        std::string note;    // tool blocks: who allowed it and why, if anything
         bool expanded;
         bool open;
     };
@@ -646,17 +704,29 @@ private:
                 }
                 std::vector<std::string> cl = wrapText_( cmd, width );
 
-                bool   foldable = cl.size() + rl.size() > (size_t) kToolRows;
+                // The permission note, on its own row, marked like a comment so
+                // it cannot be mistaken for the command or for its output.
+                std::vector<std::string> nl;
+                if( !bl.note.empty() )
+                    nl = wrapText_( "  # " + bl.note, width );
+
+                bool   foldable = cl.size() + nl.size() + rl.size()
+                                  > (size_t) kToolRows;
                 size_t shown = rl.size();
                 if( foldable && !bl.expanded )
                 {
-                    int room = kToolRows - (int) cl.size() - 1;   // -1: the hint
+                    // -1: the hint. The command and its note are never cut: they
+                    // are what was decided, the result is commentary.
+                    int room = kToolRows - (int) cl.size() - (int) nl.size() - 1;
                     shown = ( room > 0 ) ? (size_t) room : 0;
                     if( shown > rl.size() ) shown = rl.size();
                 }
 
                 for( size_t i = 0; i < cl.size(); ++i )
                     lines_.push_back( plainLine( cl[i], rTool, (int) b,
+                                                 foldable ) );
+                for( size_t i = 0; i < nl.size(); ++i )
+                    lines_.push_back( plainLine( nl[i], rToolOut, (int) b,
                                                  foldable ) );
                 for( size_t i = 0; i < shown; ++i )
                     lines_.push_back( plainLine( "  " + rl[i], rToolOut,
@@ -1168,14 +1238,20 @@ TStatusLine *initStatusLine_( TRect r )
     // filled in right here: TVision builds the desktop before the status line,
     // so the app's start-up pass would be too early.)
     g_statusProvider_ = new TStatusItem( "  ", 0, 0 );
+    // What atui is currently allowed to do without asking. A system that can
+    // act on the user's behalf should say so while it is doing it, in one glance,
+    // rather than explaining itself after the fact.
+    g_statusPermission_ = new TStatusItem( "  ", 0, 0 );
     TStatusLine *line = new TStatusLine( r,
         *new TStatusDef( 0, 0xFFFF )
         + *g_statusProvider_
+        + *g_statusPermission_
         + *new TStatusItem( "~Alt-H~  About", kbAltH, CmdHelp )
         + *new TStatusItem( " Ctrl-T  thinking", 0, 0 )
         + *new TStatusItem( "~Alt-X~  Quit",  kbAltX, cmQuit )
     );
     updateProviderStatus_();
+    updatePermissionStatus_();
     return line;
 }
 
@@ -1258,6 +1334,13 @@ TDeskTop *initDeskTop_( TRect r )
         TProgram::application->setTimer( 50, 50 );
     // Install the tool-confirmation approver (edit_file / run_command).
     atui::tools::setApprover( &g_approver );
+    // And the permission agent: a second, cheap model that describes a command
+    // the policy cannot settle by itself. It is only ever asked for a
+    // description - tools/permissions.cpp decides - and with the mode set to
+    // "agent" in a build that has no transport, nothing is installed here and
+    // every undecided call is simply asked about.
+    atui::tools::setPermissionJudge( &atui::net::oaiPermissionJudge() );
+    updatePermissionStatus_();   // the label may now claim a model
 #endif
 
     appendReply_( "atui (M2): type a message and press Enter." );
@@ -1374,6 +1457,7 @@ void pollSink_()
             case atui::net::tkThinking:   g_transcript_->appendThinking( tok.text );    break;
             case atui::net::tkStatus:     g_transcript_->appendStatus( tok.text );      break;
             case atui::net::tkTool:       g_transcript_->appendTool( tok.text );        break;
+            case atui::net::tkToolNote:   g_transcript_->appendToolNote( tok.text );    break;
             case atui::net::tkToolResult: g_transcript_->appendToolResult( tok.text );  break;
             case atui::net::tkContent:    g_transcript_->appendAnswer( tok.text );      break;
         }
@@ -1393,8 +1477,8 @@ void pollSink_()
         if( req && !req->answered() )
         {
             g_approvalShowing = true;
-            bool allow = showApprovalDialog_( req );
-            req->answer( allow );
+            const int answer = showApprovalDialog_( req );
+            req->answer( answer != apNo, answer == apSession );
             {
                 std::lock_guard< std::mutex > lock( g_apMx );
                 if( g_pendingApproval == req )
@@ -1587,6 +1671,26 @@ void updateProviderStatus_()
                              menuText_( p.model, 24 ) + " ";
     delete[] g_statusProvider_->text;
     g_statusProvider_->text = newStr( text.c_str() );
+    if( TProgram::statusLine ) TProgram::statusLine->drawView();
+}
+
+// Status line: the permission mode, in words a user can act on. "agent" is only
+// claimed when there is a model to ask - in a build without one, or before the
+// agent is installed, the honest label is the one that describes what will
+// actually happen, which is being asked.
+void updatePermissionStatus_()
+{
+    if( g_statusPermission_ == 0 ) return;
+    const atui::tools::PermissionMode mode = atui::tools::permissionMode();
+    std::string text = " perm: asks first ";
+    if( mode == atui::tools::pmExact )
+        text = " perm: in-project ok, asks outside ";
+    else if( mode == atui::tools::pmAgent )
+        text = atui::tools::permissionJudge()
+            ? " perm: in-project ok, a model checks the rest "
+            : " perm: in-project ok, asks about commands ";
+    delete[] g_statusPermission_->text;
+    g_statusPermission_->text = newStr( text.c_str() );
     if( TProgram::statusLine ) TProgram::statusLine->drawView();
 }
 
@@ -2093,8 +2197,11 @@ void TApp::showTheme()
 class SettingsDialog : public TDialog
 {
 public:
-    TInputLine *wheel   = 0;
-    TInputLine *timeout = 0;
+    TInputLine    *wheel        = 0;
+    TInputLine    *timeout      = 0;
+    TRadioButtons *modes        = 0;
+    TInputLine    *judgeModel   = 0;
+    TInputLine    *judgeSeconds = 0;
 
     SettingsDialog();
 
@@ -2105,7 +2212,7 @@ public:
 
 SettingsDialog::SettingsDialog()
     : TWindowInit( &TDialog::initFrame ),
-      TDialog( TRect( 0, 0, 60, 15 ), "Options - Settings" )
+      TDialog( TRect( 0, 0, 66, 25 ), "Options - Settings" )
 {
     options |= ofCentered;
 
@@ -2137,20 +2244,64 @@ SettingsDialog::SettingsDialog()
               atui::net::kMinRequestMinutes, atui::net::kMaxRequestMinutes );
     insert( new TStaticText( TRect( noteLeft, 4, size.x - 3, 5 ), range ) );
 
+    // Permissions: an enum is meant for radio buttons - the three modes are
+    // choices, not numbers, and the parenthesised name is what goes in the
+    // config file and in permissions.log, so the wording here can be revised
+    // without the user losing the thread.
+    insert( new TStaticText( TRect( 3, 6, size.x - 3, 7 ),
+                             "Before running something:" ) );
+    modes = new TRadioButtons(
+        TRect( 5, 7, size.x - 4, 10 ),
+        new TSItem( "Always ask before a tool runs (ask_all)",
+        new TSItem( "In-project work is fine, ask outside (exact)",
+        new TSItem( "A model judges what the facts cannot settle (agent)",
+                    NULL ) ) ) );
+    insert( modes );
+    ushort chosen = ( atui::tools::permissionMode() ==
+                      atui::tools::pmExact ) ? 1
+                    : ( atui::tools::permissionMode() ==
+                        atui::tools::pmAgent ) ? 2 : 0;
+    modes->setData( &chosen );
+
+    insert( new TStaticText( TRect( 3, 11, 30, 12 ),
+                             "Judging model:" ) );
+    judgeModel = new TInputLine( TRect( fieldLeft, 11,
+                                        (short) ( fieldLeft + 26 ), 12 ), 40 );
+    insert( judgeModel );
+
+    insert( new TStaticText( TRect( 3, 12, 30, 13 ),
+                             "Judging seconds:" ) );
+    judgeSeconds = new TInputLine( TRect( fieldLeft, 12,
+                                          fieldLeft + 4, 13 ), 3 );
+    insert( judgeSeconds );
+    snprintf( range, sizeof range, "%d to %d",
+              atui::tools::kMinJudgeSeconds, atui::tools::kMaxJudgeSeconds );
+    insert( new TStaticText( TRect( fieldLeft + 6, 12, size.x - 3, 13 ),
+                             range ) );
+
     setInput_( wheel, std::to_string( atui::settings::wheelLines() ) );
     setInput_( timeout, std::to_string( atui::net::requestMinutes() ) );
+    setInput_( judgeModel, atui::tools::judgeModelOverride() );
+    setInput_( judgeSeconds, std::to_string( atui::tools::judgeSeconds() ) );
 
     // TStaticText clips rather than wraps, so this is laid out in lines that
     // fit the dialog.
-    insert( new TStaticText( TRect( 3, 7, size.x - 3, 11 ),
-        "One wheel notch scrolls the chat by that many lines;\n"
-        "the timeout is how long to wait for the server on a\n"
-        "prompt - per request, so a tool round gets it again.\n"
-        "A field with no number in it keeps the value it has." ) );
+    // TStaticText clips rather than wraps, and a clipped line is worse than no
+    // line: it looks like the dialog has nothing more to say. Every row here is
+    // laid out to fit, and the box is as tall as the text needs.
+    insert( new TStaticText( TRect( 3, 14, size.x - 3, 23 ),
+        "One wheel notch scrolls the chat by that many lines; the\n"
+        "timeout is how long to wait for the server on a prompt -\n"
+        "per request, so a tool round gets it again. A field with\n"
+        "no number in it keeps the value it has.\n"
+        "\n"
+        "Judging is done by a second model: name a cheap one, or\n"
+        "leave it blank to use the model you are chatting with.\n"
+        "Nothing outside the project directory is done unasked." ) );
 
-    TButton *ok     = new TButton( TRect( 16, 12, 28, 14 ), "~O~K",
+    TButton *ok     = new TButton( TRect( 19, 22, 31, 24 ), "~O~K",
                                    cmOK, bfDefault );
-    TButton *cancel = new TButton( TRect( 30, 12, 44, 14 ), "Cancel",
+    TButton *cancel = new TButton( TRect( 33, 22, 47, 24 ), "Cancel",
                                    cmCancel, bfNormal );
     insert( ok );
     insert( cancel );
@@ -2175,6 +2326,29 @@ void TApp::showSettings()
             SettingsDialog::numberIn( d->wheel, atui::settings::wheelLines() ) );
         atui::net::requestMinutes() = atui::net::clampRequestMinutes(
             SettingsDialog::numberIn( d->timeout, atui::net::requestMinutes() ) );
+
+        // Permissions. Changing the mode takes effect on the next tool call;
+        // nothing cached has to be thrown away, because a judgement is keyed on
+        // the model and the project as well as the command.
+        ushort chosen = 0;
+        d->modes->getData( &chosen );
+        atui::tools::permissionMode() =
+            ( chosen == 1 ) ? atui::tools::pmExact
+                            : ( chosen == 2 ) ? atui::tools::pmAgent
+                                              : atui::tools::pmAskAll;
+
+        std::string model( d->judgeModel->data );
+        const size_t from = model.find_first_not_of( " \t" );
+        const size_t to   = model.find_last_not_of( " \t" );
+        atui::tools::judgeModelOverride() =
+            ( from == std::string::npos ) ? std::string()
+                                          : model.substr( from, to - from + 1 );
+
+        atui::tools::judgeSeconds() = atui::tools::clampJudgeSeconds(
+            SettingsDialog::numberIn( d->judgeSeconds,
+                                      atui::tools::judgeSeconds() ) );
+        updatePermissionStatus_();
+
         atui::settings::saveAll();
     }
     destroy( d );
