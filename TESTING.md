@@ -903,7 +903,10 @@ record `# agent: prints a greeting for the user` and a matching
 reason; Alt-Y runs it, Enter and Esc both decline; clicking `~R~emember` allows
 it and the *same* call again shows `# allowed for this session` with no dialog,
 while a different command still asks; Settings ▸ mode radio persists
-`mode = exact` and the status line changes to `perm: exact` without a restart.
+`mode = exact` and the status line changes to `perm: in-project ok, asks
+outside` without a restart. With no `[permissions]` section in the file at all,
+the status line reads `perm: in-project ok, a model checks the rest` - the
+shipped default, checked by starting with a config that says nothing.
 
 ## Prompt input (wrapping + auto-grow)
 

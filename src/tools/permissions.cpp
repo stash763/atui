@@ -841,7 +841,9 @@ Permission decide( const PermissionSubject &subject, const EffectPlan *plan )
     {
         p.outcome = poAsk;
         p.rung    = prRootTooBroad;
-        p.reason  = "the project directory is your home directory";
+        p.reason  = ( projectRoot() == "/" )
+            ? "the project directory is the whole filesystem"
+            : "the project directory is your home directory";
         return p;
     }
 

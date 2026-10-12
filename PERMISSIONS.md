@@ -164,7 +164,12 @@ way `prExfil` outranks it.
 
 ## In the UI
 
-- The status line shows `perm: ask_all | exact | agent`, live.
+- The status line shows what the current settings will actually do:
+  `perm: asks first` (ask_all), `perm: in-project ok, asks outside` (exact),
+  `perm: in-project ok, a model checks the rest` (agent with somewhere to ask),
+  or `perm: in-project ok, asks about commands` (agent in a build or session
+  with no model - files are still contained, commands still ask). Live, no
+  restart.
 - Settings (File > Options > Settings) has the three modes as a radio group plus
   the judging model and its timeout.
 - The approval dialog says *why it is asking* in the reason the policy produced
