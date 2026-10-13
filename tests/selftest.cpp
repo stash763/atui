@@ -12,11 +12,14 @@
 #include "tools/run_command_tool.h"
 #include "tools/permissions.h"
 #include "tools/judge.h"
+#include "core/journal.h"
+#include "core/paths.h"
 #include "settings/ini.h"
 #include "settings/settings.h"
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <sstream>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -945,8 +948,25 @@ std::string toolReadFile( const std::string &path )
     return s;
 }
 
+// The edit_file tests below are about editing. The undo journal has its own
+// tests, and leaving it switched on here would write entries into whatever
+// directory the test binary happens to live in.
+class JournalOff
+{
+public:
+    JournalOff() : was_( atui::core::journal::enabled() )
+    {
+        atui::core::journal::enabled() = false;
+    }
+    ~JournalOff() { atui::core::journal::enabled() = was_; }
+
+private:
+    bool was_;
+};
+
 int test_edit_file_first_and_all()
 {
+    JournalOff noJournal;
     std::string p = toolTmpPath( "edit_first.txt" );
     toolWriteFile( p, "x x x and hello world\n" );
 
@@ -979,6 +999,7 @@ int test_edit_file_first_and_all()
 
 int test_edit_file_errors()
 {
+    JournalOff noJournal;
     atui::tools::EditFileTool t;
     std::string p = toolTmpPath( "edit_miss.txt" );
     toolWriteFile( p, "abc\n" );
@@ -1146,6 +1167,9 @@ public:
           root_( atui::tools::projectRoot() )
     {
         atui::tools::clearPlanCache();
+        // Policy tests are about the policy. The undo journal is a real
+        // filesystem side effect, and rung 16 is covered by its own tests.
+        atui::core::journal::enabled() = false;
     }
     ~PermissionGuard()
     {
@@ -1174,6 +1198,7 @@ struct ScratchTree
 {
     std::string base;   // .../atui_perm_selftest
     std::string root;   // .../atui_perm_selftest/proj, resolved
+    std::string priorCwd;
     bool ok;
 
     ScratchTree() : ok( false )
@@ -1205,10 +1230,21 @@ struct ScratchTree
         // exactly why tests build expectations from projectRoot().
         atui::tools::setProjectRoot( proj );
         root = atui::tools::projectRoot();
+
+        // ...and atui moves there, so a relative path means the same thing to the
+        // policy, to the undo journal and to the filesystem. Tests have to do the
+        // same or they are testing a state the application cannot be in.
+        priorCwd = atui::core::absolutePath( "." );
+        atui::core::setWorkingDirectory( root );
+
         ok = ( !root.empty() && containsSub( root, "atui_perm_selftest/proj" ) );
     }
 
-    ~ScratchTree() { removeTree(); }
+    ~ScratchTree()
+    {
+        if( !priorCwd.empty() ) atui::core::setWorkingDirectory( priorCwd );
+        removeTree();
+    }
 
 private:
     void removeTree()
@@ -1773,6 +1809,399 @@ int test_permission_mode_names()
     return 0;
 }
 
+// Points the journal at a scratch directory and puts it back afterwards: it is a
+// process-wide setting like every other one here, and the journal writes real
+// files, so a test that moves it has to move it back.
+class JournalGuard
+{
+public:
+    JournalGuard()
+        : on_( atui::core::journal::enabled() ),
+          dir_( atui::core::journal::directory() ),
+          max_( atui::core::journal::maxBytes() ),
+          maxFile_( atui::core::journal::maxFileBytes() )
+    {
+    }
+    ~JournalGuard()
+    {
+        clear();
+        atui::core::journal::enabled()      = on_;
+        atui::core::journal::directory()    = dir_;
+        atui::core::journal::maxBytes()     = max_;
+        atui::core::journal::maxFileBytes() = maxFile_;
+    }
+
+    // A journal of its own to fill up.
+    void scratch( const char *name )
+    {
+        atui::core::journal::enabled() = true;
+        atui::core::journal::directory() = tmpPath( name );
+        makeDir( atui::core::journal::directory() );
+        clear();
+        atui::core::journal::maxBytes() = 64 * 1024;
+        atui::core::journal::maxFileBytes() = 4096;
+    }
+
+    void clear()
+    {
+        std::vector< atui::core::journal::Entry > list;
+        atui::core::journal::entries( list );
+        for( std::size_t i = 0; i < list.size(); ++i )
+        {
+            std::remove( list[i].preImage.c_str() );
+            std::remove( list[i].metaPath.c_str() );
+        }
+    }
+
+private:
+    bool on_;
+    std::string dir_;
+    long max_;
+    long maxFile_;
+};
+
+std::string slurp( const std::string &path )
+{
+    std::ifstream f( path.c_str(), std::ios::in );
+    if( !f ) return std::string();
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+void writeFileSized( const std::string &path, std::size_t bytes )
+{
+    std::ofstream f( path.c_str(), std::ios::out | std::ios::binary );
+    for( std::size_t i = 0; i < bytes; ++i )
+        f.put( (char) ('a' + ( i % 26 ) ) );
+}
+
+int test_journal_lifecycle()
+{
+    JournalGuard guard;
+    guard.scratch( "atui_journal_selftest" );
+    const std::string dir = atui::core::journal::directory();
+    const std::string file = dir + "/target.txt";
+    writeFile( file, "original\n" );
+
+    std::string err;
+
+    // A committed write is an entry, and not a pending one.
+    atui::core::journal::Pending p;
+    if( !atui::core::journal::begin( file, "edit_file", "replace:first", p, err ) )
+        return -1;
+    writeFile( file, "changed\n" );
+    if( !atui::core::journal::commit( p, err ) ) return -2;
+
+    std::vector< atui::core::journal::Entry > list;
+    atui::core::journal::entries( list );
+    if( list.size() != 1 ) return -3;
+    if( list[0].pending ) return -4;
+    if( list[0].target != file ) return -5;
+    if( list[0].tool != "edit_file" ) return -6;
+    if( list[0].hashBefore == list[0].hashAfter ) return -7;
+
+    // An entry whose commit never happened is the failure the journal exists for:
+    // atui died with the file half written.
+    atui::core::journal::Pending q;
+    if( !atui::core::journal::begin( file, "edit_file", "replace:first", q, err ) )
+        return -8;
+    writeFile( file, "half written\n" );
+
+    std::vector< atui::core::journal::Entry > broken;
+    atui::core::journal::interrupted( broken );
+    if( broken.size() != 1 ) return -9;
+    if( broken[0].target != file ) return -10;
+    if( slurp( file ) != "half written\n" ) return -11;
+
+    // Putting it back consumes the entry.
+    if( !atui::core::journal::restore( broken[0], err ) ) return -12;
+    if( slurp( file ) != "changed\n" ) return -13;
+    atui::core::journal::entries( list );
+    if( list.size() != 1 ) return -14;
+
+    // Never over the top of somebody else's edit: a committed entry knows what
+    // the file held when the change finished, and refuses if it no longer does.
+    atui::core::journal::entries( list );
+    writeFile( file, "edited by hand\n" );
+    if( atui::core::journal::restore( list[0], err ) ) return -15;
+    if( slurp( file ) != "edited by hand\n" ) return -16;
+    if( err.find( "changed since" ) == std::string::npos ) return -17;
+    // The refused entry stays put - refusing has to lose nothing.
+    atui::core::journal::entries( list );
+    if( list.size() != 1 ) return -18;
+
+    // cancel() is for the write that never happened: no entry, file untouched.
+    atui::core::journal::Pending r;
+    if( !atui::core::journal::begin( file, "edit_file", "replace:first", r, err ) )
+        return -19;
+    atui::core::journal::cancel( r );
+    atui::core::journal::entries( list );
+    if( list.size() != 1 ) return -20;
+    if( slurp( file ) != "edited by hand\n" ) return -21;
+
+    // compareTarget() is what the recovery dialog is built out of, including the
+    // answer that lets an entry be dropped without asking: "nothing to recover".
+    // The entry left here knows the file held "changed\n" when the edit finished.
+    if( atui::core::journal::compareTarget( list[0] )
+            .find( "changed since" ) == std::string::npos ) return -22;
+    writeFile( file, "changed\n" );
+    if( atui::core::journal::compareTarget( list[0] )
+            .find( "holds what atui wrote" ) == std::string::npos ) return -23;
+    writeFile( file, "original\n" );   // back to what the entry copied
+    if( !atui::core::journal::compareTarget( list[0] ).empty() ) return -24;
+
+    // A write abandoned before it touched anything: no file, no comparison to
+    // make, and an interrupted-write notice about it would be noise.
+    const std::string fresh = dir + "/never-written.txt";
+    atui::core::journal::Pending n;
+    if( !atui::core::journal::begin( fresh, "edit_file", "replace:first", n, err ) )
+        return -25;
+    std::vector< atui::core::journal::Entry > now;
+    atui::core::journal::interrupted( now );
+    if( now.size() != 1 ) return -26;
+    if( !atui::core::journal::compareTarget( now[0] ).empty() ) return -27;
+    atui::core::journal::cancel( n );
+    return 0;
+}
+
+int test_journal_limits()
+{
+    JournalGuard guard;
+    guard.scratch( "atui_journal_limits" );
+    const std::string dir = atui::core::journal::directory();
+    const std::string file = dir + "/sized.txt";
+    std::string err;
+
+    // Too big to copy: begin() succeeds with no pre-image, and says so, because
+    // the caller has to be able to tell a person "this one cannot be undone"
+    // before the file is touched.
+    writeFileSized( file, 5000 );
+    atui::core::journal::Pending big;
+    if( !atui::core::journal::begin( file, "edit_file", "replace:first", big, err ) )
+        return -1;
+    if( !big.overCap ) return -2;
+    if( !big.preImage.empty() ) return -3;
+    atui::core::journal::cancel( big );
+
+    std::string why;
+    if( atui::core::journal::canBackUp( file, why ) ) return -4;
+    if( why.find( "bytes" ) == std::string::npos ) return -5;
+
+    // A journal switched off is a decision, not a failure: the policy asks about
+    // a missing net, and there is nothing missing when none was wanted.
+    writeFileSized( file, 5000 );
+    atui::core::journal::enabled() = false;
+    if( !atui::core::journal::canBackUp( file, why ) ) return -6;
+    atui::core::journal::enabled() = true;
+
+    // Retention: the oldest entries go, and the one just made never does, or the
+    // cap would eat the only undo anyone is about to want.
+    writeFileSized( file, 900 );
+    for( int i = 0; i < 4; ++i )
+    {
+        atui::core::journal::Pending p;
+        if( !atui::core::journal::begin( file, "edit_file", "replace:first", p, err ) )
+            return -7;
+        writeFileSized( file, 900 + i );
+        if( !atui::core::journal::commit( p, err ) ) return -8;
+    }
+    atui::core::journal::maxBytes() = 100;    // below one entry, deliberately
+    atui::core::journal::prune();
+    std::vector< atui::core::journal::Entry > list;
+    atui::core::journal::entries( list );
+    if( list.size() != 1 ) return -9;
+    if( list[0].pending ) return -10;
+
+    // An interrupted entry is not dropped for space: it may be the only copy.
+    writeFileSized( file, 900 );
+    atui::core::journal::Pending q;
+    if( !atui::core::journal::begin( file, "edit_file", "replace:first", q, err ) )
+        return -11;
+    atui::core::journal::prune();
+    atui::core::journal::entries( list );
+    bool keptPending = false;
+    for( std::size_t i = 0; i < list.size(); ++i )
+        if( list[i].pending ) keptPending = true;
+    if( !keptPending ) return -12;
+    atui::core::journal::cancel( q );
+
+    // A copy whose metadata never got written has no destination, so it is the
+    // one pending entry retention deletes: nobody can restore it, and the journal
+    // is bounded for a reason.
+    {
+        const std::string orphan = dir + "/U000999.PRE";
+        std::FILE *f = std::fopen( orphan.c_str(), "wb" );
+        if( !f ) return -15;
+        std::fputs( "orphaned", f );
+        std::fclose( f );
+
+        std::vector< atui::core::journal::Entry > all;
+        atui::core::journal::entries( all );
+        bool found = false;
+        for( std::size_t i = 0; i < all.size(); ++i )
+            if( all[i].id == "U000999" ) found = true;
+        if( !found ) return -16;
+
+        atui::core::journal::maxBytes() = 0;    // below everything, deliberately
+        atui::core::journal::prune();
+        atui::core::journal::entries( all );
+        for( std::size_t i = 0; i < all.size(); ++i )
+            if( all[i].id == "U000999" ) return -17;
+    }
+
+    // A journal that cannot be written says what to do about it: this is the
+    // moment a read-only install becomes the user's problem, and "cannot create"
+    // on its own is not an answer. The path under a plain file cannot be created
+    // on any filesystem, which is the portable way to test a failure.
+    writeFileSized( dir + "/blocker", 1 );
+    atui::core::journal::directory() = dir + "/blocker/journal";
+    if( atui::core::journal::canBackUp( file, why ) ) return -13;
+    if( why.find( "ATUI_UNDO_DIR" ) == std::string::npos ) return -14;
+    return 0;
+}
+
+// The undo copy is made by the tool, so the tool is tested with a real journal
+// rather than a mocked one: what matters is that the bytes are on disk before the
+// file is rewritten, and that a restore reproduces them.
+int test_journal_edit_file()
+{
+    JournalGuard guard;
+    guard.scratch( "atui_journal_edit" );
+    const std::string dir = atui::core::journal::directory();
+    const std::string file = dir + "/source.txt";
+    writeFile( file, "alpha\nbeta\n" );
+
+    atui::tools::EditFileTool tool;
+    const std::string args =
+        std::string( "{\"path\":\"" ) + file + "\",\"old_text\":\"beta\","
+        "\"new_text\":\"gamma\"}";
+    const std::string result = tool.execute( args );
+    if( result.find( "edited" ) == std::string::npos ) return -1;
+    if( slurp( file ) != "alpha\ngamma\n" ) return -2;
+
+    std::vector< atui::core::journal::Entry > list;
+    atui::core::journal::entries( list );
+    if( list.size() != 1 ) return -3;
+    // commit() rewrites the entry, so every field has to survive the rewrite -
+    // including which run made the change and what it did.
+    if( list[0].pid <= 0 ) return -10;
+    if( list[0].op != "replace:first" ) return -11;
+
+    std::string err;
+    if( !atui::core::journal::restore( list[0], err ) ) return -4;
+    if( slurp( file ) != "alpha\nbeta\n" ) return -5;
+
+    // A file atui cannot write is refused before anything is copied or opened:
+    // the DOS and Windows read-only attribute is a real case, and finding it out
+    // after truncating the file is how one refused edit becomes a lost file.
+#if !defined(_WIN32)
+    writeFile( file, "alpha\nbeta\n" );
+    if( ::chmod( file.c_str(), 0444 ) == 0 )
+    {
+        const std::string ro = tool.execute( args );
+        if( ro.find( "not writable" ) == std::string::npos ) return -6;
+        if( slurp( file ) != "alpha\nbeta\n" ) return -7;
+        ::chmod( file.c_str(), 0644 );
+    }
+#endif
+
+    // With the journal off, an edit is still an edit - and records nothing.
+    atui::core::journal::enabled() = false;
+    if( tool.execute( args ).find( "edited" ) == std::string::npos ) return -8;
+    atui::core::journal::entries( list );
+    if( !list.empty() ) return -9;
+    return 0;
+}
+
+// An in-tree write is auto-approved only while there is something to go back to.
+int test_permission_undo_net()
+{
+    PermissionGuard perms;
+    ScratchTree s;
+    if( !s.ok ) return -1;
+    atui::tools::permissionMode() = atui::tools::pmExact;
+
+    JournalGuard guard;
+    guard.scratch( "atui_journal_policy" );
+
+    std::string why;
+    if( !atui::core::journal::canBackUp( s.root + "/inside.txt", why ) ) return -1;
+    if( atui::tools::decide( pathOf( "inside.txt" ) ).rung
+        != atui::tools::prPathInside ) return -2;
+
+    // Too big for the journal, so the net is not under it: ask.
+    atui::core::journal::maxFileBytes() = 1;
+    const atui::tools::Permission d =
+        atui::tools::decide( pathOf( "inside.txt" ) );
+    if( d.outcome != atui::tools::poAsk || d.rung != atui::tools::prNoUndoNet )
+        return -3;
+    if( d.detail.find( "bytes" ) == std::string::npos ) return -4;
+
+    // Off means off.
+    atui::core::journal::enabled() = false;
+    if( atui::tools::decide( pathOf( "inside.txt" ) ).rung
+        != atui::tools::prPathInside ) return -5;
+
+    // A write outside the tree is still decided by containment first: the journal
+    // does not get to make an out-of-tree write acceptable.
+    atui::core::journal::enabled() = true;
+    atui::core::journal::maxFileBytes() = 1;
+    if( atui::tools::decide( pathOf( s.base + "/outside.txt" ) ).rung
+        != atui::tools::prPathOutside ) return -6;
+    return 0;
+}
+
+// The [undo] section: read, clamped, written back. Byte sizes go through
+// getLong/setLong because an int is 16 bits on one of the platforms atui builds
+// for, and a journal cap that overflows to negative is a journal that never fits
+// an entry.
+int test_settings_undo()
+{
+    StoreGuard store;
+    JournalGuard journal;
+    const std::string path = tmpIniPath();
+    setenv( "ATUI_CONFIG", path.c_str(), 1 );
+
+    writeFile( path,
+        "[undo]\n"
+        "enabled = false\n"
+        "dir = /tmp/atui_undo_test\n"
+        "max_bytes = 2097152\n"
+        "max_file = 300000\n" );
+    if( !atui::settings::loadAll() ) return -1;
+    if( atui::core::journal::enabled() ) return -2;
+    if( atui::core::journal::directory() != "/tmp/atui_undo_test" ) return -3;
+    if( atui::core::journal::maxBytes() != 2097152 ) return -4;
+    if( atui::core::journal::maxFileBytes() != 300000 ) return -5;
+
+    if( !atui::settings::saveAll() ) return -6;
+    atui::settings::IniFile saved( path );
+    if( !saved.load() ) return -7;
+    if( saved.getBool( "undo", "enabled", true ) ) return -8;
+    if( saved.getString( "undo", "dir", "" ) != "/tmp/atui_undo_test" ) return -9;
+    if( saved.getLong( "undo", "max_bytes", 0 ) != 2097152 ) return -10;
+    if( saved.getLong( "undo", "max_file", 0 ) != 300000 ) return -11;
+
+    // Clamped rather than believed: an absurd cap would either never keep a copy
+    // or fill the disk, and neither is what a typo in a config file should do.
+    writeFile( path, "[undo]\nmax_bytes = 1\nmax_file = 999999999\n" );
+    if( !atui::settings::loadAll() ) return -12;
+    if( atui::core::journal::maxBytes() != atui::core::journal::kMinMaxBytes )
+        return -13;
+    if( atui::core::journal::maxFileBytes()
+        != atui::core::journal::kMaxMaxFileBytes ) return -14;
+
+    // No section: the values already in force stay, and are written back out
+    // rather than dropped from the file.
+    writeFile( path, "[ui]\ntheme = dark\n" );
+    if( !atui::settings::loadAll() ) return -15;
+    if( atui::core::journal::maxFileBytes()
+        != atui::core::journal::kMaxMaxFileBytes ) return -16;
+    std::remove( path.c_str() );
+    return 0;
+}
+
 // The [permissions] section: read, clamped, and written back out.
 int test_settings_permissions()
 {
@@ -1881,6 +2310,12 @@ void init()
                    &test_permission_publishing );
     register_test( "permission: corpus file",
                    &test_permission_corpus_file );
+    register_test( "journal: lifecycle", &test_journal_lifecycle );
+    register_test( "journal: limits", &test_journal_limits );
+    register_test( "journal: edit_file writes behind it",
+                   &test_journal_edit_file );
+    register_test( "permission: no undo net, no auto-approval",
+                   &test_permission_undo_net );
     register_test( "permission: paths mentioned",
                    &test_permission_paths_mentioned );
     register_test( "permission: decide file calls",
@@ -1893,6 +2328,7 @@ void init()
     register_test( "permission: decision log", &test_permission_log );
     register_test( "permission: mode names and clamps",
                    &test_permission_mode_names );
+    register_test( "settings: undo section", &test_settings_undo );
     register_test( "settings: permissions section",
                    &test_settings_permissions );
 

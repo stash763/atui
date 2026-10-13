@@ -231,6 +231,23 @@ void IniFile::setString( const char *section, const char *key,
     data_[lower( section ? section : "" )][lower( key ? key : "" )] = value;
 }
 
+long IniFile::getLong( const char *section, const char *key, long def ) const
+{
+    std::string v = getString( section, key, std::string() );
+    if( v.empty() ) return def;
+    char *end = 0;
+    const long l = std::strtol( v.c_str(), &end, 10 );
+    if( end == v.c_str() ) return def;
+    return l;
+}
+
+void IniFile::setLong( const char *section, const char *key, long value )
+{
+    std::ostringstream os;
+    os << value;
+    setString( section, key, os.str() );
+}
+
 void IniFile::setInt( const char *section, const char *key, int value )
 {
     std::ostringstream os;

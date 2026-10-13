@@ -12,6 +12,12 @@
 //   judge_seconds = 5          # how long one judgement may take
 //   log           = true       # append each decision to permissions.log
 //
+//   [undo]
+//   enabled   = true       # keep a copy of a file before changing it
+//   dir       =            # empty = <install directory>/undo
+//   max_bytes = 1048576    # whole-journal cap; oldest entries are dropped first
+//   max_file  = 1048576    # above this there is no copy, and edits are asked
+//
 //   [ui]
 //   theme = dark
 //   thinking_expand = false

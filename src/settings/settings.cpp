@@ -2,6 +2,8 @@
 #include "settings.h"
 
 #include "ini.h"
+#include "core/journal.h"
+#include "core/paths.h"
 #include "net/provider.h"
 #include "tools/permissions.h"
 #include "tui/theme.h"
@@ -46,16 +48,20 @@ net::ProviderSettings readProvider( const IniFile &ini,
 
 std::string configPath()
 {
+    std::string path;
     const char *p = envOrNone( "ATUI_CONFIG" );
-    if( p ) return std::string( p );
-
-    const char *xdg = envOrNone( "XDG_CONFIG_HOME" );
-    if( xdg ) return std::string( xdg ) + "/atui/config.ini";
-
-    const char *home = envOrNone( "HOME" );
-    if( home ) return std::string( home ) + "/.atui.ini";
-
-    return "atui.ini";
+    if( p ) path = std::string( p );
+    else
+    {
+        const char *xdg = envOrNone( "XDG_CONFIG_HOME" );
+        const char *home = envOrNone( "HOME" );
+        if( xdg ) path = std::string( xdg ) + "/atui/config.ini";
+        else if( home ) path = std::string( home ) + "/.atui.ini";
+        else path = "atui.ini";
+    }
+    // Absolute, because --root moves the working directory and a settings file
+    // found by relative lookup would then mean a different file - or none.
+    return core::absolutePath( path );
 }
 
 bool loadAll()
@@ -108,6 +114,18 @@ bool loadAll()
     tools::decisionLogPath() =
         configPath().substr( 0, configPath().find_last_of( "/\\" ) + 1 ) +
         "permissions.log";
+
+    // Undo journal: the copy of a file from before atui changed it. Off means off
+    // - the policy stops treating a missing net as a reason to ask, because
+    // switching it off is itself the decision.
+    core::journal::enabled() = ini.getBool( "undo", "enabled",
+                                            core::journal::enabled() );
+    core::journal::directory() =
+        ini.getString( "undo", "dir", core::journal::directory() );
+    core::journal::maxBytes() = core::journal::clampMaxBytes(
+        ini.getLong( "undo", "max_bytes", core::journal::maxBytes() ) );
+    core::journal::maxFileBytes() = core::journal::clampMaxFileBytes(
+        ini.getLong( "undo", "max_file", core::journal::maxFileBytes() ) );
 
     thinkingExpandAll() = ini.getBool( "ui", "thinking_expand",
                                        thinkingExpandAll() );
@@ -170,6 +188,11 @@ bool saveAll()
                    tools::judgeModelOverride() );
     ini.setInt( "permissions", "judge_seconds", tools::judgeSeconds() );
     ini.setBool( "permissions", "log", tools::logDecisions() );
+
+    ini.setBool( "undo", "enabled", core::journal::enabled() );
+    ini.setString( "undo", "dir", core::journal::directory() );
+    ini.setLong( "undo", "max_bytes", core::journal::maxBytes() );
+    ini.setLong( "undo", "max_file", core::journal::maxFileBytes() );
 
     ini.setString( "ui", "theme", tui::themeName( tui::currentTheme() ) );
     ini.setBool( "ui", "thinking_expand", thinkingExpandAll() );

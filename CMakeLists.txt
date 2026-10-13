@@ -41,6 +41,11 @@ set(ATUI_SOURCES
     "${ATUI_SRC_DIR}/tui/wrap.cpp"
     "${ATUI_SRC_DIR}/core/string.cpp"
     "${ATUI_SRC_DIR}/core/ai.cpp"
+    # Where atui is installed, and the undo journal that lives there. Network
+    # independent: it is local file handling, and it has to work before any
+    # request is made, since what it protects is the moment one fails.
+    "${ATUI_SRC_DIR}/core/paths.cpp"
+    "${ATUI_SRC_DIR}/core/journal.cpp"
     # Settings persistence: INI helper + glue. Always built so provider/theme
     # settings survive across runs.
     "${ATUI_SRC_DIR}/settings/ini.cpp"
@@ -108,6 +113,9 @@ endif()
 # self-test can read the permission corpus that ships with the tree.
 add_compile_definitions(ATUI_VERSION="${PROJECT_VERSION}")
 add_compile_definitions(ATUI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+# Where the binary ends up, used when argv[0] is a bare name found on PATH: it is
+# the one place the undo journal can be put that the packager knows about.
+add_compile_definitions(ATUI_INSTALL_DIR="${CMAKE_INSTALL_PREFIX}/bin")
 
 install(TARGETS atui
     RUNTIME DESTINATION bin

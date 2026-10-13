@@ -182,7 +182,8 @@ enum PermissionRung {
     prWriteOutside  = 12,  // a write we cannot place inside the project
     prPlanCleared   = 13,  // described, contained, and nothing was flagged
     prSessionAllowed = 14, // the user allowed this exact call for the run
-    prPublish       = 15   // git push, npm publish, scp...: another machine
+    prPublish       = 15,  // git push, npm publish, scp...: another machine
+    prNoUndoNet     = 16   // a write the undo journal cannot cover
 };
 
 // What the policy makes of one call.

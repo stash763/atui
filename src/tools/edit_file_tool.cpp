@@ -1,5 +1,7 @@
 // Implementation of the edit_file tool. See edit_file_tool.h.
 #include "tools/edit_file_tool.h"
+#include "core/journal.h"
+#include "core/paths.h"
 #include "tools/json_args.h"
 
 #include <fstream>
@@ -23,6 +25,13 @@ bool readFile( const std::string &path, std::string &out )
 
 bool writeFileAll( const std::string &path, const std::string &data )
 {
+    // Truncate-and-write rather than write-a-sibling-and-rename. The rename
+    // dance is the reflex, and it does not buy what it appears to buy here:
+    // removing the original and renaming over it is atomic on POSIX and not at
+    // all on FAT, which is half the platforms atui targets, and it leaves
+    // orphaned temporary files behind when the middle of it fails. The window
+    // this leaves - part-written file, process gone - is exactly what the undo
+    // journal covers, and it is covered before this function is called.
     std::ofstream f( path.c_str(), std::ios::out | std::ios::binary
                                   | std::ios::trunc );
     if( !f ) return false;
@@ -147,8 +156,51 @@ std::string EditFileTool::execute( const std::string &argumentsJson )
     int replaced = 0;
     std::string updated = replace( data, oldText, newText, all, replaced );
 
+    // Before the write, in this order, because each step is cheaper than the next
+    // and none of them may be skipped: refuse a file that cannot be written,
+    // then put the current contents where they survive the attempt, then write.
+    if( !atui::core::isWritableFile( path ) )
+        return "edit_file: '" + path + "' is not writable. No changes made.";
+
+    atui::core::journal::Pending pend;
+    std::string jerr;
+    const std::string op = std::string( "replace:" ) + ( all ? "all" : "first" );
+    if( !atui::core::journal::begin( path, "edit_file", op, pend, jerr ) )
+    {
+        // No copy, no edit. The policy normally asks a person about this before
+        // the call is made (tools::prNoUndoNet); reaching here means the journal
+        // failed since, and the honest answer is to leave the file alone.
+        return "edit_file: not edited - " + jerr;
+    }
+
     if( !writeFileAll( path, updated ) )
-        return "edit_file: failed to write '" + path + "'";
+    {
+        // Whether the original survived depends on where it failed, and that is
+        // not knowable from here. So the entry stays pending rather than being
+        // cancelled: the next start offers the copy, which is the only safe bet
+        // about a state atui cannot read.
+        std::string r = "edit_file: failed to write '" + path + "'";
+        if( !pend.preImage.empty() )
+            r += "; the previous contents are saved at '" + pend.preImage + "'";
+        else
+            r += ". No changes made.";
+        return r;
+    }
+
+    std::string cerr;
+    if( !atui::core::journal::commit( pend, cerr ) )
+    {
+        // The edit is done. Its undo record did not finish, which leaves the
+        // entry pending and offered as an interrupted write - the safe
+        // description of it. The model is told, because "edited" on its own
+        // would be a half-truth.
+        std::ostringstream w;
+        w << "edit_file: edited '" << path
+          << "' but could not record how to undo it: " << cerr;
+        if( !all && found > 1 )
+            w << "; " << ( found - 1 ) << " more match(es) remain";
+        return w.str() + ".";
+    }
 
     std::ostringstream r;
     r << "edit_file: edited '" << path << "' (replaced " << replaced
@@ -159,6 +211,8 @@ std::string EditFileTool::execute( const std::string &argumentsJson )
         r << "; " << ( found - 1 )
           << " more match(es) remain — pass all=true to replace them";
     r << ".";
+    if( pend.overCap )
+        r << " (no undo copy: file is larger than the journal limit)";
     return r.str();
 }
 

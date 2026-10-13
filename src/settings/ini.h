@@ -58,11 +58,15 @@ public:
     std::string getString( const char *section, const char *key,
                            const std::string &def = std::string() ) const;
     int    getInt( const char *section, const char *key, int def = 0 ) const;
+    // Byte counts and other values that do not fit in an int where int is 16 bits
+    // - which is one of the platforms atui builds for.
+    long   getLong( const char *section, const char *key, long def = 0 ) const;
     double getDouble( const char *section, const char *key, double def = 0.0 ) const;
     bool   getBool( const char *section, const char *key, bool def = false ) const;
 
     void setString( const char *section, const char *key, const std::string &value );
     void setInt( const char *section, const char *key, int value );
+    void setLong( const char *section, const char *key, long value );
     void setDouble( const char *section, const char *key, double value );
     void setBool( const char *section, const char *key, bool value );
 

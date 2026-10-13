@@ -17,12 +17,14 @@
 #include "net/json_extract.h"
 #include "tools/approval.h"
 #include "tools/permissions.h"
+#include "core/journal.h"
 #include "net/permission_judge.h"
 
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <vector>
 #include <string>
 #include <thread>
 #include <vector>
@@ -808,6 +810,8 @@ public:
     std::string root;
     std::string file;
     bool ok;
+    std::string savedJournalDir;
+    bool savedJournalOn;
 
     ScratchProject() : ok( false )
     {
@@ -830,10 +834,31 @@ public:
         atui::tools::setProjectRoot( root );
         root = atui::tools::projectRoot();
         ok   = ( !root.empty() && root.find( "atui_perm_mock" ) != std::string::npos );
+
+        // The undo journal the edits go through is the real one, so it needs a
+        // directory this test owns: pointing it at the default (the install
+        // directory) would leave entries behind in whatever tree atui happened to
+        // be built in.
+        savedJournalDir = atui::core::journal::directory();
+        savedJournalOn = atui::core::journal::enabled();
+        atui::core::journal::directory() = base + "/undo";
+        atui::core::journal::enabled() = true;
+        ::mkdir( atui::core::journal::directory().c_str(), 0755 );
     }
 
     ~ScratchProject()
     {
+        std::vector< atui::core::journal::Entry > entries;
+        atui::core::journal::entries( entries );
+        for( std::size_t i = 0; i < entries.size(); ++i )
+        {
+            std::remove( entries[i].preImage.c_str() );
+            std::remove( entries[i].metaPath.c_str() );
+        }
+        ::rmdir( atui::core::journal::directory().c_str() );
+        atui::core::journal::directory() = savedJournalDir;
+        atui::core::journal::enabled()   = savedJournalOn;
+
         std::remove( file.c_str() );
         ::rmdir( root.c_str() );
         ::rmdir( base.c_str() );

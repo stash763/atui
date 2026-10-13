@@ -7,6 +7,8 @@
 // more.
 #include "permissions.h"
 
+#include "core/journal.h"
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -879,6 +881,24 @@ Permission decide( const PermissionSubject &subject, const EffectPlan *plan )
         // 5. A file is decidable exactly, which is why no agent is consulted.
         if( pathInsideProject( subject.value ) )
         {
+            // 5b. Inside the project is only half of "safe to do without
+            //     asking": the other half is that it can be undone. atui can die
+            //     with its hand in the file - a dropped link in the middle of an
+            //     agent turn is the ordinary case, not the exotic one - so an
+            //     in-tree write with no copy behind it is a question, not an
+            //     auto-approval. A journal switched off entirely is not this:
+            //     that is a decision the user already made, and canBackUp() says
+            //     so.
+            std::string netWhy;
+            if( !atui::core::journal::canBackUp( subject.value, netWhy ) )
+            {
+                p.outcome = poAsk;
+                p.rung    = prNoUndoNet;
+                p.reason  = "this change could not be undone";
+                p.detail  = netWhy;
+                return p;
+            }
+
             p.outcome = poRun;
             p.rung    = prPathInside;
             p.reason  = "inside the project";

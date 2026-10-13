@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "core/paths.h"
 #include "settings/settings.h"
 #include "tools/permissions.h"
 #include "tui/app.h"
@@ -133,7 +134,12 @@ int judgeCheck( int argc, char **argv )
         }
         if( a == "--json" )                        json = true;
         else if( a == "-" )                        useStdin = true;
-        else if( a == "--root" && i + 1 < argc )   atui::tools::setProjectRoot( argv[++i] );
+        else if( a == "--root" && i + 1 < argc )
+        {
+            atui::tools::setProjectRoot( argv[++i] );
+            // Same rule as the application: one meaning for a relative path.
+            atui::core::setWorkingDirectory( atui::tools::projectRoot() );
+        }
         else
         {
             std::ifstream probe( a.c_str() );
@@ -243,6 +249,10 @@ int judgeCheck( int argc, char **argv )
 
 int main( int argc, char **argv )
 {
+    // First, because "where is atui installed" is answered from it, and that is
+    // where the undo journal goes.
+    atui::core::setArgv0( ( argc > 0 ) ? argv[0] : 0 );
+
     if( argc > 1 )
     {
         if( std::strcmp( argv[1], "--self-test" ) == 0 )
@@ -264,7 +274,15 @@ int main( int argc, char **argv )
     // Captured before the UI starts and before any path is resolved: everything
     // the permission policy says is relative to this directory.
     if( argc > 2 && std::strcmp( argv[1], "--root" ) == 0 )
+    {
         atui::tools::setProjectRoot( argv[2] );
+        // And the working directory follows it. Otherwise a relative path in a
+        // tool call means one thing to the policy, which resolves it against the
+        // root, and another to the write, which resolves it against the directory
+        // atui happens to be sitting in - and a policy that disagrees with the
+        // filesystem is not a policy.
+        atui::core::setWorkingDirectory( atui::tools::projectRoot() );
+    }
 
     return atui::tui::run_app();
 }
