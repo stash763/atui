@@ -6,11 +6,11 @@ which needs a real terminal (pty) to exercise.
 ## Build & unit tests
 
     cmake --build build          # from repo root
-    ./build/atui --self-test     # unit + integration tests (64/64 network build, 44/44 without)
+    ./build/atui --self-test     # unit + integration tests (100/100 network build, 73/73 without)
     # ...plus 4 live-server tests when ATUI_LIVE_BASE_URL is set (see 'Live endpoint testing')
 
 Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
-`src/settings/settings.cpp`):
+`src/settings/settings.cpp`, `src/core/journal.cpp`):
 
 - `ATUI_MODEL`, `ATUI_BASE_URL`, `ATUI_API_KEY`, `ATUI_TEMPERATURE`
 - `ATUI_THINKING_RESEND` — `1`/`y`/`t` to replay an assistant turn's thinking
@@ -21,6 +21,10 @@ Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
   it (default 120; also `File ▸ Options ▸ Settings...`, Alt-I). Unset, empty or
   unparseable keeps the default.
 - `ATUI_CONFIG` — override the config file path (see Settings persistence).
+- `ATUI_HOME` — where atui is installed, and so where its undo journal goes;
+  unset, the directory of `argv[0]` is used. `ATUI_UNDO`, `ATUI_UNDO_DIR`,
+  `ATUI_UNDO_MAX_BYTES` and `ATUI_UNDO_MAX_FILE` configure the journal itself (see
+  `PERMISSIONS.md` and "The undo journal" below).
 
 ## Settings persistence (INI)
 
@@ -202,7 +206,7 @@ configured, so the default self-test stays offline and fast:
 
     ATUI_LIVE_BASE_URL=http://10.196.88.170:10001/v1 ./build/atui --self-test
     # -> live: model list / live: chat stream / live: reasoning / live: tool round trip
-    #    68 passed, 0 failed (~30 s); offline runs stay at 64 passed
+    #    104 passed, 0 failed (~30 s); offline runs stay at 100 passed
 
 | test | what it asserts |
 |---|---|
@@ -907,6 +911,106 @@ while a different command still asks; Settings ▸ mode radio persists
 outside` without a restart. With no `[permissions]` section in the file at all,
 the status line reads `perm: in-project ok, a model checks the rest` - the
 shipped default, checked by starting with a config that says nothing.
+
+## The undo journal
+
+Design and the storage format are in `PERMISSIONS.md`; this is how it is checked.
+
+### Offline, both builds
+
+```console
+./build/atui --self-test 2>&1 | grep -E "journal|undo"
+```
+
+The crash is not simulated by killing anything: `begin()` without `commit()` *is*
+the state a crash leaves behind, and the journal's whole contract is what happens
+when it is reopened in that state. Killing the process would add nothing and make
+the test unportable, so the tests abandon entries on purpose.
+
+Covering: the pre-image is on disk before the target is touched; committed entries
+are not pending and record both hashes; an abandoned entry is found by
+`interrupted()` and restores the exact bytes, consuming the entry; a committed
+entry refuses to restore over a file that changed since; `cancel()` leaves nothing;
+`compareTarget()` distinguishes "nothing to recover" from "bytes I cannot
+account for" (the difference between a quiet cleanup and asking a person); a file
+over `max_file` gets no copy and `canBackUp()` says why in bytes; a journal
+switched off is a decision and not a failure; retention drops the oldest entries
+but never an interrupted one and never the newest; `.INF` files with no `.PRE`,
+and `.PRE` files with no `.INF`, are handled instead of crashing; the `[undo]`
+section round-trips (through `getLong`, since 1 MiB does not fit a 16-bit `int`);
+and an `edit_file` through the real tool leaves an entry that reproduces the file
+byte for byte.
+
+Policy: an in-tree path is `prPathInside` while the journal covers it and
+`prNoUndoNet` when it does not; a journal switched off asks nothing; and a path
+outside the tree is still decided by containment first, so the journal never gets
+to make an out-of-tree write acceptable.
+
+The tool-side tests own their journal directory (`JournalGuard`,
+`ScratchProject`'s `undo/`), because the default is the install directory and a
+test that litters it fails differently depending on where it was built.
+
+### Through the TUI (tui-test)
+
+The journal is plain files, so a fixture can be written by hand - this is the
+recipe, and it is the only way to get an "interrupted" entry without dying:
+
+```console
+mkdir -p /tmp/und/proj /tmp/und/journal
+printf 'current\n'  > /tmp/und/proj/notes.txt
+printf 'the old one\n' > /tmp/und/journal/U000007.PRE
+cat > /tmp/und/journal/U000007.INF <<'EOF'
+atui-undo v1
+stamp=2026-10-13T09:14:02Z
+pid=4242
+tool=edit_file
+op=replace:first
+state=pending
+existed=1
+target=/tmp/und/proj/notes.txt
+hash=0000000000000000
+bytes=12
+after=
+afterbytes=0
+EOF
+tui-test run --session undo --cols 88 --rows 25 \
+  --env ATUI_CONFIG=/private/tmp/none.ini \
+  --env ATUI_UNDO_DIR=/tmp/und/journal --cwd /tmp/und/proj -- ./build/atui
+```
+
+Verified with it: the **Interrupted write** box appears as soon as the desktop is
+up, naming the file, what it holds now versus what the copy holds, and where the
+copy is; Esc leaves the file alone, notes it in the transcript and keeps the entry
+for the menu. `Alt-U` lists entries newest-first with interrupted ones first and
+`INTERRUPTED` on their row, the header reading
+`<dir> - 4 saved, 75 B of 1.0 MiB, 1 interrupted`. `Restore` on an ordinary
+in-tree file writes it back with no further question. `Restore` on an entry whose
+target is `.env` raises the policy's own dialog quoting the rule
+(`never done unattended (a dotenv file): /tmp/und/proj/.env`), Enter declines and
+leaves both files alone, Yes restores. `Discard` asks first - it destroys the only
+copy - and its No leaves the entry.
+
+Gotchas found doing it:
+
+- `tui-test mouse click` and `tui-test find text` use **0-based rows**, so the
+  row in `find`'s output is the row to click. Resolve them immediately before
+  clicking: these dialogs are centred, so one more transcript line moves every
+  button up a row, and a click a row out lands on a button's shadow. Clicking below the last
+  item of a `TListViewer` is not ignored either: it clamps to the last item, which
+  in a list where every row is "a file somebody is about to overwrite" looks
+  exactly like acting on the wrong entry. Count rows with `find text`, do not
+  eyeball `tui-test text`, and never reuse coordinates from an earlier screen.
+- A `TDialog` subclass has to intercept its own command ids **before** calling
+  `TDialog::handleEvent`, because those four ids (`cmOK/cmCancel/cmYes/cmNo`)
+  close the dialog. Custom ids (`CmdUndoRestore`) plus `clearEvent` keep it open
+  so the list can be refreshed and the outcome shown in the same box.
+- `TStaticText` reserves the rows it was given at construction: a header that
+  wraps onto a second line needs the second line in its `TRect` and the dialog one
+  row taller, or the tail of the path is silently gone (see the same note under
+  the wheel-scrolling section).
+- The startup offer is triggered from the periodic `cmTimerExpired` branch, not
+  from `initDeskTop_()`: during init `TProgram::deskTop` is still null, and a
+  dialog executed on `TProgram::application` takes keyboard but no mouse.
 
 ## Prompt input (wrapping + auto-grow)
 

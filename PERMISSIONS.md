@@ -74,8 +74,9 @@ identifiers, not positions, so an old log still means what it meant:
 | 13 `prPlanCleared`   | described, contained, nothing flagged |
 | 14 `prSessionAllowed` | the user allowed this exact call earlier in the run |
 | 15 `prPublish`       | publishes to another machine |
+| 16 `prNoUndoNet`     | a write the undo journal cannot cover |
 
-Two of them are worth dwelling on:
+Three of them are worth dwelling on:
 
 **`prRootTooBroad`** is a refusal to pretend. With `$HOME` as the project,
 "inside the project" describes everything worth stealing, so nothing is allowed
@@ -85,6 +86,15 @@ unattended no matter what the mode says. Starting at `/` is the same.
 network *and* reads outside the root, or reads a deny-listed path, is refused by
 code whatever the model said it was doing - the model's intent may be genuine and
 the effect is still a secret leaving the machine.
+
+**`prNoUndoNet`** admits that "inside the project" is only half of what makes a
+write safe to do without asking. The other half is that it can be taken back:
+atui spends its life blocked on a network stream and the realistic failure is the
+process dying partway through a turn that has already rewritten two files. So an
+in-tree write is auto-approved only while there is a copy behind it, and when the
+journal is enabled but cannot cover this file - too big for `max_file`, no
+writable journal directory - it is a question instead. Turning the journal *off*
+is not this: that is a decision already taken, and the policy stops asking.
 
 ## The agent contract
 
@@ -162,6 +172,71 @@ dependencies is not an interrupt, and `allow` stops treating it as a question.
 Either
 way `prExfil` outranks it.
 
+## The undo journal
+
+`[undo]`, seeded from the environment:
+
+| Key | Env | Values | Default |
+|---|---|---|---|
+| `enabled`     | `ATUI_UNDO`            | bool | true |
+| `dir`         | `ATUI_UNDO_DIR`        | a directory | empty = `<install dir>/undo` |
+| `max_bytes`   | `ATUI_UNDO_MAX_BYTES`  | 64 KiB - 64 MiB | 1048576 |
+| `max_file`    | `ATUI_UNDO_MAX_FILE`   | 1 KiB - 32 MiB | 1048576 |
+
+The install directory is found from `ATUI_HOME`, else the directory of
+`argv[0]`, else the prefix compiled in by CMake - in that order because argv[0]
+is the one mechanism every platform atui builds for agrees on, and a
+read-only or packaged install is what `ATUI_HOME` is for.
+
+**The order of operations is the feature.** Before a file is touched: copy its
+current bytes into the journal, flush, close. Then write the new contents. Then
+mark the entry committed. An entry that was never committed is not garbage, it is
+an interrupted write, and atui finds it on the next start and offers to put the
+file back:
+
+```
+atui stopped while it was writing
+
+  /home/u/proj/notes.txt
+
+That file holds 31 bytes atui cannot account for (the saved copy holds 27).
+...
+Put the saved copy back over the file?
+```
+
+That middle sentence is why the offer can be trusted. An interrupted write has no
+"after" hash, so the bytes on disk cannot be placed: they may be the ones atui
+was writing or the ones somebody typed afterwards. So the dialog says what it
+knows and asks, and when the file still holds exactly what the copy holds - the
+write never happened - the entry is cleared quietly instead of asking about
+nothing.
+
+Storage is `U000123.PRE` (the previous bytes) plus `U000123.INF` (a dozen
+`key=value` lines: `stamp`, `pid`, `tool`, `op`, `state`, `target`, `hash`,
+`bytes`, `after`) in names that are legal on FAT and readable with `type` or
+`more` on a machine with no tooling. Copies are streamed through a 4 KiB buffer,
+so journaling a 5 MB file costs the same memory as journaling a 50 byte one. The
+whole journal is capped at `max_bytes` and the oldest entries are dropped first -
+except an interrupted one, which may be the only copy of a file, and except the
+newest entry, because a cap that ate the change made a moment ago would be a cap
+that ate the feature.
+
+Restores go through `decide()` like any other write: an entry pointing at `.env`
+is refused by the same rule that refused to edit it, and the confirm dialog quotes
+it. Clicking a menu item is not a fact about the file. The one answer that is
+dropped is `prNoUndoNet` itself, since the copy in hand *is* the undo copy.
+
+Durability, stated honestly: every journal write is flushed and closed, so **an
+atui crash is survived**. A power cut is not promiseable on platforms where the
+block cache decides when bytes reach the disk and no portable call flushes it
+(DOS, OS/2). `run_command` has no journal, because a command has no inverse -
+which is also why commands are the thing the policy is strictest about.
+
+`--root DIR` also changes the working directory to DIR. Not for tidiness: the
+policy resolves a relative path against the root, `fopen()` resolves it against
+the working directory, and the journal records what it copied. When those two
+directories differ, the policy is describing a file that no write ever went to.
+
 ## In the UI
 
 - The status line shows what the current settings will actually do:
@@ -181,6 +256,12 @@ way `prExfil` outranks it.
   with different arguments is a different question.
 - Every call leaves one transcript line saying who answered - `# auto: inside the
   project`, `# agent: runs the project's own tests`, `# allowed for this session`.
+- File > **Undo file...** (`Alt-U`) lists the saved copies, interrupted writes
+  first, newest next, with `Restore` and `Discard` and the journal's location and
+  fullness in the header. Nine rows fit the box; what is not shown is in the
+  journal directory the header names, not hidden. A restore is noted in the
+  transcript, a declination is not - the transcript records what happened to a
+  file.
 
 ## Measuring it: `--judge-check`
 
@@ -239,6 +320,19 @@ model wanted to do, including the sensitive paths it was refused.
   beyond `.git/hooks`: a `Makefile` or `setup.py` edit is auto-approved, and the
   `make` that follows is judged on its own.
 - **Hardlinks are invisible** to realpath containment; symlinks are not.
+- **Path facts are POSIX-shaped.** `C:\_sea~1.txt`, `\\server\c$\secrets` and
+  `.GIT\CONFIG` are not what a case-sensitive, slash-separated, single-rooted
+  containment check expects. Today that fails safe - a DOS-shaped path does not
+  resolve *inside* the project, so it asks - but it means the Windows/OS-2 answer
+  to "is this file in the project" is less precise than the Unix one. Making it
+  precise needs a case-folding, drive-aware, reparse-point-aware path layer, and
+  until it exists the deny-list should be treated as Unix-spelled.
+- **One journal, no locking.** Two atui runs in the same install share a journal
+  directory. Entry ids cannot collide, so nothing corrupts, but neither run knows
+  about the other and each prunes by itself.
+- **A restore can be blocked by other work.** A committed entry knows what the
+  file held when atui finished with it, and refuses to restore over a file that
+  has since changed: the copy stays where it is and the dialog says where that is.
 - A busy single-slot server serializes the judge behind the chat request. The
   symptom is judge timeouts turning into prompts, never into allows.
 - Every judged call costs a round-trip; the cache is what keeps a test-fix loop
@@ -247,10 +341,17 @@ model wanted to do, including the sensitive paths it was refused.
 ## Deferred
 
 - OS-level confinement (`sandbox-exec`, Landlock/bwrap) so in-tree auto-approval
-  is a kernel guarantee instead of a policy.
+  is a kernel guarantee instead of a policy. Ruled out as a *shipped* requirement
+  rather than postponed: it cannot be honoured on MS-DOS, OS/2 or FAT, so it would
+  be a promise atui breaks on half its targets.
 - A real shell grammar (tree-sitter-bash) replacing the presence checks - the
-  single largest upgrade available to the facts layer.
-- Undo for auto-approved edits: keep the prior contents, restore from the
-  transcript.
+  single largest upgrade available to the facts layer. Also why there is no
+  per-platform equivalent yet: there is no single shell to parse (`/bin/sh` is
+  dash, `command.com`, `cmd.exe`, PowerShell), and a parser only widens the
+  auto-approve surface if the facts it produces are trusted.
+- A platform path layer for the containment check (see Known limits).
+- `fsync`/`FlushFileBuffers` on the platforms that have them, so the durability
+  promise can extend past "survives an atui crash" on the machines where it can
+  mean more.
 - Per-project permission files (`.atui/permissions`) and workspace trust.
 - Persisting session allowances to config from the dialog.

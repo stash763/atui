@@ -46,6 +46,7 @@
 #include <cstring>
 #include <algorithm>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -53,6 +54,7 @@
 
 #include "app.h"
 #include "core/ai.h"
+#include "core/journal.h"
 #include "tui/theme.h"
 #include "tui/md_style.h"
 #include "tui/markdown.h"
@@ -82,7 +84,7 @@ using atui::core::String;
 // uses a range: the command encodes the index of the picked provider, whose
 // configured model comes with it.
 enum { CmdHelp = 1000, CmdTheme = 1004, CmdProviders = 1003,
-       CmdSettings = 1005,
+       CmdSettings = 1005, CmdUndo = 1006,
        CmdRefreshModels = 2000,
        CmdSwitchModelBase = 2200 };  // + provider index
 
@@ -148,6 +150,8 @@ void updateProviderStatus_();
 void updatePermissionStatus_();
 void showProvidersDialog_();
 void pickSwitchModel_( int index );
+void showUndoDialog_();
+void maybeRecoverInterruptedWrites_();
 
 #ifdef ATUI_HAVE_NETWORK
 // --- tool approval (worker thread -> UI) -------------------------------------
@@ -1133,6 +1137,9 @@ public:
         // it also self-heals after a terminal resize).
         if( event.what == evBroadcast && event.message.command == cmTimerExpired )
         {
+            // First thing: if the last run died with a file half written, that is
+            // more urgent than anything the model is about to say. Runs once.
+            maybeRecoverInterruptedWrites_();
             pollSink_();
             relayoutPanels_();
             clearEvent( event );
@@ -1169,6 +1176,10 @@ public:
                     break;
                 case CmdSettings:
                     showSettings();
+                    clearEvent( event );
+                    break;
+                case CmdUndo:
+                    showUndoDialog_();
                     clearEvent( event );
                     break;
                 case cmQuit:
@@ -1268,6 +1279,9 @@ TMenuBar *initMenuBar_( TRect r )
     return new TMenuBar( r,
         *new TSubMenu( "~F~ile", kbAltF )
         + *new TMenuItem( "H~elp...",  CmdHelp, kbAltH, hcNoContext, "Alt-H" )
+        // The journal's front door: every saved copy atui holds, and the two
+        // things that can be done with one.
+        + *new TMenuItem( "~Undo file...", CmdUndo, kbAltU, hcNoContext, "Alt-U" )
         + newLine()
         + *new TMenuItem( "~O~ptions", kbAltO,
               new TMenu(
@@ -1542,7 +1556,8 @@ void TApp::showHelp()
         "atui - AI development TUI (M2)\nStreaming chat window.\n"
         "\n"
         "Switch model (menu bar) picks the provider and its model;\n"
-        "Alt-P edits providers, Alt-T the theme, Ctrl-T the thinking blocks."
+        "Alt-P edits providers, Alt-T the theme, Ctrl-T the thinking blocks.\n"
+        "Alt-U lists the files atui has changed and puts one back."
         ) );
     TButton *b = new TButton( TRect( 0, 0, 14, 3 ), "OK", cmCancel, bfNormal );
     d->insert( b );
@@ -2352,6 +2367,482 @@ void TApp::showSettings()
         atui::settings::saveAll();
     }
     destroy( d );
+}
+
+// --- undo a file change --------------------------------------------------------
+//
+// core/journal.h keeps a copy of every file atui is about to change; this is the
+// only way to look at them from inside the program. It is deliberately a plain
+// list with two actions. An undo that tried to merge changes, or that picked on
+// its own which of several edits to roll back, would be a worse thing to trust
+// with a file the user is working on than nine rows and a "Restore" button.
+//
+// What is listed is exactly what the journal directory contains, so the box and
+// `type U000123.INF` on a machine with no tooling say the same thing.
+//
+// Commands of the undo dialog's own: a subclassed TDialog that intercepts them
+// before TDialog sees them, which is how the provider dialog's buttons work.
+enum { CmdUndoRestore = 2020, CmdUndoDiscard = 2021 };
+
+// Nine rows is the most that fits a 25-row terminal with the header, the status
+// line and the buttons, and single-digit numbering sorts correctly in the list
+// box's collection (which sorts its items, so row order is label order).
+const int kUndoRows = 9;
+
+// "2026-10-13T09:14:02Z" -> "10-13 09:14". The year is left out of a list where
+// every entry is from this one; the dialogs spell it out in full.
+static std::string undoClock_( const std::string &stamp )
+{
+    if( stamp.size() < 16 ) return stamp;
+    return stamp.substr( 5, 5 ) + " " + stamp.substr( 11, 5 );
+}
+
+// The target as the user would name it: relative to the project when it is in
+// the project, absolute otherwise (a path that left the tree should not be
+// printed as if it had not).
+static std::string undoPath_( const std::string &target )
+{
+    const std::string root = atui::tools::projectRoot();
+    if( !root.empty() && target.compare( 0, root.size(), root ) == 0 )
+    {
+        std::string rest = target.substr( root.size() );
+        if( rest.size() > 1 && ( rest[0] == '/' || rest[0] == '\\' ) )
+            return rest.substr( 1 );
+        if( rest.size() == 1 && ( rest[0] == '/' || rest[0] == '\\' ) )
+            return std::string( "." );
+    }
+    return target;
+}
+
+static std::string undoRowLabel_( const atui::core::journal::Entry &e, int ordinal )
+{
+    std::ostringstream s;
+    s << ( ordinal + 1 ) << ". " << undoPath_( e.target )
+      << "   " << undoClock_( e.stamp )
+      << "  " << atui::core::journal::humanBytes( e.bytes );
+    // An interrupted write goes first and says so: it is the entry that may be
+    // the only copy of a file, and a list that buried it under newer edits would
+    // be a list that hid the one thing worth acting on.
+    if( e.pending ) s << "  INTERRUPTED";
+    return s.str();
+}
+
+// A centred modal box with wrapped text and one to three buttons.
+//
+// Not stock messageBox(): that is sized for about three lines and clips the
+// rest, which here would cut off the path or the rule the box exists to show.
+// Buttons are given in display order, laid out from the right, and the LAST one
+// is the default - TVision focuses the view inserted last, and a focused
+// TButton makes itself the default, so the declining button goes last and Enter
+// and Esc both do the safe thing.
+ushort showModalBox_( const std::string &title, const std::string &body,
+                      const char *labelA, ushort cmdA,
+                      const char *labelB, ushort cmdB,
+                      const char *labelC, ushort cmdC )
+{
+    struct Btn { const char *label; ushort cmd; };
+    const Btn in[3] = { { labelA, cmdA }, { labelB, cmdB }, { labelC, cmdC } };
+    int n = 0;
+    for( int i = 0; i < 3; ++i )
+        if( in[i].label ) n = i + 1;
+    if( n == 0 ) return cmCancel;
+
+    const short deskW = TProgram::deskTop ? TProgram::deskTop->size.x : 80;
+    const short deskH = TProgram::deskTop ? TProgram::deskTop->size.y : 25;
+    short textW = 60;
+    if( textW > deskW - 10 ) textW = (short) ( deskW - 10 );
+    if( textW < 24 ) textW = 24;
+
+    std::vector<std::string> rows = wrapText_( body, textW );
+    short maxRows = (short) ( deskH - 8 );
+    if( maxRows < 1 ) maxRows = 1;
+    if( (short) rows.size() > maxRows )
+    {
+        rows.resize( maxRows );
+        rows.back() += "...";
+    }
+
+    std::string text;
+    for( size_t i = 0; i < rows.size(); ++i )
+    {
+        if( i != 0 ) text += "\n";
+        text += rows[i];
+    }
+
+    const short w = (short) ( textW + 6 );
+    const short h = (short) ( (short) rows.size() + 5 );
+    TDialog *d = new TDialog( TRect( 0, 0, w, h ), title.c_str() );
+    d->options |= ofCentered;
+    d->insert( new TStaticText( TRect( 3, 1, (short) ( w - 2 ), (short) ( h - 4 ) ),
+                                text.c_str() ) );
+
+    const short group = (short) ( n * 12 + ( n - 1 ) );
+    short x = (short) ( w - 4 - group );
+    if( x < 2 ) x = 2;
+    for( int i = 0; i < n; ++i )
+    {
+        const bool last = ( i == n - 1 );
+        d->insert( new TButton( TRect( x, (short) ( h - 3 ), (short) ( x + 12 ),
+                                       (short) ( h - 1 ) ),
+                                in[i].label, in[i].cmd,
+                                last ? bfDefault : bfNormal ) );
+        x = (short) ( x + 13 );
+    }
+
+    const ushort r = TProgram::deskTop
+        ? TProgram::deskTop->execView( d )
+        : TProgram::application->execView( d );
+    TObject::destroy( d );
+    return r;
+}
+
+// A question about a file, with No as the default.
+static bool askYesNo_( const std::string &title, const std::string &body )
+{
+    return showModalBox_( title, body, "~Y~es", cmYes, "~N~o", cmNo, 0, 0 ) == cmYes;
+}
+
+// Something that happened, that the user should see before continuing.
+static void showNote_( const std::string &title, const std::string &body )
+{
+    showModalBox_( title, body, "OK", cmOK, 0, 0, 0, 0 );
+}
+
+// Puts one entry's contents back.
+//
+// `consented` says a person has already been shown this exact file and said to
+// restore it (the start-up recovery dialog). Otherwise the write goes through
+// the permission policy like every other write atui makes, so a rule that will
+// not let atui touch .env will not let it restore .env either - the fact that a
+// menu item was clicked is not a fact about the file.
+//
+// One exception is made, and it is rung 16: a restore is refused for want of an
+// undo copy when the copy in hand IS the undo copy, so that answer is dropped
+// rather than repeated back at the user.
+enum RestoreResult { urDone = 0, urDeclined, urFailed };
+
+RestoreResult restoreEntry_( const atui::core::journal::Entry &entry,
+                             bool consented, std::string &message )
+{
+    if( !consented )
+    {
+        const atui::tools::Permission p = atui::tools::decide(
+            atui::tools::PermissionSubject( atui::tools::psPath, entry.target ) );
+        if( p.outcome != atui::tools::poRun && p.rung != atui::tools::prNoUndoNet )
+        {
+            std::ostringstream q;
+            q << "Restore '" << entry.target << "'?\n\n"
+              << "It held these bytes on " << entry.stamp << ", and atui's rules "
+              << "would not overwrite the file without asking a person:\n\n  "
+              << atui::tools::decisionNote( p )
+              << "\n\nPut the saved copy back?";
+            if( !askYesNo_( "Restore file", q.str() ) )
+            {
+                message = "you said no";
+                return urDeclined;
+            }
+        }
+    }
+
+    std::string err;
+    if( !atui::core::journal::restore( entry, err ) )
+    {
+        message = err;
+        return urFailed;
+    }
+    message = "restored " + undoPath_( entry.target );
+    return urDone;
+}
+
+class UndoDialog : public TDialog
+{
+public:
+    TListBox      *list = 0;
+    TStaticText   *header = 0;
+    TStaticText   *status = 0;
+    TRect          headerRect;
+    TRect          statusRect;
+    std::vector<atui::core::journal::Entry> items;
+
+    UndoDialog();
+    void loadList();
+    void setHeader( const std::string &text );
+    void setStatus( const std::string &text );
+    void act( bool discardIt );
+    virtual void handleEvent( TEvent& event );
+};
+
+UndoDialog::UndoDialog()
+    : TWindowInit( &TDialog::initFrame ),
+      TDialog( TRect( 0, 0, 74, kUndoRows + 10 ), "Undo a file change" )
+{
+    options |= ofCentered;
+
+    // Two rows: the header names the journal directory, and directory paths are
+    // longer than one row. TStaticText clips what does not fit rather than
+    // wrapping, so the space has to be given up front.
+    headerRect  = TRect( 3, 1, size.x - 3, 3 );
+    const short listTop = 4;
+
+    TScrollBar *sb = new TScrollBar( TRect( size.x - 4, listTop, size.x - 3,
+                                            (short) ( listTop + kUndoRows - 1 ) ) );
+    insert( sb );
+    // Single click picks a row (the same ModelListBox the provider dialog uses):
+    // the stock list box wants a double click, which is a poor thing to make
+    // somebody do to a file they are about to overwrite.
+    list = new ModelListBox( TRect( 3, listTop, (short) ( size.x - 5 ),
+                                    (short) ( listTop + kUndoRows - 1 ) ), 1, sb );
+    list->newList( new TStringCollection( 4096, 32 ) );
+    insert( list );
+
+    statusRect = TRect( 3, (short) ( listTop + kUndoRows ), size.x - 3,
+                        (short) ( listTop + kUndoRows + 1 ) );
+    setStatus( "Restore puts a saved copy back; Discard throws it away." );
+
+    insert( new TButton( TRect( 3, size.y - 4, 17, size.y - 2 ),
+                         "~R~estore", CmdUndoRestore, bfNormal ) );
+    insert( new TButton( TRect( 19, size.y - 4, 33, size.y - 2 ),
+                         "~D~iscard", CmdUndoDiscard, bfNormal ) );
+    insert( new TButton( TRect( size.x - 16, size.y - 4, size.x - 3, size.y - 2 ),
+                         "Cancel", cmCancel, bfDefault ) );
+
+    loadList();
+}
+
+// Rebuilds the rows. Interrupted writes lead, then everything else newest first
+// (which is what the journal already gives), capped at what fits on screen.
+void UndoDialog::loadList()
+{
+    items.clear();
+    atui::core::journal::entries( items );
+
+    std::vector<atui::core::journal::Entry> ordered;
+    for( std::size_t i = 0; i < items.size(); ++i )
+        if( items[i].pending ) ordered.push_back( items[i] );
+    for( std::size_t i = 0; i < items.size(); ++i )
+        if( !items[i].pending ) ordered.push_back( items[i] );
+    items.swap( ordered );
+
+    TStringCollection *coll = new TStringCollection( 4096, 32 );
+    const std::size_t shown = items.size() < (std::size_t) kUndoRows
+                            ? items.size() : (std::size_t) kUndoRows;
+    for( std::size_t i = 0; i < shown; ++i )
+        coll->insert( dupStr_( undoRowLabel_( items[i], (int) i ) ) );
+    list->newList( coll );
+
+    std::ostringstream h;
+    if( !atui::core::journal::enabled() )
+        h << "The undo journal is switched off ([undo] enabled), so atui holds "
+             "no copies of anything.";
+    else
+    {
+        h << atui::core::journal::describe();
+        // Nothing is hidden by this box, only fitted to it: the older entries are
+        // still in the journal, and the header names the directory so they can be
+        // read with any pager.
+        if( shown < items.size() ) h << " - showing the newest " << shown;
+    }
+    setHeader( h.str() );
+}
+
+void UndoDialog::setHeader( const std::string &text )
+{
+    if( header ) { destroy( header ); header = 0; }
+    header = new TStaticText( headerRect, text.c_str() );
+    insert( header );
+    header->drawView();
+}
+
+void UndoDialog::setStatus( const std::string &text )
+{
+    if( status ) { destroy( status ); status = 0; }
+    status = new TStaticText( statusRect, text.c_str() );
+    insert( status );
+    status->drawView();
+}
+
+// Acts on the selected row. The row's leading number is what identifies the
+// entry - the collection sorts its items, so a row position is not an index into
+// `items`, and re-reading the label is how the provider dialog maps them back.
+void UndoDialog::act( bool discardIt )
+{
+    // `focused` is the row the list box is on: TListViewer has no accessor, and
+    // the ModelListBox above relies on the same member.
+    const std::string row = listRow_( list, list->focused );
+    if( row.empty() )
+    {
+        setStatus( "Pick a row first." );
+        return;
+    }
+    size_t pos = 0;
+    while( pos < row.size() && row[pos] >= '0' && row[pos] <= '9' ) ++pos;
+    if( pos == 0 )
+    {
+        setStatus( "Pick a row first." );
+        return;
+    }
+    const int which = std::atoi( row.substr( 0, pos ).c_str() ) - 1;
+    if( which < 0 || (std::size_t) which >= items.size() )
+    {
+        setStatus( "That row is out of date; the list has been refreshed." );
+        loadList();
+        return;
+    }
+
+    const atui::core::journal::Entry entry = items[which];
+
+    if( discardIt )
+    {
+        // Discarding is the one action here that cannot be undone: it destroys
+        // the only copy of what the file used to hold.
+        std::ostringstream q;
+        q << "Throw away the saved copy of\n\n  " << undoPath_( entry.target )
+          << "\n\nfrom " << entry.stamp << "? Nothing else holds what was in that "
+          "file before atui changed it.";
+        if( !askYesNo_( "Discard saved copy", q.str() ) ) return;
+
+        std::string err;
+        if( !atui::core::journal::discard( entry, err ) )
+            setStatus( "Not discarded: " + err );
+        else
+            setStatus( "Discarded the copy of " + undoPath_( entry.target ) );
+        loadList();
+        return;
+    }
+
+    std::string message;
+    const RestoreResult r = restoreEntry_( entry, false, message );
+    // The transcript records what happened to a file, not what didn't: a declination
+    // is already on screen in the dialog.
+    if( g_transcript_ && r != urDeclined ) g_transcript_->appendStatus( message );
+    setStatus( r == urDone ? message : "Not restored: " + message );
+    loadList();
+}
+
+void UndoDialog::handleEvent( TEvent& event )
+{
+    if( event.what == evCommand )
+    {
+        if( event.message.command == CmdUndoRestore )
+        {
+            act( false );
+            clearEvent( event );
+            return;
+        }
+        if( event.message.command == CmdUndoDiscard )
+        {
+            act( true );
+            clearEvent( event );
+            return;
+        }
+    }
+    TDialog::handleEvent( event );   // Cancel closes the box
+}
+
+void showUndoDialog_()
+{
+    UndoDialog *d = new UndoDialog();
+    TProgram::deskTop ? TProgram::deskTop->execView( d )
+                      : TProgram::application->execView( d );
+    TObject::destroy( d );
+    focusInput_();
+}
+
+// Once per run, deal with writes the last run did not finish.
+//
+// Called from the periodic timer rather than from the desktop's construction: a
+// modal box needs a desktop to be modal on, and during initDeskTop() the one
+// TVision is building is not yet TProgram::deskTop, which is what makes a dialog
+// clickable.
+void maybeRecoverInterruptedWrites_()
+{
+    static bool done = false;
+    if( done ) return;
+    done = true;
+
+    if( !atui::core::journal::enabled() ) return;
+
+    std::vector<atui::core::journal::Entry> broken;
+    atui::core::journal::interrupted( broken );
+    if( broken.empty() ) return;
+
+    // First clear the entries that turned out to be paperwork: the file still
+    // holds the bytes the copy holds, so the write never happened and there is
+    // nothing to recover. Asking about those would teach the user to say no.
+    std::vector<atui::core::journal::Entry> real;
+    for( std::size_t i = 0; i < broken.size(); ++i )
+    {
+        std::string err;
+        if( atui::core::journal::compareTarget( broken[i] ).empty() )
+        {
+            atui::core::journal::discard( broken[i], err );
+            if( g_transcript_ )
+            {
+                g_transcript_->appendStatus(
+                    "undo journal: an interrupted write had never reached "
+                    + undoPath_( broken[i].target ) + "; nothing to recover" );
+            }
+        }
+        else
+            real.push_back( broken[i] );
+    }
+
+    // One dialog each. These are rare - a copy exists per interrupted write, and
+    // a run that was killed mid-edit is not a normal event - and each one is
+    // about a different file, which a single summary box cannot act on.
+    int asked = 0;
+    for( std::size_t i = 0; i < real.size(); ++i )
+    {
+        if( asked >= 3 )
+        {
+            if( g_transcript_ )
+            {
+                std::ostringstream s;
+                s << ( real.size() - i )
+                  << " more interrupted write(s) are in the undo journal ("
+                  << atui::core::journal::dir() << "); File > Undo lists them.";
+                g_transcript_->appendStatus( s.str() );
+            }
+            break;
+        }
+        ++asked;
+
+        const atui::core::journal::Entry &e = real[i];
+        std::ostringstream body;
+        body << "atui stopped while it was writing\n\n  " << e.target << "\n\n"
+             << "That file " << atui::core::journal::compareTarget( e )
+             << ". The copy from before the write is still saved, at\n\n  "
+             << e.preImage << "\n\n("
+             << atui::core::journal::humanBytes( e.bytes ) << ", " << e.stamp
+             << ")\n\nPut the saved copy back over the file?";
+
+        // Default No: the file on disk might be good, and the copy might be
+        // worse. Nothing is lost by answering no - the entry stays in the
+        // journal and File > Undo still offers it.
+        if( !askYesNo_( "Interrupted write", body.str() ) )
+        {
+            if( g_transcript_ )
+            {
+                g_transcript_->appendStatus( "left " + undoPath_( e.target )
+                    + " as it is; the saved copy is still in the journal" );
+            }
+            continue;
+        }
+
+        // `consented` is true here: the person has just been shown this file, by
+        // name, and answered yes about putting it back.
+        std::string message;
+        const RestoreResult r = restoreEntry_( e, true, message );
+        if( g_transcript_ )
+        {
+            g_transcript_->appendStatus( r == urDone ? message
+                                                    : "not restored: " + message );
+        }
+        // A restore that failed is worth a box of its own: the transcript line
+        // scrolls, and "the copy is still at <path>" is the sentence that keeps
+        // the user from thinking the file is gone.
+        if( r == urFailed ) showNote_( "Could not restore", message );
+    }
 }
 
 int run_app()
