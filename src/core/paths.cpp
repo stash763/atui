@@ -2,8 +2,10 @@
 #include "paths.h"
 
 #include <cstdlib>
+#include <cctype>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #if defined(_WIN32)
 #include <direct.h>
@@ -44,6 +46,81 @@ std::string &startupArgv0()
 {
     static std::string a;
     return a;
+}
+
+const char kSeps[] = "/\\";
+
+bool isSep( char c ) { return c == '/' || c == '\\'; }
+
+// The one piece of state in this file, and only so the self-tests can check both
+// behaviours on one host: which platform folds case in file names is not something
+// a machine can discover at runtime without writing a file to prove it.
+bool &caseFoldSetting()
+{
+    static bool folded
+#if defined(_WIN32) || defined(__MSDOS__) || defined(__OS2__)
+        = true;
+#else
+        = false;
+#endif
+    return folded;
+}
+
+bool sameText( const std::string &a, const std::string &b )
+{
+    if( !caseFoldSetting() ) return a == b;
+    if( a.size() != b.size() ) return false;
+    for( std::size_t i = 0; i < a.size(); ++i )
+    {
+        if( std::tolower( (unsigned char) a[i] ) !=
+            std::tolower( (unsigned char) b[i] ) ) return false;
+    }
+    return true;
+}
+
+// The part of a path that anchors it to a device: "", "/", "C:", "C:/", or
+// "//host/share". It is kept separate because it is not comparable as a name:
+// `..` does not walk out of a share, and `C:\a` next to `D:\a` is not one path
+// differing by case but two different disks.
+std::string anchorOf( const std::string &path )
+{
+    if( path.empty() ) return std::string();
+
+    if( isSep( path[0] ) && path.size() > 1 && path[1] == path[0] )
+    {
+        // `\\host\share\dir`, spelled with forward slashes here so a path typed
+        // with either separator anchors the same way. Host and share together:
+        // `\\srv\secrets-2` is not `\\srv\secrets`.
+        std::vector< std::string > names;
+        std::size_t at = 2;
+        for( int part = 0; part < 2 && at < path.size(); ++part )
+        {
+            while( at < path.size() && isSep( path[at] ) ) ++at;
+            if( at >= path.size() ) break;
+            const std::size_t end = path.find_first_of( kSeps, at );
+            names.push_back( ( end == std::string::npos )
+                ? path.substr( at ) : path.substr( at, end - at ) );
+            at = ( end == std::string::npos ) ? path.size() : end + 1;
+        }
+
+        std::string out = "//";
+        for( std::size_t i = 0; i < names.size(); ++i )
+        {
+            if( i ) out += "/";
+            out += names[i];
+        }
+        return out;
+    }
+    if( path.size() > 1 && path[1] == ':' &&
+        std::isalpha( (unsigned char) path[0] ) )
+    {
+        // `C:\dir` anchors as "C:/". `C:file` anchors as "C:", meaning "wherever
+        // drive C currently is" - a fact only drive C has.
+        const std::string drive = path.substr( 0, 2 );
+        return ( path.size() > 2 && isSep( path[2] ) ) ? drive + "/" : drive;
+    }
+    if( isSep( path[0] ) ) return "/";
+    return std::string();
 }
 
 } // anonymous namespace
@@ -168,6 +245,72 @@ long fileSize( const std::string &path )
     const std::streampos end = f.tellg();
     if( end < 0 ) return -1;
     return (long) end;
+}
+
+std::string pathAnchor( const std::string &path )
+{
+    return anchorOf( path );
+}
+
+bool isAbsolutePath( const std::string &path )
+{
+    return !anchorOf( path ).empty();
+}
+
+bool isUncPath( const std::string &path )
+{
+    return path.size() > 1 && isSep( path[0] ) && path[1] == path[0];
+}
+
+bool isPathRoot( const std::string &path )
+{
+    const std::string anchor = anchorOf( path );
+    if( anchor.empty() ) return false;
+    // Whatever follows the anchor has to be separators and nothing else: "/" and
+    // "C:\" are roots, "/usr" and "C:\proj" are not.
+    for( std::size_t i = anchor.size(); i < path.size(); ++i )
+        if( !isSep( path[i] ) ) return false;
+    return true;
+}
+
+bool pathIsUnder( const std::string &child, const std::string &parent )
+{
+    const std::string childAnchor = anchorOf( child );
+    const std::string parentAnchor = anchorOf( parent );
+    if( childAnchor.empty() || parentAnchor.empty() ) return false;
+    if( !sameText( childAnchor, parentAnchor ) ) return false;
+
+    // Component by component, so that a name which merely starts like the parent
+    // is not mistaken for being inside it.
+    std::size_t i = parentAnchor.size(), j = childAnchor.size();
+    for( ;; )
+    {
+        while( i < parent.size() && isSep( parent[i] ) ) ++i;
+        while( j < child.size() && isSep( child[j] ) ) ++j;
+        const std::size_t nextParent = parent.find_first_of( kSeps, i );
+        const std::size_t nextChild  = child.find_first_of( kSeps, j );
+        const std::string parentPart = ( nextParent == std::string::npos )
+            ? parent.substr( i ) : parent.substr( i, nextParent - i );
+        const std::string childPart = ( nextChild == std::string::npos )
+            ? child.substr( j ) : child.substr( j, nextChild - j );
+
+        if( parentPart.empty() ) return true;    // parent ran out: at or below it
+        if( childPart.empty() ) return false;    // child ran out first: /u/proj in /u/p
+        if( !sameText( parentPart, childPart ) ) return false;
+
+        i = ( nextParent == std::string::npos ) ? parent.size() : nextParent;
+        j = ( nextChild == std::string::npos ) ? child.size() : nextChild;
+    }
+}
+
+bool pathsAreCaseInsensitive()
+{
+    return caseFoldSetting();
+}
+
+void setPathsAreCaseInsensitive( bool value )
+{
+    caseFoldSetting() = value;
 }
 
 } // namespace atui::core

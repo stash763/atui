@@ -8,6 +8,7 @@
 #include "permissions.h"
 
 #include "core/journal.h"
+#include "core/paths.h"
 
 #include <algorithm>
 #include <cctype>
@@ -63,40 +64,72 @@ bool endsWith( const std::string &s, const char *p )
     return s.size() >= n && s.compare( s.size() - n, n, p ) == 0;
 }
 
+// The home directory, however this platform chose to spell it: POSIX exports
+// HOME, Windows sets USERPROFILE and usually not HOME, and a policy that cannot
+// find the home directory cannot keep a command out of it either.
 const char *homeDir()
 {
     const char *h = std::getenv( "HOME" );
+    if( h && h[0] ) return h;
+    h = std::getenv( "USERPROFILE" );
     return ( h && h[0] ) ? h : "";
+}
+
+bool isSeparator( char c ) { return c == '/' || c == '\\'; }
+
+// Whether `path` contains a shell variable reference - `$VAR`, `${VAR}` or the
+// DOS `%VAR%` form - whose value this process does not have. Checked after the
+// handful of home-directory variables have been expanded, so what is left really
+// is unknown rather than merely unfashionable to resolve.
+bool dependsOnAVariable( const std::string &path )
+{
+    for( std::size_t i = 0; i + 1 < path.size(); ++i )
+    {
+        if( path[i] == '$' &&
+            ( std::isalpha( (unsigned char) path[i + 1] ) ||
+              path[i + 1] == '_' || path[i + 1] == '{' ) )
+            return true;
+        if( path[i] == '%' )
+        {
+            const std::size_t close = path.find( '%', i + 1 );
+            if( close != std::string::npos && close > i + 1 ) return true;
+        }
+    }
+    return false;
 }
 
 // No trailing slash, so "root + '/' + x" and the prefix comparisons below are
 // unambiguous. A root of "/" keeps its slash - rootTooBroad() is what handles it.
 std::string stripTrailingSlash( std::string p )
 {
-    while( p.size() > 1 && p[p.size() - 1] == '/' ) p.erase( p.size() - 1 );
+    while( p.size() > 1 && isSeparator( p[p.size() - 1] ) ) p.erase( p.size() - 1 );
     return p;
 }
 
 // --- paths ---------------------------------------------------------------------
 
-// Collapses ".", ".." and doubled slashes textually, for the part of a path that
-// does not exist yet and so cannot be consulted.
+// Collapses ".", ".." and doubled separators textually, for the part of a path
+// that does not exist yet and so cannot be consulted. Either separator splits a
+// component, on every platform: `C:\a\..\b` has to collapse or containment is
+// decided on a string that does not name the file the write would go to. The
+// anchor - a drive, or a network share - is kept, and `..` cannot walk out of it.
 std::string normalizePath( const std::string &path )
 {
-    const bool absolute = ( !path.empty() && path[0] == '/' );
+    const std::string anchor = atui::core::pathAnchor( path );
+    const bool rooted = !anchor.empty();
     std::vector< std::string > parts;
 
-    std::string::size_type a = 0;
+    std::string::size_type a = anchor.size();
     while( a <= path.size() )
     {
-        std::string::size_type b = path.find( '/', a );
+        std::string::size_type b = path.find_first_of( "/\\", a );
         if( b == std::string::npos ) b = path.size();
         const std::string part = path.substr( a, b - a );
         if( part == ".." )
         {
             if( !parts.empty() && parts.back() != ".." ) parts.pop_back();
-            else if( !absolute ) parts.push_back( ".." );
-            // ".." above the root is simply the root.
+            else if( !rooted ) parts.push_back( ".." );
+            // ".." above a root - of either kind - is simply that root.
         }
         else if( !part.empty() && part != "." )
             parts.push_back( part );
@@ -105,13 +138,21 @@ std::string normalizePath( const std::string &path )
         a = b + 1;
     }
 
-    std::string out;
+    // Rebuilt with forward slashes throughout, which every platform atui opens a
+    // file on also accepts, so the comparison against the root is between two
+    // paths in the same notation rather than two spellings of them. The first
+    // component is attached without a separator only where the anchor is a bare
+    // drive - `C:file` means somewhere else entirely and has to stay that way.
+    const bool bareDrive = ( anchor.size() == 2 && anchor[1] == ':' );
+    const bool needsSeparator = ( !anchor.empty() && !bareDrive &&
+                                  anchor[anchor.size() - 1] != '/' );
+    std::string out = anchor;
     for( std::size_t i = 0; i < parts.size(); ++i )
     {
-        if( i || absolute ) out += "/";
+        if( i || needsSeparator ) out += "/";
         out += parts[i];
     }
-    if( out.empty() ) out = absolute ? "/" : ".";
+    if( parts.empty() && out.empty() ) out = ".";
     return out;
 }
 
@@ -120,6 +161,13 @@ std::string normalizePath( const std::string &path )
 // exist yet still has to be placed inside or outside the tree.
 std::string resolvePath( const std::string &absolute )
 {
+    // Only a path anchored at "/" can be asked of realpath, and a drive or a share
+    // is anything else. Trying it is worse than useless: the search for a part of
+    // the path that exists walks up to `/` and re-roots there, which turns
+    // `\\srv\share\x` into a local directory called `/srv/share/x`.
+    if( atui::core::pathAnchor( absolute ) != "/" )
+        return normalizePath( absolute );
+
 #if defined(_WIN32)
     return normalizePath( absolute );
 #else
@@ -178,30 +226,59 @@ std::string absolutePath( const std::string &path )
     std::string p = trimmed( path );
     if( p.empty() ) return std::string();
 
-    // `$HOME/x` and `${HOME}/x` mean the same thing to the shell as `~/x`, and a
-    // command that reaches $HOME is reaching out of the project whatever spelling
-    // it uses.
+    // The home directory in whichever notation the shell here understands: `~/x`,
+    // `$HOME/x`, `${HOME}/x` and `%USERPROFILE%\x` all name the same files, and a
+    // command that reaches home is reaching out of the project whatever it looks
+    // like. cmd folds the case of a variable name, so this does too.
     const char *h = homeDir();
     if( p.compare( 0, 5, "$HOME" ) == 0 && h[0] )
         p = std::string( h ) + p.substr( 5 );
     else if( p.compare( 0, 7, "${HOME}") == 0 && h[0] )
         p = std::string( h ) + p.substr( 7 );
+    else if( p.size() > 2 && p[0] == '%' )
+    {
+        const std::string::size_type close = p.find( '%', 1 );
+        if( close != std::string::npos )
+        {
+            const std::string name = lowered( p.substr( 1, close - 1 ) );
+            if( h[0] && ( name == "home" || name == "userprofile" ) )
+                p = std::string( h ) + p.substr( close + 1 );
+        }
+    }
 
     if( p[0] == '~' )
     {
         if( !h[0] ) return std::string();
         p = std::string( h ) + p.substr( 1 );
     }
-    if( p[0] != '/' )
+
+    // A variable is a path the shell chooses rather than one the caller named, and
+    // "I could not place it outside the project" is not the same answer as "it is
+    // inside". Only the whole reference counts, so `awk '{print $1}'` and a file
+    // called `100%.txt` stay where they are.
+    if( dependsOnAVariable( p ) ) return std::string();
+
+    // Anything that already names a device - a drive, a share, the POSIX root -
+    // is not relative to the project, and prepending the root to it is how
+    // `C:\Windows\system.ini` turns into a path that starts with the root and
+    // reads as if it were inside. `C:file` is the same class: absolute on drive
+    // C, at a location only drive C knows.
+    if( atui::core::isAbsolutePath( p ) )
     {
-        const std::string root = projectRoot();
-        if( root.empty() ) return std::string();
-        p = ( root == "/" ? std::string() : root ) + "/" + p;
+        const std::string anchor = atui::core::pathAnchor( p );
+        if( anchor.size() == 2 && anchor[1] == ':' ) return std::string();
+        return resolvePath( normalizePath( p ) );
     }
+
+    const std::string root = projectRoot();
+    if( root.empty() ) return std::string();
+    p = ( root == "/" ? std::string() : root ) + "/" + p;
     return resolvePath( normalizePath( p ) );
 }
 
-// Whole-component match: ".ssh" matches "/u/.ssh/id" but not "/u/.sshagent".
+// Whole-component match: ".ssh" matches "/u/.ssh/id" but not "/u/.sshagent", and
+// either separator bounds a component - `~\.ssh\id_rsa` is the same file to the
+// shell that opens it, and a deny-list that missed the spelling would not be one.
 // `pattern` may itself be several components (".config/gh").
 bool hasComponents( const std::string &path, const char *pattern )
 {
@@ -210,8 +287,10 @@ bool hasComponents( const std::string &path, const char *pattern )
     std::size_t at = 0;
     while( ( at = path.find( pattern, at ) ) != std::string::npos )
     {
-        const bool leftOk  = ( at == 0 || path[at - 1] == '/' );
-        const bool rightOk = ( at + n == path.size() || path[at + n] == '/' );
+        const bool leftOk  = ( at == 0 || isSeparator( path[at - 1] ) ||
+                               path[at - 1] == ':' );
+        const bool rightOk = ( at + n == path.size() ||
+                               isSeparator( path[at + n] ) );
         if( leftOk && rightOk ) return true;
         ++at;
     }
@@ -220,7 +299,7 @@ bool hasComponents( const std::string &path, const char *pattern )
 
 std::string baseName( const std::string &path )
 {
-    const std::string::size_type slash = path.find_last_of( '/' );
+    const std::string::size_type slash = path.find_last_of( "/\\" );
     return ( slash == std::string::npos ) ? path : path.substr( slash + 1 );
 }
 
@@ -257,11 +336,17 @@ const char *kDeniedComponents[] = {
     "keychains", ".mozilla"
 };
 
-// Files that are secrets, or that a shell runs when it starts.
+// Files that are secrets, or that a shell runs when it starts - on any of the
+// platforms atui runs on, since the check is on the name and a Windows machine is
+// not asked which one it is pretending to be. All of them lower case: the match
+// folds case on every host, which costs the odd question about a project file
+// named `.ENV` and closes `~/.SSH/id_rsa` and `AUTOEXEC.BAT`.
 const char *kDeniedFiles[] = {
     ".netrc", ".npmrc", ".pypirc", ".gitconfig", ".git-credentials",
     ".bashrc", ".bash_profile", ".bash_login", ".profile", ".zshrc",
-    ".zshenv", ".zprofile", ".zsh_history", ".bash_history"
+    ".zshenv", ".zprofile", ".zsh_history", ".bash_history",
+    "autoexec.bat", "config.sys", "win.ini", "system.ini", "os2.ini",
+    "protocol.ini", "ntuser.dat"
 };
 
 const char *kDeniedSuffixes[] = {
@@ -289,6 +374,18 @@ const char *kPipedInto[] = {
     "ruby", "node", "php", "awk", "expect"
 };
 
+// The same class of indirection on the DOS-derived platforms: a script host, and
+// the system tools whose interesting use is to fetch or decode something and hand
+// it on. `certutil -decode` and `bitsadmin /transfer` are how a download looks
+// when it wants to pass for certificate work, `iex` runs what a PowerShell
+// one-liner has just fetched, and `mshta` and `rundll32` start code that never
+// looked like a program at all. None of them is ordinary build work on any
+// platform, which is what makes the list affordable.
+const char *kOpaqueWindowsTokens[] = {
+    "powershell", "pwsh", "iex", "invoke-expression", "certutil", "bitsadmin",
+    "mshta", "rundll32", "regsvr32", "schtasks", "cmdkey"
+};
+
 // True when any of `paths` lands outside the project; `first` returns it.
 bool anyOutside( const std::vector< std::string > &paths,
                  std::string &first )
@@ -296,6 +393,23 @@ bool anyOutside( const std::vector< std::string > &paths,
     for( std::size_t i = 0; i < paths.size(); ++i )
     {
         if( !pathInsideProject( paths[i] ) )
+        {
+            first = paths[i];
+            return true;
+        }
+    }
+    return false;
+}
+
+// True when any of `paths` names another machine. A share is not a directory on
+// this one, so containment cannot place it in either direction and the question
+// deserves its own words: "outside the project" understates `\\srv\c$\secrets`.
+bool anyNetworkShare( const std::vector< std::string > &paths,
+                      std::string &first )
+{
+    for( std::size_t i = 0; i < paths.size(); ++i )
+    {
+        if( atui::core::isUncPath( paths[i] ) )
         {
             first = paths[i];
             return true;
@@ -358,10 +472,14 @@ const char *kPublishPhrases[] = {
 // `sudo`, both of which are already refused.
 bool publishesOutside( const std::string &command, std::string &why )
 {
+    // Case-folded, because on the platforms where these commands ship, `GIT PUSH`
+    // is the same command and the shell does not care how it was typed.
+    const std::string cmd = lowered( command );
+
     for( std::size_t i = 0;
          i < sizeof kPublishPhrases / sizeof kPublishPhrases[0]; ++i )
     {
-        if( hasPhrase( command, kPublishPhrases[i] ) )
+        if( hasPhrase( cmd, kPublishPhrases[i] ) )
         {
             why = kPublishPhrases[i];
             return true;
@@ -372,7 +490,7 @@ bool publishesOutside( const std::string &command, std::string &why )
     const char *copies[] = { "scp", "sftp", "rsync" };
     for( std::size_t i = 0; i < sizeof copies / sizeof copies[0]; ++i )
     {
-        if( hasToken( command, copies[i] ) )
+        if( hasToken( cmd, copies[i] ) )
         {
             why = copies[i];
             return true;
@@ -573,7 +691,7 @@ void setProjectRoot( const std::string &root )
             const char *h = homeDir();
             if( h[0] ) wanted = std::string( h ) + wanted.substr( 1 );
         }
-        if( wanted[0] != '/' )
+        if( wanted[0] != '/' && !atui::core::isAbsolutePath( wanted ) )
         {
             const std::string cwd = resolvedCwd();
             if( cwd.empty() ) return;
@@ -591,7 +709,10 @@ void setProjectRoot( const std::string &root )
 bool rootTooBroad()
 {
     const std::string root = projectRoot();
-    if( root.empty() || root == "/" ) return true;
+    if( root.empty() ) return true;
+    // A whole file system (`/`, `C:\`, the root of a share) has no edges, so
+    // "inside the project" would approve the machine.
+    if( atui::core::isPathRoot( root ) ) return true;
     const char *h = homeDir();
     if( !h[0] ) return false;
     return stripTrailingSlash( resolvePath( normalizePath( h ) ) ) == root;
@@ -605,12 +726,8 @@ bool pathInsideProject( const std::string &path )
     if( root.empty() ) return false;
 
     const std::string abs = absolutePath( path );
-    if( abs.empty() ) return false;
-    if( abs == root ) return true;
-    if( abs.size() > root.size() &&
-        abs.compare( 0, root.size(), root ) == 0 )
-        return abs[root.size()] == '/';   // /u/proj-extra is not in /u/proj
-    return false;
+    if( abs.empty() ) return false;    // cannot be placed, so cannot be inside
+    return atui::core::pathIsUnder( abs, root );
 }
 
 void pathsMentioned( const std::string &text,
@@ -644,9 +761,10 @@ void pathsMentioned( const std::string &text,
 
         if( candidate.size() < 2 ) continue;
         const bool pathLike =
-            candidate[0] == '/' || candidate[0] == '.' || candidate[0] == '~' ||
-            candidate[0] == '$' ||
-            candidate.find( '/' ) != std::string::npos;
+            candidate[0] == '/' || candidate[0] == '\\' || candidate[0] == '.' ||
+            candidate[0] == '~' || candidate[0] == '$' || candidate[0] == '%' ||
+            atui::core::isAbsolutePath( candidate ) ||
+            candidate.find_first_of( "/\\" ) != std::string::npos;
         if( !pathLike ) continue;
 
         if( std::find( out.begin(), out.end(), candidate ) == out.end() )
@@ -656,6 +774,12 @@ void pathsMentioned( const std::string &text,
 
 bool unverifiedSurface( const std::string &command, std::string &why )
 {
+    // Case-folded for the whole function: cmd and PowerShell accept any spelling
+    // of a program or a variable, so `POWERSHELL -ENC` is the same command on the
+    // platform where it runs. Folding can only match more, which means more
+    // questions and never more permission.
+    const std::string cmd = lowered( command );
+
     // Each check is a shape whose effect depends on something the text does not
     // contain. Such a command is neither auto-approved nor sent to the agent:
     // this is exactly what an injected instruction writes, and the only honest
@@ -663,35 +787,71 @@ bool unverifiedSurface( const std::string &command, std::string &why )
     static const char *kSubstitution[] = { "$(", "`", "${" };
     for( std::size_t i = 0; i < sizeof kSubstitution / sizeof kSubstitution[0]; ++i )
     {
-        if( command.find( kSubstitution[i] ) != std::string::npos )
+        if( cmd.find( kSubstitution[i] ) != std::string::npos )
         {
             why = "it substitutes a command or variable in place";
             return true;
         }
     }
-    if( command.find( "-exec" ) != std::string::npos ||
-        command.find( "-ok" ) != std::string::npos )
+    if( cmd.find( "-exec" ) != std::string::npos ||
+        cmd.find( "-ok" ) != std::string::npos )
     {
         why = "it runs a program per match";
         return true;
     }
+    // PowerShell's way of passing a command as opaque text: what follows `-enc`
+    // (or `/enc`, cmd accepts either) is base64, so the text says nothing about
+    // what runs. The abbreviation `-e` is not matched: `sed -e` and `find -e` are
+    // ordinary, and the longer form is what a download-and-run one-liner uses.
+    for( std::size_t i = 0; i + 4 <= cmd.size(); ++i )
+    {
+        if( ( cmd[i] == '-' || cmd[i] == '/' ) && ( i == 0 || cmd[i - 1] == ' ' ) &&
+            cmd.compare( i + 1, 3, "enc" ) == 0 )
+        {
+            why = "it passes a command in encoded form";
+            return true;
+        }
+    }
     for( std::size_t i = 0; i < sizeof kOpaqueTokens / sizeof kOpaqueTokens[0]; ++i )
     {
-        if( hasToken( command, kOpaqueTokens[i] ) )
+        if( hasToken( cmd, kOpaqueTokens[i] ) )
         {
             why = std::string( "it uses " ) + kOpaqueTokens[i];
             return true;
         }
     }
-    if( command.find( '|' ) != std::string::npos )
+    for( std::size_t i = 0;
+         i < sizeof kOpaqueWindowsTokens / sizeof kOpaqueWindowsTokens[0]; ++i )
+    {
+        if( hasToken( cmd, kOpaqueWindowsTokens[i] ) )
+        {
+            why = std::string( "it starts " ) + kOpaqueWindowsTokens[i] +
+                  ", a script host or one of the tools that feed it";
+            return true;
+        }
+    }
+    if( cmd.find( '|' ) != std::string::npos )
     {
         for( std::size_t i = 0; i < sizeof kPipedInto / sizeof kPipedInto[0]; ++i )
         {
-            if( hasToken( command, kPipedInto[i] ) )
+            if( hasToken( cmd, kPipedInto[i] ) )
             {
                 why = "it pipes data into an interpreter";
                 return true;
             }
+        }
+    }
+    // Registry edits are changes this policy cannot see at all: containment is
+    // about directories, and a key is not one.
+    static const char *kRegistryPhrases[] = {
+        "reg add", "reg delete", "reg import", "reg load"
+    };
+    for( std::size_t i = 0; i < sizeof kRegistryPhrases / sizeof kRegistryPhrases[0]; ++i )
+    {
+        if( hasPhrase( cmd, kRegistryPhrases[i] ) )
+        {
+            why = "it changes the system registry";
+            return true;
         }
     }
     return false;
@@ -878,6 +1038,18 @@ Permission decide( const PermissionSubject &subject, const EffectPlan *plan )
 
     if( subject.kind == psPath )
     {
+        // A share is not a directory on this machine, so it is neither inside nor
+        // outside the project: saying "outside" would be technically true and
+        // missing the point, and the point is that the bytes leave this computer.
+        if( atui::core::isUncPath( subject.value ) )
+        {
+            p.outcome = poAsk;
+            p.rung    = prPathOutside;
+            p.reason  = "it is a file on another machine (a network share)";
+            p.detail  = subject.value;
+            return p;
+        }
+
         // 5. A file is decidable exactly, which is why no agent is consulted.
         if( pathInsideProject( subject.value ) )
         {
@@ -932,7 +1104,17 @@ Permission decide( const PermissionSubject &subject, const EffectPlan *plan )
         return p;
     }
 
-    // 7. Any path it names that lands outside the tree.
+    // 7. Any path it names that lands outside the tree - or on another machine,
+    //    which is outside in a way a directory comparison cannot express.
+    std::string share;
+    if( anyNetworkShare( paths, share ) )
+    {
+        p.outcome = poAsk;
+        p.rung    = prPathOutside;
+        p.reason  = "it reaches a file on another machine (a network share)";
+        p.detail  = share;
+        return p;
+    }
     std::string outside;
     if( anyOutside( paths, outside ) )
     {

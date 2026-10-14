@@ -99,20 +99,31 @@ bool rootTooBroad();
 // of the path that exists (so a file that has not been created yet still lands
 // where its directory does), and the comparison is on directories, never on a
 // bare prefix: /home/u/proj-extra is not inside /home/u/proj.
+//
+// Nothing here depends on which platform atui was compiled for. A drive letter or
+// a network share is a location this project is not on, either separator splits a
+// component, and a path whose position depends on a variable atui cannot resolve
+// (`%TEMP%\x`, `$BUILD_DIR/x`) is not placed at all - which reads as outside, the
+// safe answer, rather than as somewhere inside by default.
 bool pathInsideProject( const std::string &path );
 
 // Every token in `text` that looks like a path, in order, de-duplicated, capped.
 // Only used to ask whether something escapes the project: nothing here
-// interprets the command, which is what the agent is for.
+// interprets the command, which is what the agent is for. Tokens are kept exactly
+// as written, so the question a person sees quotes what they typed - and tokens in
+// another platform's notation (`C:\Windows\win.ini`, `\\server\c$\notes.txt`) are
+// seen as the paths they are on the machine that would run the command.
 void pathsMentioned( const std::string &text,
                      std::vector< std::string > &out );
 
 // Whether the command contains anything this policy refuses to reason about:
 // command substitution, a pipe into a shell or interpreter, `eval`, privilege
-// escalation, decoders used to hide a payload, `find -exec`, or home-directory
-// expansion. Such a command is never auto-approved *and* never sent to the agent:
-// its text is exactly the shape an injection attack writes, and the only honest
-// answer is to show it to the user. `why` names the first thing found.
+// escalation, decoders used to hide a payload, `find -exec`, a Windows script host
+// or an encoded PowerShell payload. Such a command is never auto-approved *and*
+// never sent to the agent: its text is exactly the shape an injection attack
+// writes, and the only honest answer is to show it to the user. `why` names the
+// first thing found. The text is matched case-folded, because `cmd` and
+// PowerShell will run `POWERSHELL` as happily as `powershell`.
 bool unverifiedSurface( const std::string &command, std::string &why );
 
 // One line of the corpus `atui --judge-check` reads: `run` or `ask`, a tab, then
@@ -133,8 +144,14 @@ bool publishesOutside( const std::string &command, std::string &why );
 
 // Whether `path` is somewhere that must never run unattended, inside the project
 // or out: files that execute later (.git hooks and config, CI workflow files,
-// editor task files, shell rc files), and files full of secrets (dotenv files,
-// keys, credentials, browser and keychain data). `why` names the pattern.
+// editor task files, shell rc files), files full of secrets (dotenv files, keys,
+// credentials, browser and keychain data), and the files the DOS-derived
+// platforms keep their own settings in. `why` names the pattern.
+//
+// Matched case-folded with either separator bounding a component, on every host:
+// `~/.SSH/id_rsa` and `AUTOEXEC.BAT` are the files they are spelled however they
+// are spelled. The cost is the occasional question about a project file someone
+// named `.ENV`, which is the direction this list has always erred in.
 bool denyListed( const std::string &path, std::string &why );
 
 // --- session allowances --------------------------------------------------------

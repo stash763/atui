@@ -20,19 +20,40 @@ timeout, an answer that cannot be parsed, a non-network build - lands on *ask*.
 
 - **Containment.** The project root is captured at startup (`realpath()` of the
   cwd, or `--root DIR`). A path is inside if its expanded, `..`-normalised,
-  `realpath`-resolved form has the root as a prefix or is the root itself. This
-  is what makes symlinks out of the tree visible instead of surprising.
+  `realpath`-resolved form *is* the root or lies below it, compared component by
+  component so `/home/u/proj-extra` is not inside `/home/u/proj`. This is what
+  makes symlinks out of the tree visible instead of surprising.
+- **Path shapes.** Answered for every platform atui builds for, on whichever one
+  it happens to be running (`src/core/paths.{h,cpp}`): `/etc/hosts`, `C:\Windows`,
+  `C:/Windows`, `\\server\c$\share` and the DOS drive-relative `C:notes.txt` are
+  each absolute in their own way, either separator splits a component on either
+  side of a comparison, and the anchor - drive, share or `/` - has to match before
+  any directory name does. Case folds where the filesystem folds it (Windows,
+  DOS, OS/2), nowhere else, and the tests flip that switch rather than trusting
+  the host. A policy that only understood `/` could be walked past by typing `\`:
+  `C:\Windows\win.ini` used to have the project root glued in front of it, which
+  made it *start* with the root and read as inside.
 - **The deny-list.** Files that are never read or written unattended, in the tree
   or out: `.git`/`.hg`/`.svn`, `.ssh`, `.aws`, `.gnupg`, `.kube`, `.docker`,
   `.vscode`, `.idea`, `.config/gh`, `.config/gcloud`, `Keychain(s)`, `.mozilla`;
   dotenv files; shell rc files; `.pem` `.key` `.p12` `.pfx` `.kdbx` `.crt` `.der`
-  `.secret`; `id_*` private keys; `tasks.json`.
+  `.secret`; `id_*` private keys; `tasks.json`; and the files the DOS-derived
+  platforms run or keep their settings in - `autoexec.bat`, `config.sys`,
+  `win.ini`, `system.ini`, `os2.ini`, `protocol.ini`, `ntuser.dat`. Matching folds
+  case and accepts either separator, because `~/.SSH/id_rsa` and `AUTOEXEC.BAT`
+  name the same files as anything else: the cost is a question about a project
+  file someone happened to name `.ENV`.
 - **Unverified surface.** Presence checks, not a shell parser: `$(`, backticks,
   `${`, `-exec`, `xargs`, `eval`, `base64`/`base32`/`xxd`, `sudo`/`doas`/`su`,
-  and a pipe into an interpreter. Anything using one is never auto-approved *and
-  never sent to the model* - it goes to the user, because it is exactly what a
-  prompt injection writes and the answer cannot be read off the text. Ordinary
-  work stays ordinary: `python3 -m pytest` is not "pipes into an interpreter".
+  a pipe into an interpreter; and their equivalents where the shell is `cmd` -
+  `powershell`/`pwsh`, `iex`/`invoke-expression`, an `-enc`/`-encodedcommand`
+  payload, `certutil`, `bitsadmin`, `mshta`, `rundll32`, `regsvr32`, `schtasks`,
+  `cmdkey`, and `reg add|delete|import|load`. The text is matched case-folded,
+  since neither `cmd` nor PowerShell cares how a program was typed. Anything using
+  one is never auto-approved *and never sent to the model* - it goes to the user,
+  because it is exactly what a prompt injection writes and the answer cannot be
+  read off the text. Ordinary work stays ordinary: `python3 -m pytest` is not
+  "pipes into an interpreter", and `go build ./cmd/server` is not a script host.
 - **Publishing.** `git push`, `npm publish`, `twine upload`, `docker push`,
   `kubectl apply/delete/create`, `terraform apply/destroy`, `aws s3 cp/sync`,
   `scp`, `sftp`, `rsync`. Writing to another machine is outside the project in
@@ -43,9 +64,14 @@ timeout, an answer that cannot be parsed, a non-network build - lands on *ask*.
   project's own venv are the work this feature exists to stop interrupting, and a
   system-wide install announces itself as an out-of-tree path or as `sudo`.
 - **Paths mentioned.** Tokens that look like paths (`/x`, `./x`, `~/x`, `$HOME/x`,
-  `dir/file`, `--out=/tmp/x`, and `@file` as curl spells a file argument) are
-  extracted and resolved. `$HOME` is expanded; `$BUILD_DIR` is not guessed at, so
-  an unexpanded variable is not treated as an escape.
+  `%USERPROFILE%\x`, `dir\file`, `--out=/tmp/x`, `C:\Windows\win.ini`,
+  `\\server\c$\notes.txt`, and `@file` as curl spells a file argument) are
+  extracted, kept exactly as typed so the question quotes what the person wrote,
+  and resolved. A path with a variable in it whose value atui does not have -
+  `%TEMP%\cache`, `$BUILD_DIR/out` - is a location the *shell* picks rather than
+  the caller, so it stays unplaced: that is a question, never an approval. Only
+  the home-directory variables are expanded, and a whole drive or share is never
+  guessed at.
 
 **Judgement** (`src/net/permission_judge.{h,cpp}`) - one model call, for the
 commands facts cannot settle. It answers what the call does; it is never told
@@ -60,12 +86,12 @@ identifiers, not positions, so an old log still means what it meant:
 | Rung | Meaning |
 |---|---|
 | 1  `prModeAskAll`    | the mode says ask before everything |
-| 2  `prRootTooBroad`  | the root is `$HOME` or `/` - containment proves nothing |
+| 2  `prRootTooBroad`  | the root is `$HOME`, `/`, a whole drive or share - containment proves nothing |
 | 3  `prUnknownCall`   | a tool that reports no subject to check |
 | 4  `prDenyList`      | credentials, hooks, editor task files |
 | 5  `prPathInside`    | the file it touches resolves inside the project |
 | 6  `prUnverified`    | shell surface refused to reason about |
-| 7  `prPathOutside`   | a path we resolved lands outside the project |
+| 7  `prPathOutside`   | a path we resolved lands outside the project, or on another machine's share |
 | 8  `prNoAgent`       | nothing was asked, or there is nothing to ask |
 | 9  `prPlanUnread`    | the agent's answer could not be used |
 | 10 `prPlanFlagged`   | `elevated`, `sensitive`, or `exec` |
@@ -80,7 +106,8 @@ Three of them are worth dwelling on:
 
 **`prRootTooBroad`** is a refusal to pretend. With `$HOME` as the project,
 "inside the project" describes everything worth stealing, so nothing is allowed
-unattended no matter what the mode says. Starting at `/` is the same.
+unattended no matter what the mode says. Starting at `/`, at `C:\`, or at the root
+of a share is the same argument one level further down.
 
 **`prExfil`** is the one rule no setting can override. A plan that uses the
 network *and* reads outside the root, or reads a deny-listed path, is refused by
@@ -320,13 +347,24 @@ model wanted to do, including the sensitive paths it was refused.
   beyond `.git/hooks`: a `Makefile` or `setup.py` edit is auto-approved, and the
   `make` that follows is judged on its own.
 - **Hardlinks are invisible** to realpath containment; symlinks are not.
-- **Path facts are POSIX-shaped.** `C:\_sea~1.txt`, `\\server\c$\secrets` and
-  `.GIT\CONFIG` are not what a case-sensitive, slash-separated, single-rooted
-  containment check expects. Today that fails safe - a DOS-shaped path does not
-  resolve *inside* the project, so it asks - but it means the Windows/OS-2 answer
-  to "is this file in the project" is less precise than the Unix one. Making it
-  precise needs a case-folding, drive-aware, reparse-point-aware path layer, and
-  until it exists the deny-list should be treated as Unix-spelled.
+- **Only `realpath` can say "the same file".** Containment compares paths, and on
+  the platforms where atui cannot ask the filesystem what a name really means -
+  Windows has no `realpath` here - two spellings of one file are two paths. That
+  fails safe in the direction that matters: an 8.3 alias (`PROJEC~1\x.c`) is not
+  recognised as the project's own `Project\x.c`, so it is a question rather than an
+  auto-approval. A junction or reparse point *inside* the tree that leads out of it
+  is invisible, exactly as a hardlink is.
+- **A variable is a question.** `cp x $OUT/file` and `copy x %OUT%\file` name a
+  location this process cannot see, and guessing that it was somewhere inside the
+  project is the one error containment cannot survive. It costs a question whenever
+  a person reaches for an environment variable in a command - which is rarer than
+  it sounds once the agent is writing the commands, and the agent is asked to name
+  paths rather than variables.
+- **A fold that errs towards asking.** The deny-list and the command-shape checks
+  match case-folded on every platform, and either separator bounds a component
+  everywhere. A project file named `.ENV` or a directory called `powershell-notes`
+  gets asked about on Linux too. That is the direction chosen deliberately: the
+  alternative is `~/.SSH/id_rsa` being readable without a word to anybody.
 - **One journal, no locking.** Two atui runs in the same install share a journal
   directory. Entry ids cannot collide, so nothing corrupts, but neither run knows
   about the other and each prunes by itself.
@@ -349,7 +387,10 @@ model wanted to do, including the sensitive paths it was refused.
   per-platform equivalent yet: there is no single shell to parse (`/bin/sh` is
   dash, `command.com`, `cmd.exe`, PowerShell), and a parser only widens the
   auto-approve surface if the facts it produces are trusted.
-- A platform path layer for the containment check (see Known limits).
+- Resolving a name the way the operating system does on the platforms that offer
+  an API for it (`GetLongPathNameW`, reparse-point queries), so `PROJEC~1\x.c` is
+  recognised as the project's own file instead of being a question. Strictly a
+  precision improvement: the current answer is the safe one.
 - `fsync`/`FlushFileBuffers` on the platforms that have them, so the durability
   promise can extend past "survives an atui crash" on the machines where it can
   mean more.

@@ -838,11 +838,23 @@ table is a unit test:
 
 Covering: containment (relative, absolute, `..` escape, symlink out of the tree,
 symlink inside pointing inside, macOS `/tmp` realpath, the root itself, a path
-whose parent does not exist), the deny-list, the presence checks *and their false
-positives*, `rootTooBroad`, `publishesOutside` both directions (`git push` yes,
-`git pushed` and `npm run build` no), every plan flag against a fake judge, exfil
-outranking `network = allow`, the cache hit/miss and prompt-version invalidation,
-the `[permissions]` round-trip and clamps, and the log line's shape.
+whose parent does not exist), the same in the notation of the other platforms
+(`C:\Windows\win.ini`, `\\server\c$\notes.txt`, a drive-relative `C:notes.txt`,
+`..` collapsing against the drive, `C:` and `\\srv\share` as roots too broad to
+contain anything, and containment under a Windows-shaped root with case folding
+switched on and off - `tests/selftest.cpp`'s `core: path shapes` and
+`permission: paths`), the deny-list in either separator and either case, the
+presence checks *and their false positives*, `rootTooBroad`, `publishesOutside`
+both directions (`git push` yes, `git pushed` and `npm run build` no), every plan
+flag against a fake judge, exfil outranking `network = allow`, the cache hit/miss
+and prompt-version invalidation, the `[permissions]` round-trip and clamps, and
+the log line's shape.
+
+Platform path shapes are checked on whatever host runs the tests, which is the
+point of answering them independently of the host: `pathAnchor` and
+`pathIsUnder` are tested as data, and `core::setPathsAreCaseInsensitive()` is the
+one switch a test flips (and restores) rather than a `#ifdef` that leaves the
+Windows half of a change untested until someone cross-compiles it.
 
 The loop around it - policy, then approver, then the transcript note - runs
 against the localhost mock server (`tests/oai_mock_test.cpp`): exact edits in
@@ -884,8 +896,14 @@ ATUI_JUDGE_SECONDS=60 \
 ./build/atui --judge-check tests/permission_cases.txt
 ```
 
-Last run: 32/32, 24 of them without a model call, judged calls 1.4-3.6s. Kept out
+Last run: 43/43, 31 of them without a model call, judged calls 1.4-3.6s. Kept out
 of the default suite like the other live tests.
+
+The corpus deliberately mixes notations - `.git/config` and `.git\config`, `~/.ssh`
+and `%USERPROFILE%\notes.txt`, `/etc/hosts` and `C:\Windows\win.ini` - because it
+is run on one host and has to be right for all of them. A line whose expectation
+depends on the machine running it does not belong in it; those go in the self-test,
+where the switch can be set (see `core: path shapes`).
 
 Add `ATUI_JUDGE_DEBUG=1` to see the raw reply for every judgement on stderr - the
 only way to tell "the model said EXEC yes" apart from "the model returned a code
