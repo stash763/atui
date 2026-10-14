@@ -50,10 +50,10 @@ const std::size_t kMaxOutput = 200 * 1024;
 
 // Default and ceiling for the timeout. Long enough that a release build of a
 // mid-sized project finishes unwatched, short enough that a command waiting on a
-// prompt nobody is going to answer is not a frozen session. 0 means no limit.
-// `long` throughout: MS-DOS has 16-bit `int`s, and the ceiling is a day.
+// prompt nobody is going to answer is not a frozen session. 0 means no limit, and
+// the range is in the header because the Settings dialog prints it. `long`
+// throughout: MS-DOS has 16-bit `int`s, and the ceiling is a day.
 const long kDefaultCommandTimeout = 300;
-const long kMaxCommandTimeout = 24 * 60 * 60;
 
 long envLong( const char *name, long current )
 {

@@ -251,9 +251,12 @@ is not in the ladder:
 | `pass_env`        | `ATUI_PASS_ENV`        | variable names, comma separated | empty |
 
 `command_timeout` is enforced where a process can be stopped and documented where
-it cannot (see "Running a command"). `pass_env` is the escape hatch from the
-environment scrub, and matching ignores case so a config file written by hand does
-not have to remember how the shell spelled the name.
+it cannot (see "Running a command"), and it is the one setting of the two with a
+field in Options > Settings. `pass_env` deliberately has no field: its whole job is
+to let one credential-shaped variable through, and a dialog that makes it as quick
+to type as the wheel speed is a dialog that gets typed in. Matching ignores case,
+so a config file written by hand does not have to remember how the shell spelled
+the name.
 
 ## The undo journal
 

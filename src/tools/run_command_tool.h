@@ -24,6 +24,9 @@ namespace tools {
 // thing a person may want on a machine where a build legitimately takes an hour,
 // and a thing they should have to type. A `long` rather than an `int` because on
 // MS-DOS an `int` is 16 bits and cannot hold a limit longer than nine hours.
+const long kMinCommandTimeout = 0;   // 0 is "no limit", the only way to say so
+const long kMaxCommandTimeout = 24 * 60 * 60;
+
 long &commandTimeoutSeconds();
 long clampCommandTimeout( long seconds );
 

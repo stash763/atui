@@ -765,19 +765,31 @@ The numeric preferences live in one dialog (`SettingsDialog` in `src/tui/app.cpp
 opened by `TApp::showSettings()` on `CmdSettings`, Alt-I):
 
 ```
-┌────────────────────── Options - Settings ───────────────────────┐
-│                                                                 │
-│  Mouse wheel, lines/notch:    3      1 to 30                    │
-│                                                                 │
-│  Request timeout, minutes:    1440   1 to 1440                  │
-│                                                                 │
-│  One wheel notch scrolls the chat by that many lines;           │
-│  the timeout is how long to wait for the server on a            │
-│  prompt - per request, so a tool round gets it again.           │
-│  A field with no number in it keeps the value it has.           │
-│                                                                 │
-│                    OK          Cancel                           │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────── Options - Settings ───────────────────────┐
+│                                                                  │
+│  Mouse wheel, lines/notch:    3      1 to 30                     │
+│                                                                  │
+│  Request timeout, minutes:    120    1 to 1440                   │
+│                                                                  │
+│  Before running something:                                       │
+│     ( ) Always ask before a tool runs (ask_all)                  │
+│     ( ) In-project work is fine, ask outside (exact)             │
+│     (•) A model judges what the facts cannot settle (agent)      │
+│                                                                  │
+│  Judging model:                                                  │
+│  Judging seconds:             5    1 to 60                       │
+│  Command timeout, sec:        300    0 to 86400, 0 = none        │
+│                                                                  │
+│  One wheel notch scrolls the chat by that many lines; the        │
+│  request timeout is per request, so a tool round gets it         │
+│  again. A command is stopped at its timeout along with           │
+│  everything it started, and 0 there means no limit. A            │
+│  field with no number in it keeps the value it has.              │
+│                                                                  │
+│  Judging is by a second model; blank uses the chat model.        │
+│                      OK    ▄      Cancel   ▄                     │
+│                   ▀▀▀▀▀▀▀▀▀▀    ▀▀▀▀▀▀▀▀▀▀▀▀                     │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 Plain entries, nothing to pick from. Scrolling and the request wait each had
@@ -786,18 +798,29 @@ two dialogs to remember and a short list of guesses about how fast a wheel shoul
 be or how long a model may think. What is left is the number: **each field prints
 the range it accepts**, since there is no longer a list to imply it.
 
+The box is 25 rows tall because DOS text mode is 25 rows, and 25 rows is the whole
+screen: a field added here has to come out of the explanation text, not grow the
+dialog. `pass_env` is not in it either, and not for want of room - see the note
+under `[tools]` in `PERMISSIONS.md`.
+
 The rules, all of them per field:
 
- - **OK** applies both fields, each clamped into the range it prints (5000 minutes
-   becomes 1440, 99 lines becomes 30), then saves both.
+ - **OK** applies every field, each clamped into the range it prints (5000 minutes
+   becomes 1440, 99 lines becomes 30, 99999 seconds becomes 86400), then saves.
  - A field with no digits in it - cleared by mistake - keeps the setting it has,
    so a half-edited dialog loses nothing rather than jumping to an extreme.
+ - **The exception is `0`**, which is a value rather than an absence: an empty
+   command timeout keeps the limit it has, and a `0` in it means no limit. It is
+   the only field where the two differ, which is why the note says so.
  - Cancel/Esc applies nothing at all.
  - The wheel step takes effect on the next notch (the transcript reads the value
-   per event); the wait on the next request. Neither needs a restart.
+   per event); the request wait on the next request; the command timeout on the
+   next command. None needs a restart.
 
 Adding a setting means one label, one field, one range, and one line in
-`showSettings()` - which is the point of keeping them in one place.
+`showSettings()` - which is the point of keeping them in one place. A value a
+16-bit `int` cannot hold (the command timeout goes up to a day's seconds) uses
+`SettingsDialog::longIn` rather than `numberIn`.
 
 Gotchas found doing it:
 
@@ -815,11 +838,15 @@ Gotchas found doing it:
    confirm with `state` (the cursor is `visible: true` only once the field has
    focus) before concluding the dialog is broken.
 
-Verified with `tui-test`: 4-digit `1440` typed and stored; `5000` → `1440` and
-wheel `99` → `30` through the clamp; one OK applying both fields (45 and 6); an
-empty wheel field leaving `wheel_lines = 30` while the timeout in the same dialog
-was applied; Escape leaving both alone; and `File ▸ Options` showing
-Providers / Settings / ─ / Theme with the two old entries gone.
+Verified with `tui-test` at 80×25, which is the smallest screen this dialog has to
+fit: 4-digit `1440` typed and stored; `5000` → `1440` and wheel `99` → `30` through
+the clamp; one OK applying both fields (45 and 6); an empty wheel field leaving
+`wheel_lines = 30` while the timeout in the same dialog was applied; Escape leaving
+both alone; and `File ▸ Options` showing Providers / Settings / ─ / Theme with the
+two old entries gone. The command timeout field the same way: `7` stored, `99999`
+stored as `86400`, `0` stored as `0`, and an emptied field leaving the saved `42`
+untouched - the three answers a field like this can be asked and the one people get
+wrong.
 
 
 ## Permissions: modes, the judging agent, and the log
@@ -1323,6 +1350,11 @@ Recreate from /tmp/opencode/atui_pty_test.py pattern:
 - TVision **redirects stderr to a pipe** when it is a tty
   (`tvision/source/platform/errredir.cpp`), so debug fprintf(stderr, ...)
   vanishes. Log to a file instead — and remember to remove the logging.
+- `tui-test close --all` closes the session but the child can still be alive, and
+  a session that is gone from `sessions` still holds its last screen. Rebuild,
+  relaunch, read the screen, and you are looking at the **previous binary** — which
+  is how a correct change gets blamed on the build. `pgrep -f build/atui` before
+  relaunching; `pkill -f` if it answers.
 - A `TDialog` only closes on `cmOK` / `cmCancel` / `cmYes` / `cmNo`. A button
   wired to a custom command id is silently swallowed - the click lands, the
   handler runs, and the dialog stays open looking broken. Reuse one of the four

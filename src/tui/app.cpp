@@ -63,6 +63,7 @@
 #include "net/provider.h"
 #include "settings/settings.h"
 #include "tools/permissions.h"
+#include "tools/run_command_tool.h"      // the command timeout field reads it
 
 #ifdef ATUI_HAVE_NETWORK
 #include "net/oai_chat_model.h"
@@ -1552,12 +1553,21 @@ void processMessage_()
 void TApp::showHelp()
 {
     TDialog *d = new TDialog( TRect( 12, 9, 72, 24 ), "atui - About" );
+    // TStaticText wraps at the box width and then clips to its height, so every
+    // line here is under the wrap column and the nine rows they make fit the box.
+    // Lengthening this text means widening or growing the dialog, not adding a
+    // line: a dropped sentence in an About box looks like a program with less to
+    // say than it has.
     d->insert( new TStaticText( TRect( 3, 2, d->size.x - 2, d->size.y - 3 ),
-        "atui - AI development TUI (M2)\nStreaming chat window.\n"
+        "atui - AI development TUI (M2)\n"
+        "Streaming chat with tool calling.\n"
         "\n"
-        "Switch model (menu bar) picks the provider and its model;\n"
-        "Alt-P edits providers, Alt-T the theme, Ctrl-T the thinking blocks.\n"
-        "Alt-U lists the files atui has changed and puts one back."
+        "Switch model picks the provider; Alt-P edits them,\n"
+        "Alt-T the theme, Ctrl-T a thinking block, and Alt-U\n"
+        "lists the files atui changed so one can go back.\n"
+        "\n"
+        "Nothing outside this project is written unasked, and\n"
+        "a command runs without atui's own credentials."
         ) );
     TButton *b = new TButton( TRect( 0, 0, 14, 3 ), "OK", cmCancel, bfNormal );
     d->insert( b );
@@ -2217,12 +2227,18 @@ public:
     TRadioButtons *modes        = 0;
     TInputLine    *judgeModel   = 0;
     TInputLine    *judgeSeconds = 0;
+    TInputLine    *cmdTimeout   = 0;
 
     SettingsDialog();
 
     // The number in `line`, or `keep` when it holds none: clearing a field is
     // not a change, and 0 is outside every range here.
     static int numberIn( TInputLine *line, int keep );
+
+    // Same, for a number a 16-bit `int` cannot hold: the command timeout is
+    // allowed up to a day's worth of seconds. Here 0 *is* a value, and it is the
+    // only way to say "no limit"; it is the empty field that means "unchanged".
+    static long longIn( TInputLine *line, long keep );
 };
 
 SettingsDialog::SettingsDialog()
@@ -2294,25 +2310,39 @@ SettingsDialog::SettingsDialog()
     insert( new TStaticText( TRect( fieldLeft + 6, 12, size.x - 3, 13 ),
                              range ) );
 
+    // `[tools] command_timeout`, and deliberately the only one of the two command
+    // settings that is here. `pass_env` - the names to hand a command anyway -
+    // stays in the config file on purpose: it is the setting whose whole job is to
+    // let one credential-shaped variable through, and a dialog that makes it as
+    // easy to type as the wheel speed is a dialog that gets typed in.
+    insert( new TStaticText( TRect( 3, 13, 30, 14 ),
+                             "Command timeout, sec:" ) );
+    cmdTimeout = new TInputLine( TRect( fieldLeft, 13,
+                                        fieldLeft + kDigits + 2, 14 ), kDigits + 1 );
+    insert( cmdTimeout );
+    snprintf( range, sizeof range, "%ld to %ld, 0 = none",
+              atui::tools::kMinCommandTimeout, atui::tools::kMaxCommandTimeout );
+    insert( new TStaticText( TRect( noteLeft, 13, size.x - 3, 14 ), range ) );
+
     setInput_( wheel, std::to_string( atui::settings::wheelLines() ) );
     setInput_( timeout, std::to_string( atui::net::requestMinutes() ) );
     setInput_( judgeModel, atui::tools::judgeModelOverride() );
     setInput_( judgeSeconds, std::to_string( atui::tools::judgeSeconds() ) );
+    setInput_( cmdTimeout, std::to_string( atui::tools::commandTimeoutSeconds() ) );
 
-    // TStaticText clips rather than wraps, so this is laid out in lines that
-    // fit the dialog.
-    // TStaticText clips rather than wraps, and a clipped line is worse than no
-    // line: it looks like the dialog has nothing more to say. Every row here is
-    // laid out to fit, and the box is as tall as the text needs.
-    insert( new TStaticText( TRect( 3, 14, size.x - 3, 23 ),
+    // TStaticText wraps at the width it was given and then clips to the height it
+    // was given, silently both times - so a paragraph is measured in rows of the
+    // box, not in sentences. The About box lost two lines that way, which is why
+    // every row here is counted against the box it sits in and the dialog is 25
+    // rows tall because DOS text mode is, and 25 rows is the whole screen.
+    insert( new TStaticText( TRect( 3, 15, size.x - 3, 22 ),
         "One wheel notch scrolls the chat by that many lines; the\n"
-        "timeout is how long to wait for the server on a prompt -\n"
-        "per request, so a tool round gets it again. A field with\n"
-        "no number in it keeps the value it has.\n"
+        "request timeout is per request, so a tool round gets it\n"
+        "again. A command is stopped at its timeout along with\n"
+        "everything it started, and 0 there means no limit. A\n"
+        "field with no number in it keeps the value it has.\n"
         "\n"
-        "Judging is done by a second model: name a cheap one, or\n"
-        "leave it blank to use the model you are chatting with.\n"
-        "Nothing outside the project directory is done unasked." ) );
+        "Judging is by a second model; blank uses the chat model." ) );
 
     TButton *ok     = new TButton( TRect( 19, 22, 31, 24 ), "~O~K",
                                    cmOK, bfDefault );
@@ -2328,6 +2358,14 @@ int SettingsDialog::numberIn( TInputLine *line, int keep )
     const size_t digits = text.find_first_of( "0123456789" );
     if( digits == std::string::npos ) return keep;
     return std::atoi( text.c_str() + digits );
+}
+
+long SettingsDialog::longIn( TInputLine *line, long keep )
+{
+    const std::string text( line->data );
+    const size_t digits = text.find_first_of( "0123456789" );
+    if( digits == std::string::npos ) return keep;
+    return std::atol( text.c_str() + digits );
 }
 
 // Each field is clamped into the range it prints, so an entry of 99999 becomes
@@ -2362,6 +2400,12 @@ void TApp::showSettings()
         atui::tools::judgeSeconds() = atui::tools::clampJudgeSeconds(
             SettingsDialog::numberIn( d->judgeSeconds,
                                       atui::tools::judgeSeconds() ) );
+
+        // Unlike the other fields, 0 in this one is an answer: no limit. Only a
+        // field with no digits in it at all means "leave it alone".
+        atui::tools::commandTimeoutSeconds() = atui::tools::clampCommandTimeout(
+            SettingsDialog::longIn( d->cmdTimeout,
+                                    atui::tools::commandTimeoutSeconds() ) );
         updatePermissionStatus_();
 
         atui::settings::saveAll();
