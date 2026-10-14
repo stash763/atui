@@ -6,7 +6,7 @@ which needs a real terminal (pty) to exercise.
 ## Build & unit tests
 
     cmake --build build          # from repo root
-    ./build/atui --self-test     # unit + integration tests (105/105 network build, 78/78 without)
+    ./build/atui --self-test     # unit + integration tests (106/106 network build, 79/79 without)
     # ...plus 4 live-server tests when ATUI_LIVE_BASE_URL is set (see 'Live endpoint testing')
 
 Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
@@ -206,7 +206,7 @@ configured, so the default self-test stays offline and fast:
 
     ATUI_LIVE_BASE_URL=http://10.196.88.170:10001/v1 ./build/atui --self-test
     # -> live: model list / live: chat stream / live: reasoning / live: tool round trip
-    #    109 passed, 0 failed (~30 s); offline runs stay at 105 passed
+    #    110 passed, 0 failed (~30 s); offline runs stay at 106 passed
 
 | test | what it asserts |
 |---|---|
@@ -1049,7 +1049,7 @@ set up deliberately rather than inherited from `popen()`. The policy is in
 `PERMISSIONS.md` under "Running a command"; this is how it is checked.
 
 ```console
-./build/atui --self-test 2>&1 | grep -E "child environment|deadline|tools section"
+./build/atui --self-test 2>&1 | grep -E "child environment|deadline|signals|tools section"
 ```
 
 - `core: child environment` - the name patterns (`ATUI_API_KEY`, `GH_TOKEN`,
@@ -1065,6 +1065,12 @@ set up deliberately rather than inherited from `popen()`. The policy is in
   comes back saying `timed out` in under ten seconds, and that
   `sleep 30 & sleep 30` is stopped as well - which is the assertion that the
   *process group* was killed and not just the shell.
+- `run_command: signals belong to the command` - blocks `SIGTERM` in its own thread
+  and then runs `kill -TERM $$; echo reached` through the tool. The child must die
+  of the signal and never print the word; had it inherited the blocked mask, the
+  signal would only go pending and the shell would carry on. Comment the
+  `pthread_sigmask` call out of the child to watch it fail with `rc=-2`, which is
+  how one knows the assertion is load-bearing.
 - `settings: tools section` - `[tools] command_timeout` / `pass_env` round-trip,
   zero meaning no limit and a negative clamping to it rather than to a timeout that
   would fire immediately.
@@ -1094,6 +1100,13 @@ Things found doing it:
   request for no extra protection.
 - `setenv()` copies its arguments; `putenv(strdup(...))` does not, and looks the
   same until a long session has leaked one string per command.
+- `exec()` clears signal *handlers* and leaves the signal *mask* alone, so a blocked
+  signal travels from atui's worker thread into every command it starts and stays
+  there for the command's whole life. The mirror image of the same fact is
+  `CURLOPT_NOSIGNAL`: left at its default, curl may hold `SIGPIPE` ignored while a
+  transfer is up, and an *ignored* signal survives `exec()` too. Both ends are now
+  closed, because "the build works at the shell" stops being a useful sentence the
+  moment the shell is replaced by a tool call.
 - The deadline path is `#if defined(__unix__) || defined(__APPLE__)`, and
   `commandTimeoutIsEnforced()` is how the tests know to skip what that platform
   cannot do - rather than a test that passes by asserting nothing.

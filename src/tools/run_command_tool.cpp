@@ -35,6 +35,7 @@
 #include <csignal>
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <unistd.h>
 #endif
 
@@ -139,6 +140,18 @@ ChildResult runCaptured( const std::string &shellCmd,
             ::dup2( nullIn, STDIN_FILENO );
             if( nullIn > STDIN_FILENO ) ::close( nullIn );
         }
+
+        // A child of a threaded program keeps its parent thread's reasons for
+        // hiding signals, and exec() does not clear them: a handler goes back to
+        // its default by itself, but a *blocked* signal stays blocked for the whole
+        // life of the command. This is a command the user could have typed, so it
+        // gets the mask a shell would give it. What might arrive as a result is a
+        // held-back signal whose default action either ignores it (WINCH, CHLD) or
+        // ends the command - and a command that ignores the second category is not
+        // worth having.
+        sigset_t nothing;
+        sigemptyset( &nothing );
+        ::pthread_sigmask( SIG_SETMASK, &nothing, 0 );
 
         // The strings are literals and a std::string this process still owns;
         // execve only takes them as non-const because UNIX said so.

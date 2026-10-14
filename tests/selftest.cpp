@@ -32,6 +32,11 @@
 #include <unistd.h>
 #endif
 
+#if defined(__unix__) || defined(__APPLE__)
+#include <csignal>
+#include <pthread.h>
+#endif
+
 namespace atui_test {
 
 // Defined in tests/oai_mock_test.cpp (network builds only).
@@ -1187,6 +1192,36 @@ int test_run_command_environment()
     r = t.execute( "{\"command\":\"sleep 30 & sleep 30\"}" );
     limit = was;
     if( !containsSub( r, "timed out" ) ) return -7;
+    return 0;
+}
+
+// What a command inherits about signals is a fact about how atui starts it, not
+// about the command. exec() resets handlers but not the signal *mask*, so a child
+// of a worker thread - which is what atui's tool loop is - would run with whatever
+// a library blocked on that thread's behalf. A command that cannot be killed by
+// the signal it expects is a bug nobody can reproduce at the shell.
+//
+// The proof is a command that behaves the way it does when typed in: `kill -TERM
+// $$` kills the shell, so the word after it never gets printed. The test blocks
+// SIGTERM first, the way a library would; if the child inherited that, the signal
+// would merely go pending, the shell would carry on, and the assertion fails.
+int test_run_command_signal_mask()
+{
+#if defined(__unix__) || defined(__APPLE__)
+    if( !atui::tools::commandTimeoutIsEnforced() ) return 0;
+
+    sigset_t block, prior;
+    sigemptyset( &block );
+    sigaddset( &block, SIGTERM );
+    if( ::pthread_sigmask( SIG_BLOCK, &block, &prior ) != 0 ) return -1;
+    atui::tools::RunCommandTool t;
+    const std::string r =
+        t.execute( "{\"command\":\"kill -TERM $$; echo reached\"}" );
+    ::pthread_sigmask( SIG_SETMASK, &prior, 0 );
+
+    if( containsSub( r, "reached" ) ) return -2;   // it inherited the block
+    if( !containsSub( r, "terminated by signal" ) ) return -3;
+#endif
     return 0;
 }
 
@@ -2719,6 +2754,8 @@ void init()
     register_test( "core: flush to disk", &test_flush_to_disk );
     register_test( "run_command: environment and deadline",
                    &test_run_command_environment );
+    register_test( "run_command: signals belong to the command",
+                   &test_run_command_signal_mask );
     register_test( "permission: paths", &test_permission_paths );
     register_test( "permission: deny list", &test_permission_deny_list );
     register_test( "permission: unverified surface", &test_permission_surface );

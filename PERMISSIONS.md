@@ -105,11 +105,21 @@ it (`src/core/childenv.{h,cpp}`, `run_command_tool.cpp`):
   behind. Where the platform cannot stop a process - `cmd` hands back no pid to hold
   on to - the timeout is not quietly pretended: `commandTimeoutIsEnforced()` says
   so, and that platform keeps the documented limit instead of the real one.
+- **Signals belong to the command.** `exec()` resets signal *handlers* but not the
+  signal *mask*, and atui makes its requests from a worker thread whose mask belongs
+  to whatever the network library was doing on it. The child's mask is therefore
+  emptied before it execs: a command that cannot be interrupted, or that never hears
+  that the pipe it was writing to closed, is a bug nobody can reproduce at the
+  shell. For the same reason `curl` is not allowed to ignore `SIGPIPE` or install a
+  `SIGALRM` handler to time a name resolution - `CURLOPT_NOSIGNAL` is set on both
+  handles. An ignored signal is one the command inherits, and a `longjmp` out of a
+  handler curl installed is a crash in the middle of a streamed answer with no
+  reproducible cause.
 
 Together these are why "the user approved it" is not the only thing standing between
 a confused model and the machine: the command it runs cannot read the keys out of
-its own environment, cannot wait for input that never comes, and cannot outlive the
-time it was given.
+its own environment, cannot wait for input that never comes, cannot outlive the time
+it was given, and dies of the signals it expects to die of.
 
 ## The ladder
 

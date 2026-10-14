@@ -252,6 +252,19 @@ bool OaiClient::request( const std::string &baseUrl,
         if( err ) *err = "could not start a request (curl init failed)";
         return false;
     }
+    // Signals are not for curl to use in a program like this one. Every request
+    // runs on a worker thread (oai_chat_model detaches one per turn), and curl's
+    // default is to install a SIGALRM handler and longjmp out of it to time a name
+    // resolution - in whichever thread the alarm happens to land, which in a TUI
+    // is a crash nobody can reproduce. Some builds of it also hold SIGPIPE ignored
+    // while a transfer is up, and an *ignored* signal is inherited by every command
+    // atui runs: that is how `yes | head` starts misbehaving through atui and not
+    // at the shell. What the signal bought is a timeout on name resolution, and
+    // `CURLOPT_CONNECTTIMEOUT` below covers that with a timer. The residual
+    // difference is that a blocking resolver cannot be interrupted mid-lookup, so a
+    // broken DNS server can hold a request a little longer than it should: a slow
+    // request, in exchange for not crashing in the middle of a streamed answer.
+    curl_easy_setopt( curl, CURLOPT_NOSIGNAL, 1L );
 
     std::string url;
     if( baseUrl.empty() )
@@ -363,6 +376,10 @@ bool fetchModels( const std::string &baseUrl,
 
     CURL *curl = curl_easy_init();
     if( !curl ) { err = "curl init failed"; return false; }
+    // Same reason as in OaiClient::request: curl does not get to install handlers
+    // or ignore signals in this process, and this request is made from the UI
+    // thread.
+    curl_easy_setopt( curl, CURLOPT_NOSIGNAL, 1L );
 
     std::string url = baseUrl;
     if( !url.empty() && url.back() != '/' ) url += "/";
