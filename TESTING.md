@@ -6,7 +6,7 @@ which needs a real terminal (pty) to exercise.
 ## Build & unit tests
 
     cmake --build build          # from repo root
-    ./build/atui --self-test     # unit + integration tests (100/100 network build, 73/73 without)
+    ./build/atui --self-test     # unit + integration tests (104/104 network build, 77/77 without)
     # ...plus 4 live-server tests when ATUI_LIVE_BASE_URL is set (see 'Live endpoint testing')
 
 Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
@@ -206,7 +206,7 @@ configured, so the default self-test stays offline and fast:
 
     ATUI_LIVE_BASE_URL=http://10.196.88.170:10001/v1 ./build/atui --self-test
     # -> live: model list / live: chat stream / live: reasoning / live: tool round trip
-    #    104 passed, 0 failed (~30 s); offline runs stay at 100 passed
+    #    108 passed, 0 failed (~30 s); offline runs stay at 104 passed
 
 | test | what it asserts |
 |---|---|
@@ -884,7 +884,7 @@ that quietly used the wrong config is visible in the first line.
 
 Malformed corpus lines are an error with a file:line, and the self-test parses the
 corpus too: the runner *skips* what it cannot parse, so without that guard a
-typo turns 32 checks into 31 and the run still says it passed.
+typo turns 43 checks into 42 and the run still says it passed.
 
 ### Live, with a real model
 
@@ -1029,6 +1029,62 @@ Gotchas found doing it:
 - The startup offer is triggered from the periodic `cmTimerExpired` branch, not
   from `initDeskTop_()`: during init `TProgram::deskTop` is still null, and a
   dialog executed on `TProgram::application` takes keyboard but no mouse.
+
+## What a command atui runs gets
+
+`run_command` is the one tool that runs something the model wrote, so the child is
+set up deliberately rather than inherited from `popen()`. The policy is in
+`PERMISSIONS.md` under "Running a command"; this is how it is checked.
+
+```console
+./build/atui --self-test 2>&1 | grep -E "child environment|deadline|tools section"
+```
+
+- `core: child environment` - the name patterns (`ATUI_API_KEY`, `GH_TOKEN`,
+  `AWS_SECRET_ACCESS_KEY`, `DB_PASSWORD`, `svc_credentials` in; `PATH`, `HOME`,
+  `CC`, `MAKEFLAGS` and `SSH_AUTH_SOCK` out), the `pass_env` list matching case and
+  stray spaces, the block `ChildEnvironment` builds for `execve()`, and
+  `HiddenCredentials` taking a variable out and putting it back.
+- `run_command: environment and deadline` - a real command run through the tool
+  with a fake `ATUI_SELFTEST_SECRET_KEY` in the environment: the output must show
+  `[]`, never the value; with the name in `pass_env` it must show the value. Then,
+  where the deadline can be enforced, that `cat` returns `exit code 0 (no output)`
+  instead of waiting for a terminal, that `sleep 30` with `command_timeout = 1`
+  comes back saying `timed out` in under ten seconds, and that
+  `sleep 30 & sleep 30` is stopped as well - which is the assertion that the
+  *process group* was killed and not just the shell.
+- `settings: tools section` - `[tools] command_timeout` / `pass_env` round-trip,
+  zero meaning no limit and a negative clamping to it rather than to a timeout that
+  would fire immediately.
+
+By hand, the two that are worth seeing once:
+
+```console
+ATUI_COMMAND_TIMEOUT=2 ./build/atui
+```
+and ask for `sleep 30`: the transcript says the command was killed with everything
+it started, in about two seconds, and `pgrep -fl "sleep 30"` afterwards should come
+back empty. Then `ATUI_COMMAND_TIMEOUT=0` and the same command runs to completion.
+
+Things found doing it:
+
+- `popen()` has no pid, so a timeout on top of it is a message rather than a
+  behaviour. The Unix path is `pipe` + `fork` + `execve` with `setpgid()` in the
+  child **and** in the parent - either can win the race, and only the parent's call
+  closes the window in which a command that hangs immediately cannot be signalled.
+- The child's stdin has to be `/dev/null`. Leaving the terminal on stdin is how
+  `cat`, `git commit` without `-m`, or anything that decides to prompt, used to stop
+  the session: the command blocked, the tool loop waited, and atui's UI had no way
+  to interrupt a turn.
+- `HiddenCredentials` is scoped to the spawn, not to the command. `popen()` copies
+  the environment at the moment it forks, so the variables can go straight back;
+  holding them out for the whole run would keep atui's own keys away from the next
+  request for no extra protection.
+- `setenv()` copies its arguments; `putenv(strdup(...))` does not, and looks the
+  same until a long session has leaked one string per command.
+- The deadline path is `#if defined(__unix__) || defined(__APPLE__)`, and
+  `commandTimeoutIsEnforced()` is how the tests know to skip what that platform
+  cannot do - rather than a test that passes by asserting nothing.
 
 ## Prompt input (wrapping + auto-grow)
 

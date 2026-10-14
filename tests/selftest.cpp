@@ -14,8 +14,10 @@
 #include "tools/judge.h"
 #include "core/journal.h"
 #include "core/paths.h"
+#include "core/childenv.h"
 #include "settings/ini.h"
 #include "settings/settings.h"
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -1060,6 +1062,131 @@ int test_run_command_basic()
     r = t.execute( "{\"command\":\"\"}" );
     if( r.find( "required" ) == std::string::npos )
         return -5;
+    return 0;
+}
+
+// --- what a command atui runs is allowed to see, and for how long -------------
+
+// Whether `NAME=` is present in an exec environment block.
+static bool blockHas( const char *const *block, const std::string &name )
+{
+    for( int i = 0; block && block[i]; ++i )
+    {
+        const std::string entry( block[i] );
+        if( entry.size() > name.size() && entry[name.size()] == '=' &&
+            entry.compare( 0, name.size(), name ) == 0 )
+            return true;
+    }
+    return false;
+}
+
+int test_child_environment()
+{
+    using atui::core::looksSecretEnvName;
+    if( !looksSecretEnvName( "ATUI_API_KEY" ) ) return -1;
+    if( !looksSecretEnvName( "GH_TOKEN" ) ) return -2;
+    if( !looksSecretEnvName( "AWS_SECRET_ACCESS_KEY" ) ) return -3;
+    if( !looksSecretEnvName( "DB_PASSWORD" ) ) return -4;
+    if( !looksSecretEnvName( "RELAY_PASSPHRASE" ) ) return -5;
+    if( !looksSecretEnvName( "svc_credentials" ) ) return -6;
+
+    // And the ones that are not credentials: a command that cannot find `cc` is
+    // not a safer command, only a broken one.
+    if( looksSecretEnvName( "PATH" ) ) return -7;
+    if( looksSecretEnvName( "HOME" ) ) return -8;
+    if( looksSecretEnvName( "MAKEFLAGS" ) ) return -9;
+    if( looksSecretEnvName( "CC" ) ) return -10;
+    // The one that looks like a credential and is not: a socket name, and hiding
+    // it would break `git push` over ssh for no protection at all.
+    if( looksSecretEnvName( "SSH_AUTH_SOCK" ) ) return -11;
+
+    if( !atui::core::envNamePasses( "NPM_TOKEN", "npm_token, other" ) ) return -12;
+    if( !atui::core::envNamePasses( "NPM_TOKEN", "  NPM_TOKEN  " ) ) return -13;
+    if( atui::core::envNamePasses( "NPM_TOKEN", "other,another" ) ) return -14;
+    if( atui::core::envNamePasses( "NPM_TOKEN", "" ) ) return -15;
+
+#if !defined(_WIN32) && !defined(__MSDOS__)
+    ::setenv( "ATUI_SELFTEST_ONE_KEY", "x", 1 );
+    ::setenv( "ATUI_SELFTEST_TWO", "y", 1 );
+    ::setenv( "ATUI_SELFTEST_KEEP", "z", 1 );
+    {
+        const atui::core::ChildEnvironment env( "ATUI_SELFTEST_TWO" );
+        if( !blockHas( env.argv(), "ATUI_SELFTEST_TWO" ) ) return -16;
+        if( blockHas( env.argv(), "ATUI_SELFTEST_ONE_KEY" ) ) return -17;
+        if( !blockHas( env.argv(), "ATUI_SELFTEST_KEEP" ) ) return -18;
+        if( !blockHas( env.argv(), "PATH" ) ) return -19;
+    }
+
+    // The guard takes them out for the moment a child starts and puts them back
+    // afterwards, so atui still has what its own requests need.
+    ::setenv( "ATUI_SELFTEST_SECRET_KEY", "hunter2", 1 );
+    {
+        const std::string nothing;
+        atui::core::HiddenCredentials hide( nothing );
+        if( std::getenv( "ATUI_SELFTEST_SECRET_KEY" ) ) return -20;
+    }
+    const char *back = std::getenv( "ATUI_SELFTEST_SECRET_KEY" );
+    if( !back || std::string( back ) != "hunter2" ) return -21;
+
+    ::unsetenv( "ATUI_SELFTEST_ONE_KEY" );
+    ::unsetenv( "ATUI_SELFTEST_TWO" );
+    ::unsetenv( "ATUI_SELFTEST_KEEP" );
+    ::unsetenv( "ATUI_SELFTEST_SECRET_KEY" );
+#endif
+    return 0;
+}
+
+int test_run_command_environment()
+{
+    atui::tools::RunCommandTool t;
+
+#if !defined(_WIN32) && !defined(__MSDOS__)
+    // A credential-shaped variable does not reach the command, so `env` in a build
+    // step cannot read the machine's keys into a transcript and from there into a
+    // model's context.
+    ::setenv( "ATUI_SELFTEST_SECRET_KEY", "hunter2", 1 );
+    std::string r = t.execute( "{\"command\":\"echo [$ATUI_SELFTEST_SECRET_KEY]\"}" );
+    if( !containsSub( r, "[]" ) ) return -1;
+    if( containsSub( r, "hunter2" ) ) return -2;
+
+    // ...unless the person named it: a build that really does read a token from the
+    // environment exists in most toolchains, and the escape hatch has to be one
+    // line in a config file rather than a rebuild.
+    atui::tools::passEnvNames() = "atui_selftest_secret_key";
+    r = t.execute( "{\"command\":\"echo [$ATUI_SELFTEST_SECRET_KEY]\"}" );
+    atui::tools::passEnvNames().clear();
+    if( !containsSub( r, "[hunter2]" ) ) return -3;
+    ::unsetenv( "ATUI_SELFTEST_SECRET_KEY" );
+#endif
+
+    if( !atui::tools::commandTimeoutIsEnforced() )
+        return 0;   // below here needs a platform that can stop a process
+
+    // A command reading standard input used to be the classic way a tool call
+    // never came back: the terminal it was reading had nobody in front of it.
+    r = t.execute( "{\"command\":\"cat\"}" );
+    if( !containsSub( r, "exit code 0 (no output)" ) ) return -4;
+
+    // And a command that outlives its welcome is stopped, with the limit named in
+    // the result rather than left for whoever is watching to guess.
+    long &limit = atui::tools::commandTimeoutSeconds();
+    const long was = limit;
+    limit = 1;
+    const std::chrono::steady_clock::time_point start =
+        std::chrono::steady_clock::now();
+    r = t.execute( "{\"command\":\"sleep 30\"}" );
+    const long long ms = (long long)
+        std::chrono::duration_cast< std::chrono::milliseconds >(
+            std::chrono::steady_clock::now() - start ).count();
+    if( !containsSub( r, "timed out" ) ) { limit = was; return -5; }
+    if( ms > 10000 ) { limit = was; return -6; }  // it waited for the command,
+                                                  // instead of stopping it
+
+    // Backgrounded work belongs to the same command: killing the shell alone would
+    // leave whatever it started holding the session open.
+    r = t.execute( "{\"command\":\"sleep 30 & sleep 30\"}" );
+    limit = was;
+    if( !containsSub( r, "timed out" ) ) return -7;
     return 0;
 }
 
@@ -2405,6 +2532,50 @@ int test_settings_undo()
 }
 
 // The [permissions] section: read, clamped, and written back out.
+int test_settings_tools()
+{
+    StoreGuard store;
+    const long wasTimeout = atui::tools::commandTimeoutSeconds();
+    const std::string wasPass = atui::tools::passEnvNames();
+    const std::string path = tmpIniPath();
+    setenv( "ATUI_CONFIG", path.c_str(), 1 );
+
+    writeFile( path,
+        "[tools]\n"
+        "command_timeout = 45\n"
+        "pass_env = NPM_TOKEN, HUGGING_FACE_HUB_TOKEN\n" );
+    if( !atui::settings::loadAll() ) return -1;
+    if( atui::tools::commandTimeoutSeconds() != 45 ) return -2;
+    if( atui::tools::passEnvNames() != "NPM_TOKEN, HUGGING_FACE_HUB_TOKEN" )
+        return -3;
+    // Names are stored as written and folded when matched, so the config file can
+    // be read by a person without guessing how the code compares them.
+    if( !atui::core::envNamePasses( "npm_token", atui::tools::passEnvNames() ) )
+        return -4;
+
+    if( !atui::settings::saveAll() ) return -5;
+    atui::settings::IniFile saved( path );
+    if( !saved.load() ) return -6;
+    if( saved.getLong( "tools", "command_timeout", 0 ) != 45 ) return -7;
+    if( saved.getString( "tools", "pass_env", "" ).empty() ) return -8;
+
+    // Zero is a decision rather than a mistake: run until it finishes.
+    writeFile( path, "[tools]\ncommand_timeout = 0\n" );
+    if( !atui::settings::loadAll() ) return -9;
+    if( atui::tools::commandTimeoutSeconds() != 0 ) return -10;
+
+    // Negative is nonsense and clamps to that same no-limit, rather than to a
+    // timeout that would fire immediately.
+    writeFile( path, "[tools]\ncommand_timeout = -5\n" );
+    if( !atui::settings::loadAll() ) return -11;
+    if( atui::tools::commandTimeoutSeconds() != 0 ) return -12;
+
+    std::remove( path.c_str() );
+    atui::tools::commandTimeoutSeconds() = wasTimeout;
+    atui::tools::passEnvNames() = wasPass;
+    return 0;
+}
+
 int test_settings_permissions()
 {
     StoreGuard store;
@@ -2506,6 +2677,9 @@ void init()
 
     // Permission policy: the containment rules, the vetoes and the ladder.
     register_test( "core: path shapes", &test_path_shapes );
+    register_test( "core: child environment", &test_child_environment );
+    register_test( "run_command: environment and deadline",
+                   &test_run_command_environment );
     register_test( "permission: paths", &test_permission_paths );
     register_test( "permission: deny list", &test_permission_deny_list );
     register_test( "permission: unverified surface", &test_permission_surface );
@@ -2532,6 +2706,7 @@ void init()
     register_test( "permission: mode names and clamps",
                    &test_permission_mode_names );
     register_test( "settings: undo section", &test_settings_undo );
+    register_test( "settings: tools section", &test_settings_tools );
     register_test( "settings: permissions section",
                    &test_settings_permissions );
 

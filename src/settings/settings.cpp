@@ -6,6 +6,7 @@
 #include "core/paths.h"
 #include "net/provider.h"
 #include "tools/permissions.h"
+#include "tools/run_command_tool.h"
 #include "tui/theme.h"
 
 #include <cstdlib>
@@ -127,6 +128,15 @@ bool loadAll()
     core::journal::maxFileBytes() = core::journal::clampMaxFileBytes(
         ini.getLong( "undo", "max_file", core::journal::maxFileBytes() ) );
 
+    // Tools. A command atui runs gets no credential-shaped variables unless the
+    // name is listed here, and no more than `command_timeout` seconds to run in
+    // (0 removes the limit).
+    tools::commandTimeoutSeconds() = tools::clampCommandTimeout(
+        ini.getLong( "tools", "command_timeout",
+                     tools::commandTimeoutSeconds() ) );
+    tools::passEnvNames() =
+        ini.getString( "tools", "pass_env", tools::passEnvNames() );
+
     thinkingExpandAll() = ini.getBool( "ui", "thinking_expand",
                                        thinkingExpandAll() );
     wheelLines() = clampWheelLines( ini.getInt( "ui", "wheel_lines",
@@ -193,6 +203,11 @@ bool saveAll()
     ini.setString( "undo", "dir", core::journal::directory() );
     ini.setLong( "undo", "max_bytes", core::journal::maxBytes() );
     ini.setLong( "undo", "max_file", core::journal::maxFileBytes() );
+
+    // Tools: what a command atui runs may see and how long it may take. Written
+    // out even when default so the two knobs are discoverable in the file.
+    ini.setLong( "tools", "command_timeout", tools::commandTimeoutSeconds() );
+    ini.setString( "tools", "pass_env", tools::passEnvNames() );
 
     ini.setString( "ui", "theme", tui::themeName( tui::currentTheme() ) );
     ini.setBool( "ui", "thinking_expand", thinkingExpandAll() );

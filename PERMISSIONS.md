@@ -77,6 +77,40 @@ timeout, an answer that cannot be parsed, a non-network build - lands on *ask*.
 commands facts cannot settle. It answers what the call does; it is never told
 whether it may do it.
 
+## Running a command
+
+Approval decides *whether* a command runs. What it runs with is a separate policy,
+and it is the one part of the design that limits damage rather than asking about
+it (`src/core/childenv.{h,cpp}`, `run_command_tool.cpp`):
+
+- **No credentials in the environment.** A child inherits its parent's environment,
+  and atui's contains the provider API keys plus whatever the developer had
+  exported. A command's output goes into the transcript and from there to a model
+  on another machine, so `env` would be a way to read the machine's secrets into
+  somebody's context window. Variables whose *names* look like credentials
+  (`KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `CREDENTIAL`, `PASSPHRASE`,
+  `PRIVATE`) are removed. `SSH_AUTH_SOCK` stays, because it is a socket name rather
+  than a secret and removing it would break `git push` over ssh for nothing;
+  `PATH`, `HOME`, `CC` and `MAKEFLAGS` stay, because a command that cannot find the
+  compiler is not a safer command. `pass_env` (below) names the ones a build
+  genuinely reads out of the environment - the escape hatch is one line of config,
+  and the default is the one that is right when nobody has thought about it.
+- **No standard input.** A command that reads from a terminal nobody is looking at
+  is the second classic way a tool call never returns. Its stdin is `/dev/null`, so
+  it gets end-of-file, which is the honest answer.
+- **A deadline that stops it.** `[tools] command_timeout` (default 300s, 0 for no
+  limit). The child runs in its own process group and the whole group is killed when
+  the time is up, because the thing that hangs is rarely the shell - it is the
+  grandchild still holding the pipe, and killing the shell alone would leave that
+  behind. Where the platform cannot stop a process - `cmd` hands back no pid to hold
+  on to - the timeout is not quietly pretended: `commandTimeoutIsEnforced()` says
+  so, and that platform keeps the documented limit instead of the real one.
+
+Together these are why "the user approved it" is not the only thing standing between
+a confused model and the machine: the command it runs cannot read the keys out of
+its own environment, cannot wait for input that never comes, and cannot outlive the
+time it was given.
+
 ## The ladder
 
 `decide()` walks these in order. The first match wins, and every rung except
@@ -196,8 +230,20 @@ Details that turned out to matter:
 use is only ever a model's claim: `ask` asks about any network use the agent
 reports, `agent` (the default) judges it per command so a build that fetches
 dependencies is not an interrupt, and `allow` stops treating it as a question.
-Either
-way `prExfil` outranks it.
+Either way `prExfil` outranks it.
+
+`[tools]` is what a command runs with rather than what it is allowed to do, so it
+is not in the ladder:
+
+| Key | Env | Values | Default |
+|---|---|---|---|
+| `command_timeout` | `ATUI_COMMAND_TIMEOUT` | seconds, 0 = no limit | 300 |
+| `pass_env`        | `ATUI_PASS_ENV`        | variable names, comma separated | empty |
+
+`command_timeout` is enforced where a process can be stopped and documented where
+it cannot (see "Running a command"). `pass_env` is the escape hatch from the
+environment scrub, and matching ignores case so a config file written by hand does
+not have to remember how the shell spelled the name.
 
 ## The undo journal
 
@@ -365,6 +411,18 @@ model wanted to do, including the sensitive paths it was refused.
   everywhere. A project file named `.ENV` or a directory called `powershell-notes`
   gets asked about on Linux too. That is the direction chosen deliberately: the
   alternative is `~/.SSH/id_rsa` being readable without a word to anybody.
+- **The environment scrub matches names, not contents.** `API_KEY` goes, `TOKEN`
+  goes, and a secret kept in `BUILD_FLAGS` is handed over as part of the compiler
+  options it pretends to be. Names are the convention people and platforms agree
+  on; values are not, and grepping values would hide half of `PATH` for no gain.
+  Neither does it confine anything: the command still runs with the user's own
+  permissions, which is the point of asking before it runs at all.
+- **The deadline needs a process that can be stopped.** On Unix atui forks its own
+  child, so it has a pid, a process group and a `poll()` to time out on. `cmd`
+  hands back nothing to hold on to, so there the timeout is a line in the result
+  rather than a stop, and `commandTimeoutIsEnforced()` is what the code says so
+  with. A hung command on those platforms means killing atui, which the undo
+  journal was written for.
 - **One journal, no locking.** Two atui runs in the same install share a journal
   directory. Entry ids cannot collide, so nothing corrupts, but neither run knows
   about the other and each prunes by itself.

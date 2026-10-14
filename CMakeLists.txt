@@ -45,6 +45,7 @@ set(ATUI_SOURCES
     # independent: it is local file handling, and it has to work before any
     # request is made, since what it protects is the moment one fails.
     "${ATUI_SRC_DIR}/core/paths.cpp"
+    "${ATUI_SRC_DIR}/core/childenv.cpp"
     "${ATUI_SRC_DIR}/core/journal.cpp"
     # Settings persistence: INI helper + glue. Always built so provider/theme
     # settings survive across runs.

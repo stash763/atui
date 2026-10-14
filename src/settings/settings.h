@@ -18,6 +18,10 @@
 //   max_bytes = 1048576    # whole-journal cap; oldest entries are dropped first
 //   max_file  = 1048576    # above this there is no copy, and edits are asked
 //
+//   [tools]
+//   command_timeout = 300  # seconds a run_command may take; 0 = no limit
+//   pass_env =             # names to give a command anyway, comma separated
+//
 //   [ui]
 //   theme = dark
 //   thinking_expand = false
