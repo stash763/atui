@@ -1084,7 +1084,60 @@ and ask for `sleep 30`: the transcript says the command was killed with everythi
 it started, in about two seconds, and `pgrep -fl "sleep 30"` afterwards should come
 back empty. Then `ATUI_COMMAND_TIMEOUT=0` and the same command runs to completion.
 
-Things found doing it:
+### Through the TUI (tui-test)
+
+The unit tests call the tool; this is the same code behind a real approval dialog, a
+streaming transcript and a terminal that has to still work afterwards. The
+credential half needs an environment variable to be missing, so it is only visible
+as an absence - which is the point:
+
+```console
+mkdir -p /tmp/atui_tui/proj && cd /tmp/atui_tui/proj && echo notes > notes.txt
+tui-test run --cols 110 --rows 34 \
+  --env ATUI_CONFIG=/private/tmp/none.ini \
+  --env ATUI_BASE_URL=http://...:10001/v1 --env ATUI_MODEL=... \
+  --env ATUI_TEST_TOKEN=hunter2secret --env ATUI_COMMAND_TIMEOUT=2 \
+  --env ATUI_UNDO_DIR=/tmp/atui_tui/undo -- ./build/atui
+tui-test type 'run this exact command and tell me what it prints: echo [$ATUI_TEST_TOKEN]'
+tui-test key press Enter
+```
+
+What came back, in order: the tool line `$ echo [$ATUI_TEST_TOKEN]`, then a dialog
+whose reason was *"it reads personal data"* (the judge refusing to be sure what a
+variable named `*_TOKEN` is for, which is the right answer), `Alt-Y`, and the result
+record `# it reads personal data (you allowed it)` / `exit code 0` / `[]`. The secret
+was nowhere on the screen, and the model's own conclusion was that the variable is
+not set - which is what the scrub looks like from inside the command.
+
+Then `sleep 5` with the 2-second limit: `# agent: waits five seconds` (auto-approved,
+the judge's reasoning as the record line) and `timed out after 2s and was killed,
+along with everything it started (no output)`, with the transcript carrying on
+streaming underneath. `pgrep -fl "sleep 5"` afterwards is empty, and the
+`permissions.log` beside the config file has both decisions - `rung=10` for the ask,
+`rung=13` for the run.
+
+The same session covers the journal, since `edit_file` is where the flushed writes
+land: asking it to change a word in `notes.txt` auto-approves with
+`# auto: inside the project` (rung 15, the journal covering the write), leaves
+`U000001.PRE`/`.INF` in `ATUI_UNDO_DIR` with `state=saved` and both byte counts, and
+then `Alt-U` → Restore puts the original bytes back and consumes the entry, leaving
+the journal directory empty.
+
+Found doing it with tui-test:
+
+- `tui-test submit` types and then presses the *shell's* return key, which atui's
+  prompt does not treat as send; a separate `tui-test key press Enter` is what the
+  app's handler intercepts. Text still sitting in the prompt box after a `submit` is
+  not a stuck UI.
+- `tui-test click text Restore` finds two matches in the undo dialog - the button,
+  and the sentence under it that starts with the same word. Resolve with
+  `find text Restore --json` then `mouse click <x> <y>`, immediately before the
+  click, for the same reason as everywhere else in this file.
+- `Alt-X` does nothing while the undo dialog is open, which is the dialog doing its
+  job: the outcome ("restored notes.txt") is shown *in* the box and the box closes on
+  its own buttons. Cancel, then Alt-X.
+
+### Spawn implementation notes
 
 - `popen()` has no pid, so a timeout on top of it is a message rather than a
   behaviour. The Unix path is `pipe` + `fork` + `execve` with `setpgid()` in the
