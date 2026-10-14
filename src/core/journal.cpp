@@ -149,9 +149,10 @@ bool copyFile( const std::string &src, const std::string &dst,
     }
     in.close();
 
-    // Flushed and closed before anything else happens: the whole point of the
-    // ordering is that the copy is on disk before the original is disturbed.
-    if( std::fflush( out ) != 0 ) ok = false;
+    // Flushed, taken as far towards the device as this platform is able, and
+    // closed before anything else happens: the whole point of the ordering is that
+    // the copy is somewhere else before the original is disturbed.
+    flushToDisk( out );
     if( std::fclose( out ) != 0 ) ok = false;
 
     if( !ok )
@@ -208,10 +209,10 @@ bool writeInf( const Entry &e, const std::string &state, std::string &error )
     if( !f ) { error = "cannot write '" + e.metaPath + "'"; return false; }
     const std::string text = s.str();
     bool ok = ( std::fwrite( text.data(), 1, text.size(), f ) == text.size() );
-    // Flushed: an entry that only exists in the C stdio buffer is an entry that
-    // disappears with the process, and the entry is the whole reason to have a
-    // journal.
-    if( std::fflush( f ) != 0 ) ok = false;
+    // Flushed and taken to the device where that is possible: an entry that only
+    // exists in the C stdio buffer is an entry that disappears with the process,
+    // and the entry is the whole reason to have a journal.
+    flushToDisk( f );
     if( std::fclose( f ) != 0 ) ok = false;
     if( !ok )
     {

@@ -32,12 +32,17 @@ bool writeFileAll( const std::string &path, const std::string &data )
     // orphaned temporary files behind when the middle of it fails. The window
     // this leaves - part-written file, process gone - is exactly what the undo
     // journal covers, and it is covered before this function is called.
-    std::ofstream f( path.c_str(), std::ios::out | std::ios::binary
-                                  | std::ios::trunc );
+    //
+    // `FILE*` rather than a stream so the bytes can be asked to reach the device.
+    // The journal is about to say "saved" about this file, and the only honest
+    // version of that is once what it describes is past the point where losing
+    // power would lose it.
+    std::FILE *f = std::fopen( path.c_str(), "wb" );
     if( !f ) return false;
-    f.write( data.data(), (std::streamsize) data.size() );
-    f.flush();
-    return f.good();
+    bool ok = ( std::fwrite( data.data(), 1, data.size(), f ) == data.size() );
+    core::flushToDisk( f );
+    if( std::fclose( f ) != 0 ) ok = false;
+    return ok;
 }
 
 // Non-overlapping count of `from` in `src`.

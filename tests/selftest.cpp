@@ -2531,7 +2531,45 @@ int test_settings_undo()
     return 0;
 }
 
-// The [permissions] section: read, clamped, and written back out.
+// Flushing is what separates "survived an atui crash" from "survived the machine
+// dying", so it gets a test even though the interesting half of it cannot be
+// checked without pulling the power lead. What can be checked is that asking left
+// an ordinary complete file behind, and that a platform is honest about whether it
+// was able to be asked at all.
+int test_flush_to_disk()
+{
+    const std::string path = tmpPath( "atui_flush_test.txt" );
+    const char text[] = "line one\nline two\n";
+    std::FILE *f = std::fopen( path.c_str(), "wb" );
+    if( !f ) return -1;
+    if( std::fwrite( text, 1, sizeof text - 1, f ) != sizeof text - 1 )
+    {
+        std::fclose( f );
+        return -2;
+    }
+    atui::core::flushToDisk( f );
+    if( std::fclose( f ) != 0 ) return -3;
+
+    // Read back through a different route: a flush must cost no bytes and
+    // duplicate none.
+    std::ifstream in( path.c_str(), std::ios::in | std::ios::binary );
+    const std::string got( ( std::istreambuf_iterator<char>( in ) ),
+                           std::istreambuf_iterator<char>() );
+    if( got != text ) return -4;
+
+    // The compile-time half of the promise: a platform that stops answering this
+    // has quietly downgraded the durability section of PERMISSIONS.md, and that is
+    // a documentation change someone should have to notice.
+#if defined(_WIN32) || defined(__unix__) || defined(__APPLE__)
+    if( !atui::core::canFlushToDisk() ) return -5;
+#endif
+
+    atui::core::flushToDisk( 0 );     // nothing to flush, and not a crash
+    std::remove( path.c_str() );
+    return 0;
+}
+
+// The [tools] section: read, clamped, and written back out.
 int test_settings_tools()
 {
     StoreGuard store;
@@ -2678,6 +2716,7 @@ void init()
     // Permission policy: the containment rules, the vetoes and the ladder.
     register_test( "core: path shapes", &test_path_shapes );
     register_test( "core: child environment", &test_child_environment );
+    register_test( "core: flush to disk", &test_flush_to_disk );
     register_test( "run_command: environment and deadline",
                    &test_run_command_environment );
     register_test( "permission: paths", &test_permission_paths );

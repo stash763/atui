@@ -3,6 +3,7 @@
 
 #include <cstdlib>
 #include <cctype>
+#include <cstdio>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -245,6 +246,31 @@ long fileSize( const std::string &path )
     const std::streampos end = f.tellg();
     if( end < 0 ) return -1;
     return (long) end;
+}
+
+bool canFlushToDisk()
+{
+#if defined(_WIN32)
+    return true;                        // _commit()
+#elif defined(__unix__) || defined(__APPLE__)
+    return true;                        // fsync()
+#else
+    return false;
+#endif
+}
+
+void flushToDisk( std::FILE *file )
+{
+    if( !file ) return;
+    // The stream's own buffer first: everything below only knows about what the
+    // operating system was given. Ignored results are deliberate - there is no
+    // action for a failure here, and `fclose` reports what matters about the file.
+    (void) std::fflush( file );
+#if defined(_WIN32)
+    (void) _commit( _fileno( file ) );
+#elif defined(__unix__) || defined(__APPLE__)
+    (void) ::fsync( ::fileno( file ) );
+#endif
 }
 
 std::string pathAnchor( const std::string &path )

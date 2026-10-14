@@ -10,6 +10,7 @@
 #ifndef ATUI_CORE_PATHS_H
 #define ATUI_CORE_PATHS_H
 
+#include <cstdio>
 #include <string>
 
 namespace atui {
@@ -54,6 +55,26 @@ std::string joinDir( const std::string &dir, const std::string &leaf );
 
 // Size of an existing file, or -1.
 long fileSize( const std::string &path );
+
+// Asks the operating system to get a file's bytes down to the device: `fflush`,
+// then the platform's flush-the-buffer call. It is the difference between "the
+// bytes outlived atui" and "the bytes outlived the machine", and only the first
+// one is free.
+//
+// Best effort, and it returns nothing because there is nothing useful to do with
+// a failure: on a file system that will not say, a journal entry is still worth
+// more than no journal entry, and refusing the edit over it would be refusing to
+// work on machines that are merely slower to trust. `canFlushToDisk()` says whether
+// asking is a real request or a no-op, which is what the documentation and the
+// self-tests want to know.
+void flushToDisk( std::FILE *file );
+
+// Whether this platform has a call that means it. False is not a defect and not a
+// challenge: MS-DOS and OS/2 are deliberately not asked, because there the call is
+// either missing or "flush every buffer on the machine", which costs a soft-floppy
+// user more than the bytes it protects. The promise atui can make there stops at
+// "survived an atui crash".
+bool canFlushToDisk();
 
 // Absolute form of `path`, resolved the way the operating system resolves it -
 // from the working directory, not from the project root. The two are normally the

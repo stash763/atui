@@ -299,11 +299,25 @@ is refused by the same rule that refused to edit it, and the confirm dialog quot
 it. Clicking a menu item is not a fact about the file. The one answer that is
 dropped is `prNoUndoNet` itself, since the copy in hand *is* the undo copy.
 
-Durability, stated honestly: every journal write is flushed and closed, so **an
-atui crash is survived**. A power cut is not promiseable on platforms where the
-block cache decides when bytes reach the disk and no portable call flushes it
-(DOS, OS/2). `run_command` has no journal, because a command has no inverse -
-which is also why commands are the thing the policy is strictest about.
+Durability, stated honestly: every journal write is flushed, closed and - where
+the operating system has a call for it - pushed out to the device, so on Linux,
+FreeBSD, macOS and Windows the promise is **survives the machine dying** rather
+than merely survives atui. MS-DOS and OS/2 are not asked: there the call is either
+missing or means "flush every buffer on the machine", which costs whoever is
+writing to a floppy more than the bytes it protects, and the promise there stays
+the weaker one.
+
+Two windows stay open wherever a flush is not enough to close them. A new file can
+be written without its directory entry surviving, because no portable call flushes
+a directory. And the moment an entry is rewritten from `pending` to `saved` is a
+truncate-and-write of the record itself: losing power there loses that one undo
+option, not the file it describes, since the copy of the original had already been
+taken to the device first. Both are written here rather than fixed because closing
+them means either a log-structured journal or a rename atui cannot assume is
+atomic.
+
+`run_command` has no journal, because a command has no inverse - which is also why
+commands are the thing the policy is strictest about.
 
 `--root DIR` also changes the working directory to DIR. Not for tidiness: the
 policy resolves a relative path against the root, `fopen()` resolves it against
@@ -449,8 +463,9 @@ model wanted to do, including the sensitive paths it was refused.
   an API for it (`GetLongPathNameW`, reparse-point queries), so `PROJEC~1\x.c` is
   recognised as the project's own file instead of being a question. Strictly a
   precision improvement: the current answer is the safe one.
-- `fsync`/`FlushFileBuffers` on the platforms that have them, so the durability
-  promise can extend past "survives an atui crash" on the machines where it can
-  mean more.
+- Flushing a *directory*, so that a journal entry created moments before the power
+  goes is still there when the machine comes back. POSIX can do it and nowhere else
+  meaningfully can, which is why nothing does it; the remaining two durability
+  windows are in "The undo journal".
 - Per-project permission files (`.atui/permissions`) and workspace trust.
 - Persisting session allowances to config from the dialog.

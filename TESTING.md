@@ -6,7 +6,7 @@ which needs a real terminal (pty) to exercise.
 ## Build & unit tests
 
     cmake --build build          # from repo root
-    ./build/atui --self-test     # unit + integration tests (104/104 network build, 77/77 without)
+    ./build/atui --self-test     # unit + integration tests (105/105 network build, 78/78 without)
     # ...plus 4 live-server tests when ATUI_LIVE_BASE_URL is set (see 'Live endpoint testing')
 
 Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
@@ -206,7 +206,7 @@ configured, so the default self-test stays offline and fast:
 
     ATUI_LIVE_BASE_URL=http://10.196.88.170:10001/v1 ./build/atui --self-test
     # -> live: model list / live: chat stream / live: reasoning / live: tool round trip
-    #    108 passed, 0 failed (~30 s); offline runs stay at 104 passed
+    #    109 passed, 0 failed (~30 s); offline runs stay at 105 passed
 
 | test | what it asserts |
 |---|---|
@@ -967,6 +967,18 @@ to make an out-of-tree write acceptable.
 The tool-side tests own their journal directory (`JournalGuard`,
 `ScratchProject`'s `undo/`), because the default is the install directory and a
 test that litters it fails differently depending on where it was built.
+
+```console
+./build/atui --self-test 2>&1 | grep "flush to disk"
+```
+
+Durability is the promise the ordering is for, and it cannot be tested honestly:
+the test that proves a byte reached a platter involves a power lead and a VM. What
+`core: flush to disk` checks instead is the two things that break in practice -
+that a file pushed through `core::flushToDisk()` reads back whole by another
+route, and that `canFlushToDisk()` still reports true on the platforms whose call
+the durability section of `PERMISSIONS.md` is written around. A lost `#elif` is how
+a promise silently becomes a different promise.
 
 ### Through the TUI (tui-test)
 
