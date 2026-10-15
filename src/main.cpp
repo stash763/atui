@@ -22,7 +22,9 @@
 #include "settings/settings.h"
 #include "tools/permissions.h"
 #include "tui/app.h"
+#ifdef ATUI_SELFTEST
 #include "harness.h"
+#endif
 
 #ifdef ATUI_HAVE_NETWORK
 #include "net/permission_judge.h"
@@ -34,7 +36,9 @@ void printUsage()
 {
     std::printf(
         "usage: atui [--root DIR]            run the chat UI\n"
+#ifdef ATUI_SELFTEST
         "       atui --self-test             run the self-test suite\n"
+#endif
         "       atui --version\n"
         "       atui --judge-check [--json] [--root DIR] <command>...\n"
         "       atui --judge-check [--json] -           commands from stdin\n"
@@ -257,8 +261,17 @@ int main( int argc, char **argv )
     {
         if( std::strcmp( argv[1], "--self-test" ) == 0 )
         {
+#ifdef ATUI_SELFTEST
             atui_test::init();
             return atui_test::run();
+#else
+            // The suite is 200 KB of code that a machine counting bytes for a
+            // 1.5 MB binary cannot spend, so a release build without it has to
+            // say what happened rather than treat a known flag as junk.
+            std::fprintf( stderr, "atui: this build has no self-test suite "
+                                  "(built with -DATUI_BUILD_TESTS=OFF)\n" );
+            return 2;
+#endif
         }
 
         if( std::strcmp( argv[1], "--version" ) == 0 )

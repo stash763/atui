@@ -91,6 +91,13 @@ endif()
 
 add_executable(atui ${ATUI_SOURCES})
 
+if(ATUI_BUILD_TESTS)
+    # The suite is compiled into the same binary as the program (that is how it
+    # tests static functions), so `--self-test` has to know whether it is there:
+    # 200 KB of test code is a large share of a binary whose targets count bytes.
+    target_compile_definitions(atui PRIVATE ATUI_SELFTEST=1)
+endif()
+
 target_include_directories(atui
     PRIVATE
         "${ATUI_SRC_DIR}"
