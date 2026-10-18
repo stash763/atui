@@ -1442,6 +1442,123 @@ probe caught two of its own.
 * The server sets `TERM=DUMB`, which is a red herring: nothing on the OS/2 side
   reads it, and the bridge decides everything from negotiation and `--charset`.
 
+### What the screen can be: VIO and standard IO, measured (2026-10-18)
+
+Two claims about the OS/2 display had to be settled before writing a backend, and
+both were settled by running code (`probe_vio.c`, `probe_stdin.c`) rather than by
+reading headers.
+
+**VIO's entry points are reachable from 32-bit code, and unusable in a session
+the telnet server starts.**
+
+* They link: `lib386\os2\os2386.lib` contains **249 `VIO16*` entry points**, and
+  `bsesub.h` declares them behind `INCL_VIO`. `APIENTRY16` is `_Far16 _Pascal`,
+  and `_Far16` means nothing in flat model, so the `16` is history rather than a
+  call gate.
+* Getting the link question wrong cost a whole detour, and the reason is worth
+  remembering as a debugging lesson: `VioGetMode` is a `#define` for
+  `VIO16GETMODE`, so a case-sensitive search for `Vio` in the library finds *zero*
+  matches. The conclusion drawn -- VIO is uncallable from 32-bit -- was wrong, and
+  it was an artefact of the grep.
+* They do not work here: `VioGetMode` returns **436 `ERROR_VIO_INVALID_HANDLE`**,
+  for selector 1 and for the system-window selector `0xFFFE` alike, and so do
+  `VioGetCurPos`, `VioGetBuf`, `VioGetCurType` and `VioGetAnsi`. A process started
+  by the telnet server has no VIO session object at all.
+* Nor can one be obtained: `start /f` from such a session fails with **SYS1806,
+  "The system cannot start the session in the foreground"**. So nothing about VIO
+  can be observed over the relay -- the screen it would draw on is the box's own
+  monitor. Verifying a VIO backend needs a person at the machine.
+* `KbdOpen` succeeds (handle 5) but `KbdPeek` returns **445
+  `ERROR_KBD_FOCUS_REQUIRED`**: the session does not own the keyboard.
+* The mouse *is* reachable even so: `MouOpen` succeeded, 3 buttons, and
+  `MouGetPtrPos` reported 40,12.
+
+**Standard IO carries input, and `select()` cannot wait for it.**
+
+* `isatty(0)=1`, `isatty(1)=1`, and `getsockopt(0, SOL_SOCKET, SO_TYPE)` fails:
+  **stdin is not a socket**, whatever the relay on the other end is.
+* `select(1, {fd 0}, 5 s)` returns **-1** -- not a timeout, a failure. Across
+  three 20-second rounds while bytes were being sent, it never once reported the
+  handle readable.
+* **`kbhit()` saw every byte sent**, one per poll, with no Enter involved for the
+  first two: 97, 98 (that is `ab`, sent together, delivered separately -- so the
+  connection is in character mode), then 224, 72, then 104, 101, 108, 108, 111, 13
+  for `hello` and Enter.
+* **A blocking `read(0, ...)` returned** rather than hanging, so input is
+  available -- on the console's terms, not the socket's.
+* **The session converts incoming escapes into DOS extended-key codes.** The
+  three bytes `ESC [ A`, sent as an arrow-up, arrived as **224 then 72** -- the
+  BIOS extended up-arrow. A reader written against VT escapes would see an unknown
+  prefix and drop the key. Note also that the probe's own attempt to read the
+  second half within 200 ms *failed*: the 72 turned up on the following poll. The
+  two bytes of an extended code are not reliably adjacent in time, so a reader
+  must hold the prefix and wait for its code rather than treating a gap as an
+  unknown key. Output is not affected -- escape sequences pass through untouched,
+  measured above.
+
+What follows for the port, which is why this is recorded here rather than left in
+a probe's comment: input is polled with `kbhit()`/`getch()` or read blocking on a
+reader thread; **fd 0 must never be handed to `select()`**, which is the first
+thing a POSIX-shaped event loop would try; key decoding is a table of DOS extended
+codes rather than an escape parser; and VIO remains the display for the box's own
+screen, which nothing here can verify -- a further reason to build the stream
+backend first, since that is the one that can be tested from this side.
+
+### The stream path renders, and here is the key map (measured 2026-10-18)
+
+`tools/os2/stream_keys.c` is a plain-C program -- no tvision in it, so nothing
+else can be blamed -- that draws a bordered 80x25 frame with VT escapes and records
+every key it receives. Run under the bridge with tui-test driving:
+
+    tui-test run --cols 80 --rows 25 --session os2sk -- \
+        tools/atui-remote --cmd 'd: && cd \atui && del keys.log & sk.exe'
+    tui-test key press --session os2sk Up
+    tools/atui-remote get 'd:\atui\keys.log' keys.log
+
+**The frame rendered exactly as intended**: `ESC ( 0` box drawing, cursor
+positioning, clear -- the emulator showed the border, title and status lines with
+nothing out of place. That is the claim the stream backend rests on, and it is now
+a screen someone looked at rather than bytes that "should" be fine.
+
+**Key map**, sent as `tui-test key press` (the way the port's own tests will send
+them) and read from `keys.log`:
+
+| key | codes as received | key | codes as received |
+|---|---|---|---|
+| Up | `E0 48` | PageUp | `E0 49` |
+| Down | `E0 50` | PageDown | `E0 51` |
+| Left | `E0 4B` | Insert | `E0 52` |
+| Right | `E0 4D` | Delete | `E0 53` |
+| F1 | `00 3B` | F2 | `00 3C` |
+| Tab | `09` | `a` | `61` |
+| **Home** | **`5B` then `48`** | **End** | **`5B` then `46`** |
+
+So the session turns incoming VT sequences into **DOS extended key codes**, and
+the reader decodes those rather than parsing escapes. Two caveats, both from the
+same measurements:
+
+* **Home and End do not survive.** `ESC [ H` arrives as the Escape consumed and
+  `[` and `H` passing through as two ordinary characters, so a Home keypress in a
+  text field would insert `[H`. Sequences the session knows become extended codes;
+  ones it does not have their Escape eaten and the tail delivered literally. Any
+  key whose sequence is not in the table above has to be assumed to arrive as
+  loose characters until measured.
+* **The two halves of one key land 380--390 ms apart**, measured ten times. That is
+  far longer than the "wait a moment for the rest of the sequence" window a VT
+  reader normally uses, and it is the reason two reader bugs showed up here rather
+  than being theoretical:
+  - a reader that keeps taking bytes "while anything is pending" merges two keys
+    into one eight-byte key and misaligns every report after it;
+  - a reader that waits a fixed short window (150 ms) for the second half splits
+    every key in two, and the halves then look like two unknown keys.
+  What works is a **pending-prefix state machine spanning poll cycles**: remember
+  the `E0`/`00` prefix, complete the key whenever its code turns up, and give a
+  lone Escape only a long timeout rather than a short one.
+
+Getting the input loop right matters more than it sounds, because `select()` cannot
+be used (see the section above), so the loop is a poll of `kbhit()` and every
+mis-set window shows up as a dropped or doubled key.
+
 ### Gotchas with the bridge itself
 
 - `tui-test cells`/`text` are **0-based**; row 3 is the fourth row.
@@ -1489,6 +1606,12 @@ three steps is load-bearing, and the reasons are the facts below.
   must be enabled to use feature (use 'xs' option)` from inside the header. `-xs`
   in `defs.rsp` took the first full build from 4142 errors to about 210 on atui's
   own sources. Read the E-numbers before writing any porting code.
+ * **`-xs` is a `wpp386` switch; `wcc386` rejects it** with `E1073: Invalid
+   option '-xs'` -- and then carries on compiling. That combination is what makes
+   it worth recording: a probe batch that reused the C++ flags printed one
+   unhelpful error followed by a wall of header errors, and the obvious
+   conclusion (the headers are broken) was wrong. C probes use
+   `-bt=os2 -5 -od -w3` and nothing else.
 * `long long` exists and is 8 bytes; `stdint.h`, `cstdint`, `inttypes.h` are
   there. Flat 32-bit: pointers and `long` are 4.
 * There is **no libcurl and no pthread**, and no `<mutex>`, `<thread>`,
@@ -1520,6 +1643,16 @@ three steps is load-bearing, and the reasons are the facts below.
   Measured across five permutations (`sktest.cmd`); the symptom of getting it
   wrong is `E1022: Missing or misspelled data type near 'long_int'` from inside
   the compiler's own header, several files from the cause.
+* **...and the plain C library headers go in front of that whole block.** With
+  `<types.h>` as the very first include -- the natural thing to write when the
+  rule above is the only one you know -- `stdlib.h` and `string.h` resolve out of
+  `D:\WATCOM\H` instead of `D:\WATCOM\H\OS2` and fail on their own use of
+  `_w_size_t`: `E1127: Type required in parameter list` and `E1022: Missing or
+  misspelled data type near '_w_size_t'`, reported from inside `string.h` and
+  pointing at nothing in the file being compiled. The order that works, proved by
+  `probe_api.c` and `probe_stdin.c`: `stdio.h`/`string.h`/`errno.h`/`io.h`, then
+  `<types.h>`, then the five `u_*` typedefs, then the socket headers, then
+  `unistd.h` last.
 * **`__cplusplus` is `1`**, not `199711L`, and `__WATCOMC__` is 1290. Anything
   that feature-detects with `#if __cplusplus >= 201103L` correctly sees C++98,
   but a library testing `#if __cplusplus` as a proxy for "standard C++ at all"
