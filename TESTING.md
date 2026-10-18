@@ -1462,6 +1462,31 @@ with classic BIOS attrs before any `getPalette()` call, the second (post
 resize/redraw) with dark RGB attrs. The final screen is correct. Cause not
 fully traced; tui-test cell assertions pin the final state either way.
 
+## tvision is our fork
+
+`tvision` is a fork of [magiblot/tvision](https://github.com/magiblot/tvision)
+under `stash763/tvision`, because atui needs changes inside it -- platform
+backends for OS/2 and DOS, and era-compiler support upstream has no reason to
+carry. The gitlink in atui still pins an exact commit, so builds stay
+reproducible; the fork decides only where that commit is fetched from.
+
+    git -C tvision remote -v         # origin = our fork, upstream = magiblot
+    git -C tvision fetch upstream    # then merge/rebase their fixes as needed
+
+Changing tvision is always **two commits, in this order**: commit and push
+inside `tvision` (to the fork), then commit the new gitlink in atui. An atui
+commit that points at a submodule commit nobody has pushed makes the repository
+unclonable, so push first, and `git submodule status` should then show no `+`.
+
+The `upstream` remote lives in `.git/modules/tvision/config`, so unlike
+`.gitmodules` it is per-clone and has to be added once after cloning:
+
+    git -C tvision remote add upstream https://github.com/magiblot/tvision
+    git -C tvision remote set-url --push upstream DISABLED://upstream-is-read-only
+
+The second line is not tidiness: it is what stops a mistargeted push from
+trying to write to magiblot's repository.
+
 ## Layout reference
 
 - `src/tui/app.cpp` — TApp (menu, status line, desktop, chat widgets)

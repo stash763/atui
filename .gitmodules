@@ -1,3 +1,9 @@
 [submodule "tvision"]
 	path = tvision
-	url = https://github.com/magiblot/tvision
+	url = https://github.com/stash763/tvision
+	# Our fork of magiblot/tvision. atui needs to change tvision (platform
+	# backends for OS/2 and DOS, era-compiler support), and a fork is the only
+	# way to carry that; the gitlink below still pins an exact commit, so
+	# switching the remote changed nothing about what gets compiled.
+	# Upstream, for pulling their fixes in: https://github.com/magiblot/tvision
+	branch = master
