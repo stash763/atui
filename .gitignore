@@ -14,6 +14,9 @@ atui.exe
 
 # host-side tooling (tools/atui-remote is Python; nothing shipped depends on it)
 __pycache__/
+# what the target holds, and its last build log -- both machine-local caches
+.atui-sync.json
+.atui-build.log
 
 # editors
 *.swp

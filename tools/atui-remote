@@ -34,7 +34,10 @@ Subcommands:
     serve         a local fake target, so the bridge itself has a test subject
     bridge-test   local acceptance suite (needs tui-test)
     probe         ask a real target the questions the port depends on
-    put / get     move one file over FTP, for the build loop
+    put / get     move one file over FTP
+    sync          mirror the sources onto the target, by hash
+    build         sync, run the makefile there, bring the log back and report
+                  its status as this command's exit status
 
 Stdlib only, and it is development tooling: nothing in src/ refers to it, and it
 is never compiled or shipped.
@@ -42,8 +45,11 @@ is never compiled or shipped.
 
 import argparse
 import errno
+import fnmatch
 import ftplib
+import hashlib
 import io
+import json
 import os
 import re
 import select
@@ -1103,24 +1109,60 @@ def _ftp(args):
     return ftp
 
 
+def _ftp_store(ftp, payload, remote, made=None):
+    """Store one file on an open control connection, creating directories.
+
+    Returns True only when the bytes are confirmed to be there: an OS/2-era
+    server that silently truncates a transfer is a real possibility, so where
+    the server answers SIZE the sizes have to match.
+    """
+    directory, name = remote.rsplit("\\", 1) if "\\" in remote else ("", remote)
+    try:
+        if directory:
+            _ftp_mkdir_p(ftp, directory, made if made is not None else set())
+            ftp.cwd(directory)
+        ftp.storbinary("STOR %s" % name, io.BytesIO(payload))
+        try:
+            remote_size = ftp.size(name)
+        except ftplib.all_errors:
+            remote_size = None          # a server without SIZE: store and trust
+        if remote_size is not None and remote_size != len(payload):
+            warn("ftp size mismatch for %s: sent %d, target has %s"
+                 % (remote, len(payload), remote_size))
+            return False
+        return True
+    except ftplib.all_errors as exc:  # already a tuple, and already holds OSError
+        warn("ftp store failed for %s: %s" % (remote, exc))
+        return False
+
+
+def _ftp_mkdir_p(ftp, directory, made):
+    """Create each level of a backslash path, remembering what was created.
+
+    MKD of a whole path at once is not on: some servers refuse it when a level
+    is missing.  Failures are ignored, because "already exists" arrives as an
+    error and there is nothing else a create can fail with that we could act
+    on here -- the store that follows reports the real trouble.
+    """
+    parts = [p for p in directory.replace("/", "\\").split("\\") if p]
+    path = ""
+    for part in parts:
+        path = part if not path else path + "\\" + part
+        if path.lower() in made:
+            continue
+        try:
+            ftp.mkd(path)
+        except ftplib.all_errors:
+            pass
+        made.add(path.lower())
+
+
 def _ftp_put(args, payload, remote):
     try:
         ftp = _ftp(args)
-        directory, name = remote.rsplit("\\", 1) if "\\" in remote else ("", remote)
-        if directory:
-            try:
-                ftp.cwd(directory)
-            except ftplib.all_errors:
-                # A scratch directory that does not exist yet is the normal case
-                # on a fresh target, not a reason to give up.
-                try:
-                    ftp.mkd(directory)
-                    ftp.cwd(directory)
-                except ftplib.all_errors:
-                    return False
-        ftp.storbinary("STOR %s" % name, io.BytesIO(payload))
+        ok = _ftp_store(ftp, payload, remote)
         ftp.quit()
-        return True
+        return ok
     except (ftplib.all_errors, OSError) as exc:
         warn("ftp put failed: %s" % exc)
         return False
@@ -1138,7 +1180,7 @@ def _ftp_get(args, remote, local):
         with open(local, "wb") as f:
             f.write(buf.getvalue())
         return len(buf.getvalue())
-    except (ftplib.all_errors, OSError) as exc:
+    except ftplib.all_errors as exc:  # already a tuple, and already holds OSError
         warn("ftp get failed: %s" % exc)
         return None
 
@@ -1158,6 +1200,251 @@ def cmd_get(args):
         return 1
     print("get: %s -> %s (%d bytes)" % (args.remote, args.file, size))
     return 0
+
+
+# ------------------------------------------------------------ build loop ---
+
+# The port is written here and compiled there, so it needs a build loop.  Each
+# part of this exists because doing it the obvious way did not work:
+#
+#   * mirror by hash, because a full tree is a hundred-odd files and FTP gives
+#     no better per-file cost than a login; the unchanged ones cost nothing.
+#   * run a batch file, never a long command line, because OS/2's command
+#     processor silently discards input lines past about 315 characters --
+#     measured on the target: 310 runs, 320 does not, and it reports nothing.
+#     A compile-and-link command is longer than that.
+#   * read the log back over FTP, because output seen through the screen has
+#     been wrapped at 80 columns and re-encoded, and a compiler error is not
+#     readable in that state.
+#
+# The target reports its own status by writing a marker into the log; the exit
+# code of this command is that status, so `atui-remote build && ...` behaves.
+
+REMOTE_ROOT = "d:\\atui"
+MANIFEST_NAME = ".atui-sync.json"
+BUILD_RC_MARK = "ATUI-BUILD-RC="
+
+# What a build needs: the program, the era-compatibility headers, tvision, and
+# this directory's own makefile and batch file, which land in the build root
+# where wmake and cmd.exe look for them.
+DEFAULT_MAPS = [
+    "src=src",
+    "compat=compat",
+    "tvision/source=tvision/source",
+    "tvision/include=tvision/include",
+    "tools/os2=.",
+]
+
+# The target's command processor needs CRLF in a batch file.  Sources do not
+# care either way -- LF-only .cpp files compile cleanly under Open Watcom, which
+# was checked rather than assumed -- so this stays a batch-file rule.
+_CRLF_SUFFIXES = (".cmd", ".bat")
+
+# Never port source.
+_SKIP_DIRS = (".git", ".deps")
+_SKIP_SUFFIXES = (".o", ".obj", ".exe", ".ilk", "~")
+
+
+def _sync_bytes(local, remote):
+    with open(local, "rb") as f:
+        data = f.read()
+    if remote.lower().endswith(_CRLF_SUFFIXES):
+        data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    return data
+
+
+def _sync_plan(maps, root, excludes):
+    """[(local path, remote path, bytes as they will be stored)], in path order.
+
+    A map is LOCAL=REMOTE, where LOCAL may be a directory -- mirrored
+    recursively -- or a single file, which is how a makefile kept under tools/
+    arrives in the build root under the name wmake expects.
+    """
+    plan = []
+    for local, target in maps:
+        target = target.strip().strip("\\")
+        base = root if target in ("", ".") else root + "\\" + target.replace("/", "\\")
+        if os.path.isfile(local):
+            found = [(local, base)]
+        elif os.path.isdir(local):
+            found = []
+            for dirpath, dirnames, filenames in os.walk(local):
+                dirnames[:] = sorted(d for d in dirnames
+                                     if d not in _SKIP_DIRS and not d.startswith("."))
+                here = os.path.relpath(dirpath, local)
+                for name in sorted(filenames):
+                    if name.startswith(".") or name.lower().endswith(_SKIP_SUFFIXES):
+                        continue
+                    if any(fnmatch.fnmatch(name, pat) for pat in excludes):
+                        continue
+                    rel = name if here == "." else os.path.join(here, name)
+                    found.append((os.path.join(dirpath, name),
+                                  base + "\\" + rel.replace("/", "\\")))
+        else:
+            warn("sync: no such local path: %s" % local)
+            continue
+        for local_path, remote_path in found:
+            plan.append((local_path, remote_path, _sync_bytes(local_path, remote_path)))
+    return plan
+
+
+def _parse_maps(specs):
+    maps = []
+    for spec in specs:
+        if "=" not in spec:
+            raise SystemExit("atui-remote: --map wants LOCAL=REMOTE, not %r" % spec)
+        local, target = spec.split("=", 1)
+        maps.append((local, target))
+    return maps
+
+
+def _load_manifest(path):
+    try:
+        with open(path, "r") as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        return {"files": {}}
+    if not isinstance(state, dict) or not isinstance(state.get("files"), dict):
+        return {"files": {}}       # a half-written manifest is an empty manifest
+    return state
+
+
+def _do_sync(args):
+    """Mirror the mapped paths onto the target.
+
+    Returns (uploaded, unchanged, failed).  Only files whose bytes differ from
+    what the manifest says the target holds are sent, so the manifest is a
+    cache of the target's state and not a source of truth: delete it and the
+    next sync is a full one, which is safe, just slow.
+    """
+    plan = _sync_plan(_parse_maps(args.map), args.remote_root, args.exclude)
+    state = _load_manifest(args.manifest)
+    recorded = state["files"]
+    changed = [entry for entry in plan
+               if recorded.get(entry[1].lower()) != hashlib.sha256(entry[2]).hexdigest()]
+
+    if args.dry_run:
+        for _local, remote_path, data in changed:
+            print("would send %s (%d bytes)" % (remote_path, len(data)))
+        print("sync: %d to send, %d unchanged (dry run)"
+              % (len(changed), len(plan) - len(changed)))
+        return len(changed), len(plan) - len(changed), 0
+
+    if not changed:
+        return 0, len(plan), 0
+
+    ftp = _ftp(args)
+    made = set()
+    uploaded = failed = 0
+    for _local, remote_path, data in changed:
+        if _ftp_store(ftp, data, remote_path, made):
+            recorded[remote_path.lower()] = hashlib.sha256(data).hexdigest()
+            uploaded += 1
+            if args.verbose:
+                print("sent %s (%d bytes)" % (remote_path, len(data)))
+        else:
+            failed += 1
+    try:
+        ftp.quit()
+    except (ftplib.all_errors, OSError):
+        pass
+    try:
+        with open(args.manifest, "w") as f:
+            json.dump(state, f, indent=1, sort_keys=True)
+    except OSError as exc:
+        warn("could not write %s: %s (the next sync sends everything again)"
+             % (args.manifest, exc))
+    return uploaded, len(plan) - len(changed), failed
+
+
+def add_sync_options(p):
+    p.add_argument("--map", action="append", default=None, metavar="LOCAL=REMOTE",
+                   help="mirror LOCAL onto REMOTE under --remote-root; repeatable "
+                        "(default: %s)" % ", ".join(DEFAULT_MAPS))
+    p.add_argument("--remote-root", default=REMOTE_ROOT)
+    p.add_argument("--manifest", default=MANIFEST_NAME,
+                   help="record of what the target holds (default %s)" % MANIFEST_NAME)
+    p.add_argument("--exclude", action="append", default=[], metavar="GLOB")
+    p.add_argument("--dry-run", action="store_true", help="report, do not send")
+    p.add_argument("--verbose", action="store_true")
+
+
+def cmd_sync(args):
+    if args.map is None:
+        args.map = list(DEFAULT_MAPS)
+    uploaded, unchanged, failed = _do_sync(args)
+    print("sync: %d uploaded, %d unchanged, %d failed" % (uploaded, unchanged, failed))
+    return 1 if failed else 0
+
+
+def cmd_build(args):
+    if args.map is None:
+        args.map = list(DEFAULT_MAPS)
+    if not args.no_sync:
+        uploaded, unchanged, failed = _do_sync(args)
+        print("sync: %d uploaded, %d unchanged, %d failed" % (uploaded, unchanged, failed))
+        if failed:
+            print("build: not starting, the mirror is incomplete")
+            return 1
+    else:
+        print("build: sync skipped")
+
+    # `if errorlevel` rather than %ERRORLEVEL%: the former is a plain batch
+    # conditional, the latter a variable expansion whose timing in this command
+    # processor is not something to rely on inside a one-line command.
+    #
+    # Two marks, not one.  ATUI-SHELL-RC says the batch ran to its end and
+    # whether it thought it failed; a build driver that carries on past a
+    # failing compile can easily exit 0 while having failed, so the batch also
+    # writes ATUI-BUILD-RC with the verdict it worked out itself, and that one
+    # wins when present.
+    # Just the batch: it writes build.log and its own verdict line into it.
+    # Wrapping it here to append an exit status does not work -- OS/2's command
+    # processor accepts `if errorlevel 1 (echo x>>log) else (echo y>>log)` inside
+    # a batch file but rejects the same construct on an interactive line -- and
+    # it would only report the last command's status anyway.  A driver that
+    # carries on past failures has to grade itself, which is what ATUI-BUILD-RC
+    # in the log is for; its absence means the batch never got to the end.
+    command = "d: && cd %s && %s %s" % (args.remote_root, args.batch, args.batch_args)
+    if len(command) > 300:
+        warn("build: command is %d characters; the target's command processor "
+             "silently drops lines past about 315" % len(command))
+    session = Session(args.host, args.port, args)
+    session.start()
+    session.login(args.user, args.password)
+
+    def progress(text):
+        # The sink gets charset-mapped bytes, not text: inbound() translates
+        # code page to UTF-8 and stays binary, which is what a screen is.
+        if isinstance(text, bytes):
+            text = text.decode("utf-8", "replace")
+        if text.strip():
+            sys.stderr.write(text if text.endswith("\n") else text + "\n")
+            sys.stderr.flush()
+
+    session.run(command, timeout=args.run_timeout, idle=args.idle, sink=progress)
+    session.close()
+
+    if _ftp_get(args, args.remote_root + "\\" + args.log, args.log_to) is None:
+        warn("build: no log came back from the target")
+        return 1
+    with io.open(args.log_to, "r", encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    lines = text.splitlines()
+    if args.tail:
+        lines = lines[-args.tail:]
+    sys.stdout.write("\n".join(lines) + "\n")
+
+    marks = re.findall(re.escape(BUILD_RC_MARK) + r"(\d+)", text)
+    if not marks:
+        # No verdict line means the batch never reached its last line: the
+        # compiler crashed, the session died, or the disk filled.  All of those
+        # read as success to anyone skimming the log, so say so plainly.
+        print("build: no %s line in the log -- it did not finish" % BUILD_RC_MARK)
+        return 1
+    rc = int(marks[-1])
+    print("build: rc=%d (%d log lines)" % (rc, len(text.splitlines())))
+    return rc
 
 
 # -------------------------------------------------------------------- main ---
@@ -1224,6 +1511,28 @@ def build_parser():
     add_common(g)
     g.add_argument("remote")
     g.add_argument("file")
+
+    y = sub.add_parser("sync", help="mirror the sources onto the target")
+    add_common(y)
+    add_sync_options(y)
+
+    b = sub.add_parser("build", help="sync, run the makefile on the target, fetch the log")
+    add_common(b)
+    add_sync_options(b)
+    b.add_argument("--batch", default="build.cmd",
+                   help="batch file to run in the build root (default build.cmd)")
+    b.add_argument("--batch-args", default="",
+                   help="passed through to the batch file (build.cmd accepts "
+                        "tvision or atui to build one half)")
+    b.add_argument("--log", default="build.log", help="log name on the target")
+    b.add_argument("--log-to", default=".atui-build.log",
+                   help="where to keep the fetched log (default %s)")
+    b.add_argument("--tail", type=int, default=0, help="show only the last N lines")
+    b.add_argument("--no-sync", action="store_true", help="build what is already there")
+    b.add_argument("--run-timeout", type=float, default=3600.0)
+    b.add_argument("--idle", type=float, default=30.0,
+                   help="a build is over after this many quiet seconds; must "
+                        "exceed the time one source file takes")
     return p
 
 
@@ -1239,6 +1548,10 @@ def main(argv=None):
         return cmd_put(args)
     if args.sub == "get":
         return cmd_get(args)
+    if args.sub == "sync":
+        return cmd_sync(args)
+    if args.sub == "build":
+        return cmd_build(args)
     return cmd_relay(args)
 
 
