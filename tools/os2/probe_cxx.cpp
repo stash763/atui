@@ -8,22 +8,30 @@
 
    Build (Open Watcom, OS/2):
 
-     wpp386 -bt=os2 -i=compat\os2\include -fo=probe_cxx.obj probe_cxx.cpp
+     wpp386 -bt=os2 -xs -fo=probe_cxx.obj probe_cxx.cpp
      wlink system os2v2 name probe_cxx.exe file probe_cxx.obj
 
-   The -i= is what makes <algorithm> resolve; see compat/os2/include.
+   -xs is required: exceptions are off by default, and the symptom is not a
+   message about exceptions but errors from inside Watcom's own <string>.
+
+   Note there is no <streambuf> here, unlike earlier revisions of this file.
+   Watcom's own streambuf header cannot be included on its own -- it uses
+   streampos and streamoff without defining them or including what does, and
+   returns twenty errors from inside the compiler's installation -- and nothing
+   can be placed on the include path to fix it, because Watcom's h directory is
+   searched before any path you set. Anything that wants std::streambuf includes
+   <fstream>, which is self-contained. See compat/os2/include/README.md.
 */
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
-/* long names: only reachable through the include forwarders */
+/* long names, to show the compiler resolves them unaided */
 #include <algorithm>
 #include <exception>
 #include <functional>
 #include <stdexcept>
-#include <streambuf>
 #include <type_traits>
 
 /* names short enough to exist as-is */
@@ -31,12 +39,13 @@
 #include <iosfwd>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <list>
 #include <map>
 #include <memory>
 #include <set>
-#include <sstream>
 #include <string>
+#include <strstream>
 #include <utility>
 #include <vector>
 
@@ -65,6 +74,20 @@ static int byAbs( int a, int b )
 {
     return (a < 0 ? -a : a) < (b < 0 ? -b : b);
 }
+
+/* RTTI is off by default, as exceptions are, and asking for typeid or
+   dynamic_cast without -xr is a compile error rather than a runtime one.
+   Guarded on __RTTI__, the macro -xr defines, so the probe runs either way and
+   says which way it ran.
+
+   These two structs are at file scope rather than inside main, where the
+   equivalent code used to sit: that is legal C++ and this compiler rejects it
+   with a bare syntax error, which is the usual trouble with a vtable that would
+   have to be emitted in function scope. */
+#if defined( __RTTI__ )
+struct ProbeBase { virtual ~ProbeBase() {} };
+struct ProbeDerived : ProbeBase { int x; };
+#endif
 
 int main( void )
 {
@@ -101,8 +124,11 @@ int main( void )
     printf( "  float=%d double=%d long double=%d\n",
             (int)sizeof( float ), (int)sizeof( double ), (int)sizeof( long double ) );
     printf( "  intptr_t=%d uintmax_t=%d SIZE_MAX=%lu INT_MAX=%d\n",
+            /* SIZE_MAX is not defined by this <stdint.h>, measured, so the
+               limit comes from numeric_limits, which is where the port should
+               get it anyway. */
             (int)sizeof( intptr_t ), (int)sizeof( uintmax_t ),
-            (unsigned long)SIZE_MAX, INT_MAX );
+            (unsigned long)std::numeric_limits<size_t>::max(), INT_MAX );
 
     /* ---- printf: do the length modifiers work? ------------------------ */
     /* A pre-C99 runtime prints "z" or "ll" literally here, which silently
@@ -121,8 +147,25 @@ int main( void )
     std::string s = "atui";
     s += "-os2";
     check( "std::string append/compare", s == "atui-os2" && s.size() == 8 );
-    check( "std::string substr/find/erase",
-           s.substr( 4 ) == "os2" && s.find( '-' ) == 4 && (s.erase( 0, 5 ), s == "os2") );
+    /* One fact per line, because the first version folded substr, find and
+       erase into a single conjunction and could only report that something
+       inside it was wrong, which is not a measurement.  The values are printed
+       as well: over a telnet link a difference has to be readable, not deduced. */
+    {
+        std::string head = s.substr( 0, 4 );
+        std::string tail = s.substr( 4 );
+        check( "std::string substr( 0, 4 )", head == "atui" );
+        /* "-os2", not "os2": position 4 of "atui-os2" is the hyphen.  This
+           check asked for the wrong thing twice before the values were printed
+           next to it, which is the whole reason they are printed here. */
+        check( "std::string substr( 4 )", tail == "-os2" );
+        printf( "       substr(0,4)=[%s]  substr(4)=[%s]\n", head.c_str(), tail.c_str() );
+        check( "std::string find", s.find( '-' ) == 4 );
+        std::string cut = s;
+        cut.erase( 0, 5 );
+        check( "std::string erase( 0, 5 )", cut == "os2" );
+        printf( "       after erase=[%s]\n", cut.c_str() );
+    }
 
     std::vector<int> v;
     v.push_back( -3 );
@@ -155,10 +198,39 @@ int main( void )
     std::sort( words.begin(), words.end() );
     check( "std::sort of strings", words[0] == "alpha" );
 
-    /* ---- streams ----------------------------------------------------- */
-    std::ostringstream os;
-    os << "n=" << 42 << " hex=" << std::hex << 255 << std::dec << " f=" << 3.5;
-    check( "ostringstream", os.str() == "n=42 hex=ff f=3.5" );
+    /* ---- streams ------------------------------------------------------
+
+       No <sstream> here, and none can be arranged: that header is an empty stub
+       in this library -- after its guards, its whole content is
+       `namespace std { }` -- so there is no ostringstream to name, and a compat
+       header cannot supply one because Watcom's own header wins every include
+       lookup.  strstream is the pre-standard string stream that <sstream>
+       eventually replaced, and it is real here, so it is what the port's
+       formatting helper will be built on -- or snprintf, measured below, which
+       is smaller and needs no stream object at all.
+
+       istreambuf_iterator is absent as well, so the file comes back a character
+       at a time. */
+    {
+        char buf[64];
+        std::ostrstream os( buf, sizeof( buf ) );
+        os << "n=" << 42 << " hex=" << std::hex << 255 << std::dec
+           << " f=" << 3.5 << std::ends;
+        check( "ostrstream formatting", std::string( buf ) == "n=42 hex=ff f=3.5" );
+
+        std::istrstream is( "7 8", 3 );
+        int a = 0, b = 0;
+        is >> a >> b;
+        check( "istrstream parsing", a == 7 && b == 8 );
+    }
+
+    {
+        char buf[64];
+        /* unqualified: <cstdio> here declares _snprintf and snprintf, and puts
+           neither in namespace std, which is the same trap as memcpy */
+        snprintf( buf, sizeof( buf ), "n=%d hex=%x f=%.1f", 42, 255, 3.5 );
+        check( "snprintf", std::string( buf ) == "n=42 hex=ff f=3.5" );
+    }
 
     const char *tmp = "probe_cxx.tmp";
     {
@@ -167,17 +239,14 @@ int main( void )
     }
     {
         std::ifstream in( tmp, std::ios::binary );
-        std::string got( (std::istreambuf_iterator<char>( in )),
-                          std::istreambuf_iterator<char>() );
+        std::string got;
+        char ch;
+        while( in.get( ch ) )
+            got += ch;
         check( "fstream binary round trip", got == "abc12\n" );
     }
     remove( tmp );
     check( "remove()", !std::ifstream( tmp ).is_open() );
-
-    std::istringstream is( "11 22" );
-    int a = 0, b = 0;
-    is >> a >> b;
-    check( "istringstream extract", a == 11 && b == 22 );
 
     /* ---- iostream: present, and at what cost ------------------------- */
     /* Kept to one line so it can be removed if the static-link cost of the
@@ -195,21 +264,27 @@ int main( void )
 
     bool caught = false;
     try {
-        std::string huge;
-        huge.reserve( (size_t)-1 );   // wants to fail, but is allowed to succeed
+        /* Not called `huge`: that is a memory-class keyword in this compiler,
+           alongside far and near, so `std::string huge;` reads as a declaration
+           with a storage class and no name, and the error is a bare syntax
+           error several columns away from the cause.  */
+        std::string enormous;
+        enormous.reserve( (size_t)-1 );   // wants to fail, may legitimately succeed
         throw std::bad_alloc();
     } catch( const std::bad_alloc & ) {
         caught = true;
     }
     check( "catch std::bad_alloc", caught );
 
+#if defined( __RTTI__ )
     check( "typeid().name()", typeid( std::string ).name() != 0 );
-
-    struct Base { virtual ~Base() {} };
-    struct Derived : Base { int x; };
-    Base *asBase = new Derived;
-    check( "dynamic_cast", dynamic_cast<Derived *>( asBase ) != 0 );
+    ProbeBase *asBase = new ProbeDerived;
+    check( "dynamic_cast", dynamic_cast<ProbeDerived *>( asBase ) != 0 );
     delete asBase;
+#else
+    printf( "  rtti: off, so typeid and dynamic_cast are not compiled "
+            "(pass -xr to enable)\n" );
+#endif
 
     /* ---- smart pointers: only the C++98 one is expected -------------- */
     std::auto_ptr<int> ap( new int( 5 ) );
@@ -217,7 +292,12 @@ int main( void )
 
     /* ---- callbacks, the way the UI layer needs them ------------------- */
     int ( *fn )( int, int ) = &byAbs;
-    check( "pointer to a comparison function", fn( -1, 2 ) < 0 );
+    /* byAbs(a, b) is |a| < |b|, so byAbs( -1, 2 ) is 1 rather than a negative
+       comparison result: the check below used to ask for "< 0", which was the
+       probe being wrong about the helper two screens above it.  Worth keeping
+       in this form, because taking a function pointer is exactly what the UI
+       layer does for callbacks. */
+    check( "pointer to a comparison function", fn( -1, 2 ) == 1 && fn( 5, 2 ) == 0 );
 
     printf( "== result ==\n  %d checks, %d failed\n", g_checks, g_failed );
     return g_failed == 0 ? 0 : 1;

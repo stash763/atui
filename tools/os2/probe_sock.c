@@ -18,11 +18,45 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
-#include <sys/types.h>
+
+/* Watcom's OS/2 <sys/socket.h> was written against the IBM TCP/IP toolkit's
+   type set: it names u_char, u_short, u_int, u_long and caddr_t without
+   defining them, and it includes <sys/cdefs.h> at line 298 -- after the
+   structures that need what is in it.  It pulls in D:\WATCOM\h\os2\types.h by
+   itself, which supplies long_int and MAXSOCKETS but not one of the u_* names,
+   so those five are declared below.
+
+   The order below is the measurement, not a preference (sktest.cmd runs the
+   five permutations).  <unistd.h> drags in a header that sets the guard
+   os2\types.h tests, so with it first, os2\types.h skips itself silently and
+   <sys/socket.h> then cannot see long_int or MAXSOCKETS; <sys/types.h> is not
+   included at all, because the one that resolves from H\sys is a different
+   file carrying none of the BSD names.  The error you get for getting this
+   wrong is "missing or misspelled data type near long_int" from inside the
+   compiler's own header, several files away from the include that caused it.
+
+   Five typedefs is deliberately not D:\TOOLKIT\h on the include path: IBM's
+   headers carry IBM-only pragmas, its sys\socket.h is a different file with a
+   different fd_set, and a build that needs Watcom plus five lines goes together
+   on a machine where nobody installed the development toolkit.
+
+   Which import library: Watcom's own lib386\os2\tcpip32.lib, measured.  The
+   toolkit's tcpip32.lib, tcpipdll.lib and tcp32dll.lib were never needed, and
+   this probe linked against Watcom's on the first attempt and spoke HTTP to the
+   inference endpoint: HTTP/1.1 200 OK, Server: llama.cpp.  */
+#include <types.h>
+
+typedef unsigned char  u_char;
+typedef unsigned short u_short;
+typedef unsigned int   u_int;
+typedef unsigned long  u_long;
+typedef char          *caddr_t;
+
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <unistd.h>   /* for close(); after the socket headers, see above */
 
 #define HOST "10.196.88.170"
 #define PORT 10001
@@ -40,9 +74,11 @@ int main( void )
         "\r\n";
 
     printf( "== socket probe ==\n" );
-    printf( "  sizeof(fd_set)=%d sizeof(struct sockaddr_in)=%d sizeof(in_addr_t)=%d\n",
+    /* Labelled struct in_addr, not in_addr_t: this library has no in_addr_t,
+       which is the sort of thing a printf label gets wrong for a week. */
+    printf( "  sizeof(fd_set)=%d sizeof(struct sockaddr_in)=%d sizeof(struct in_addr)=%d\n",
             (int)sizeof( fd_set ), (int)sizeof( struct sockaddr_in ),
-            (int)sizeof( in_addr_t ) );
+            (int)sizeof( struct in_addr ) );
 
     fd = socket( AF_INET, SOCK_STREAM, 0 );
     printf( "  socket -> %d (errno=%d)\n", fd, errno );

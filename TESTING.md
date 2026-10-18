@@ -1495,33 +1495,150 @@ three steps is load-bearing, and the reasons are the facts below.
   `<atomic>`, `<chrono>`, `<condition_variable>` -- those are the port's own work.
   `dirent.h` is missing too (`direct.h`, `io.h`, `unistd.h`, `fcntl.h`,
   `sys/stat.h` exist).
-* **Watcom has BSD sockets**: `h\os2\sys\socket.h`, `select.h`, `ioctl.h`,
-  `netinet\in.h`, `arpa\netdb.h` and the import library `lib386\os2\tcpip32.lib`.
-  So the network transport is sockets and a small HTTP client, not libcurl. The
-  socket probe (`tools/os2/probe_sock.c`) has not been run yet, so treat "it
-  connects" as unproven -- headers and a library are not a connection.
+* **Watcom has BSD socket headers** -- `h\os2\sys\socket.h`, `select.h`,
+  `ioctl.h`, `sockio.h`, `netinet\in.h`, `arpa\`, `netdb.h` -- and an import
+  library `lib386\os2\tcpip32.lib`, so the network transport can be sockets and
+  a small HTTP client rather than libcurl, which does not exist for this
+  compiler. **This is now proven at run time, not on paper**: `probe_sock`
+  compiles, links against Watcom's own `tcpip32.lib`, opens a socket, and gets
+  `HTTP/1.1 200 OK` / `Server: llama.cpp` from the inference endpoint. The IBM
+  toolkit's library was therefore never needed, and the question of which of
+  `tcpip32.lib` / `tcpipdll.lib` / `tcp32dll.lib` in `D:\TOOLKIT\lib` belongs to
+  the running stack can be left alone. `socket() -> 5020`, `connect() -> 0`,
+  `send() -> 86`, `recv() -> 511`, `fd_set` is 260 bytes, `struct sockaddr_in`
+  is 16, `inet_addr` and `htons` work.
+* **Socket includes have an order that must be kept.** `h\os2\sys\socket.h` was
+  written against the IBM toolkit's type set: it names `u_char`, `u_short`,
+  `u_int`, `u_long` and `caddr_t` without defining them and includes
+  `<sys/cdefs.h>` at line 298, after the structures that need it. It pulls in
+  `h\os2\types.h` itself, which supplies `long_int` and `MAXSOCKETS` but none of
+  the `u_*` names, so five typedefs go in front of it. Ordering is what matters:
+  `unistd.h` pulls in a header that sets the guard `os2\types.h` tests, so with
+  `unistd.h` first that file skips itself silently and every socket structure
+  downstream is broken. `<sys/types.h>` must not be included at all, because the
+  one that resolves from `h\sys` is a different file with none of the BSD names.
+  Measured across five permutations (`sktest.cmd`); the symptom of getting it
+  wrong is `E1022: Missing or misspelled data type near 'long_int'` from inside
+  the compiler's own header, several files from the cause.
+* **`__cplusplus` is `1`**, not `199711L`, and `__WATCOMC__` is 1290. Anything
+  that feature-detects with `#if __cplusplus >= 201103L` correctly sees C++98,
+  but a library testing `#if __cplusplus` as a proxy for "standard C++ at all"
+  sees something no one expected. tvision's configuration machinery is exactly
+  that kind of code.
+* **RTTI is off by default too**, in the same spirit as exceptions: `typeid` and
+  `dynamic_cast` are `E875 ... RTTI must be enabled (use 'xr' option)`. The port
+  does not enable it, so `#if defined( __RTTI__ )` guards are how a probe can ask
+  the question without failing the build.
+* `printf` **does** understand `%zu`, `%lld` and `%llu` -- measured, and worth
+  measuring, because it decides whether the port needs helper functions for
+  printing sizes and 64-bit values. It does not.
+* **`huge` is a reserved word** (a memory-class keyword, alongside `far` and
+  `near`). `std::string huge;` reads as a declaration with a storage class and no
+  name, and the compiler says only `E121: syntax error` several columns away. Any
+  identifier from that era's memory model is suspect.
+* There is **no libcurl and no pthread**, and no `<mutex>`, `<thread>`,
+  `<atomic>`, `<chrono>`, `<condition_variable>` -- those are the port's own work.
+  `dirent.h` is missing as a header (`direct.h`, `io.h`, `unistd.h`, `fcntl.h`,
+  `sys/stat.h` exist), but see the symbol map below: the functions it would
+  declare are in the C library, so only the header has to be written.
 
-**The 8.3 include problem.** The C++ standard headers are installed, but the
-extensionless ones are stored truncated to eight characters: `algorith`,
-`exceptio`, `stdexcep`, `streambu`, `function`, `type_tra`, `unordere`. So
-`#include <algorithm>` fails while `<string>` (7 letters) works, and Watcom's own
-headers include each other by the truncated spelling (`<vector>` includes
-`<stdexcep>`). The filesystem is innocent -- long names are accepted and listed
-correctly -- this installation just lost them. The port carries
-`compat/os2/include/`, one forwarder per long name, first on the include path,
-which leaves the compiler's tree alone. Two details worth knowing:
+**Includes, and why there is no forwarder directory.** Watcom's extensionless
+C++ headers are stored truncated to eight characters -- `algorith`, `exceptio`,
+`stdexcep`, `streambu`, `type_tra`, `unordere` -- which looks exactly like a
+problem that `#include <algorithm>`-to-`<algorith>` forwarders would solve, and
+an early revision of this port carried seven of them. They did nothing. Two
+facts, measured on the target:
 
-* `streambuf` cannot forward to `<streambu>`, because that header cannot be
-  included on its own: it uses `streampos` and `streamoff` without defining them
-  or including what does, and produces twenty errors inside the compiler's own
-  files. `<fstream>` is self-contained and pulls it in correctly, so the
-  forwarder deliberately offers `#include <fstream>`. Measured individually:
-  `<fstream>`, `<sstream>`, `<iostream>`, `<iomanip>` compile alone; `<streambuf>`
-  does not.
-* `D:` is HPFS-with-long-names as far as the FTP account is concerned... except
-  that the **FTP account is jailed to `d:\atui`** (550 on any other directory)
-  while telnet is not. To read one of Watcom's headers from the host, copy it
-  into the work directory and fetch it from there.
+* The compiler resolves the long names by itself: OS/2 falls back to the
+  truncated form, so `<algorithm>` opens `algorith` unaided. A ten-character
+  extensionless include in a directory of our own opens too, so the compiler is
+  not truncating blindly -- it is only the installed file that is short.
+* `D:\WATCOM\h` is searched **before** the `INCLUDE` variable and before `-i=`
+  directories, in whatever order they are given, so nothing here can shadow a
+  header Watcom ships. The proof was `<streambuf>`: forwarder correct, uploaded,
+  first on the include path, and the compiler still opened
+`D:\WATCOM\h\streambu`.
+
+`compat/os2/include/` therefore holds only headers this compiler does not have
+at all -- `dirent.h`, `sys/wait.h`, `mutex`, `thread`, `atomic`, `chrono`,
+`condition_variable` -- which is exactly the point at which this directory is
+useful.
+
+**Empty headers, which is worse than missing ones.** Some of Watcom's C++
+headers open, compile, and declare nothing. The important one is `<sstream>`:
+after its guards, its entire content is `namespace std { }`. It gives no
+`std::ostringstream`, and no compat header can supply one because Watcom's stub
+always wins the lookup. `<locale>`, `<queue>` and `<valarray>` are the same
+shape; `<unordered_map>` is only `#include <_hash.h>`. The table below came from
+compiling one name per file rather than from reading the directory:
+
+| present | absent |
+|---|---|
+| `string`, `vector`, `map`, `list`, `deque`, `set`, `stack` | `std::function` -- only the pre-standard adaptors |
+| `fstream`, `iostream`, `iomanip`, `strstream` (real, 216 lines) | `std::unique_ptr`; `shared_ptr` and `auto_ptr` exist |
+| `algorithm` (`sort`, `count_if`), `iterator`, `numeric`, `utility` | `std::to_string`, `string::front`, `string::back`, the 3-argument `string::compare` |
+| `memory`, `limits`, `bitset`, partial `type_traits` | `std::unordered_map`, and all of `<sstream>` |
+| `std::memcpy`, `std::getenv` via `<cstring>`/`<cstdlib>` | those same names in the **global** namespace -- include `<string.h>` or qualify with `std::` |
+
+`std::map` declares `find()` as a non-const member only, so calling `find()`
+through a `const std::map &` is a compile error; `count()` and `lower_bound()`
+do have const forms.
+
+**What the C library actually provides.** `probe_sym` declares the POSIX and
+OS/2 surface the port needs with C linkage, references every name without
+calling it, and lets the linker answer: 64 names, 25 resolved. The undefined
+list is the port's to-do list and the resolved half is bigger than expected:
+
+| present against the default libraries | absent |
+|---|---|
+| `opendir`, `readdir`, `closedir` -- the **functions** are there, only `<dirent.h>` is missing | `scandir`, `alphasort` |
+| `fsync` -- so the durability promise can be kept | `fdatasync`, `msync`, `sync` |
+| `strdup`, `strcasecmp`, `strtoull`, `setenv`, `sleep`, `utime`, `chmod`, `_snprintf`, `_timezone`, `environ` | `asprintf`, `strtok_r`, `unsetenv`, `gettimeofday`, `usleep`, `nanosleep` |
+| `_findfirst`/`_findnext`/`_findclose`, `_stat`, `_mkdir`, `_getcwd` | `realpath`, `mkdtemp`, `statvfs`, `symlink`, `link`, `readlink` |
+| `execle`, `execlp`, `wait`, `signal`, `_beginthread` | `waitpid`, `wait4`, `kill`, `posix_spawn`, `popen`, `pclose`, `sigaction`, `sigprocmask`, `_beginthreadex`, all of pthread, `poll`, `select` |
+
+Three of those absences are design decisions rather than inconveniences. No
+`waitpid`, `kill` or `posix_spawn`, so a child process is `DosExecPgm` plus
+`DosWaitChild` and a deadline cannot be "kill the process group". No `poll` and
+no `gettimeofday`, so the socket loop waits with `select()` -- which lives in
+`tcpip32.lib`, not in the C library, hence its appearance above -- and takes its
+clock from elsewhere. And no `sigaction`/`sigprocmask`, which means the child
+signal mask written for POSIX hosts is code the OS/2 build must not compile
+rather than code to port.
+
+**The kernel API is there and it works.** `probe_api` takes the addresses of
+`DosCreateThread`, `DosWaitThread`, `DosSleep`, `DosExecPgm`, `DosWaitChild`,
+`DosFindFirst`, `DosFindNext` and `DosQueryPathInfo`; all resolve against
+`os2386.lib`, which Watcom does not link by default -- which is also why
+`probe_sym` reported the Dos* names as undefined, a finding about the link line
+rather than about the platform. Then it calls the synchronisation primitives,
+because a link test proves that an entry point exists and nothing more: mutex
+create, acquire and release all return 0; an event semaphore returns 640
+(`ERROR_TIMEOUT`) when nothing has been posted and 0 after `DosPostEventSem`.
+Private, unnamed semaphores, which is all an in-process mutex needs. So
+`std::mutex` and `std::condition_variable` written over `DosCreateMutexSem` and
+`DosCreateEventSem` are bookkeeping -- the answer the threading design needed.
+Actually starting a thread is a different experiment and has not been done.
+`select()` on an unconnected socket with a one second timeout returns 0 with
+errno 0, so a read loop with a deadline is possible, which is the other half of
+why a thread might not be needed at all.
+
+Two names in `os2.h` were unreachable with the include guards in use --
+`DosQuerySysInfo` with `QSV_MAX_PATH_LENGTH`, and the exit-thread entry point
+under either spelling -- and neither is needed, recorded so that nobody spends
+four round trips on them over a telnet link.
+
+**Renaming does not replace.** `rename()` onto an existing file fails with
+`errno` 6; `remove()` followed by `rename()` works. `probe_os` measures this
+because the undo journal and the log rotation both depend on the ordering, and
+both already do it in that order -- which is the reassuring kind of result from a
+probe.
+
+**The FTP account is jailed to `d:\atui`** (550 on any other directory) while
+telnet is not, so reading one of Watcom's headers from the host means copying it
+into the work directory first. Concatenating the headers into one text file and
+fetching that once is how the table above was derived: there is no tar on the
+target, and one file is one round trip.
 
 **What this target's command processor will and will not do.** Every one of these
 was found by a build script failing quietly rather than by reading a manual,
@@ -1545,6 +1662,24 @@ because there is no manual installed:
   but is rejected (`SYS1003`) on an interactive command line -- which is why the
   batch writes its own `ATUI-BUILD-RC=` verdict and the tool reads that instead
   of wrapping the call.
+* Related, and a bug that produced a confident wrong answer: `errorlevel` belongs
+  to the command that ran **last**, so anything between the command of interest
+  and the test is read instead. A probe driver that did `wlink ... `, then
+  `if errorlevel 1 type link.log`, then `if errorlevel 1 goto skip` fell through
+  both tests happily and printed `SYMBOLS-ALL-RESOLVED` for a link that had just
+  failed with 43 undefined references. The shape that cannot go wrong is
+  `if not errorlevel 1 goto ok` immediately after the command, with the reporting
+  on the other side of the label.
+* Which brings us to: **no step may have a silent failure path.** A batch that
+  `goto`s past a compile error without printing anything is indistinguishable
+  from a program that printed nothing because it had nothing to say, and one
+  evening was spent on that difference.
+* **A batch file cannot be named after an internal command.** `verify.cmd` was
+  parsed as the internal `VERIFY` with an argument of `.cmd` and answered
+  `SYS1001: An incorrect parameter was entered for the command`, with no hint
+  that a file of that name was sitting in the current directory. `copy`, `dir`,
+  `path`, `prompt`, `verify` and their fellows win over files, so the driver is
+  `allprobes.cmd`.
 * Redirection works inside a `for` body, so each file's compiler output can go to
   the log while one line per file goes to the screen. That split matters: the
   tool decides a build is over by watching for output, and a build with every
@@ -1557,17 +1692,22 @@ because there is no manual installed:
   silent, and fatal in the interesting direction.
 
 **Where the port stands** (measured 2026-10-18, `-od -w3 -xs -5`): atui's own 23
-translation units produce 210 errors in 18 files. The categories, in order of
-volume, are the missing C++11 headers (`mutex`, `chrono`, `condition_variable`,
-`sys/wait.h`, `dirent.h`), C++11 syntax the 1998 grammar rejects, `std::string`
-without `front`/`back`/the three-argument `compare`, `memcpy`/`getenv`/`mkdir`/
-`getcwd` not in the global namespace when only `<cstring>`/`<cstdlib>` are
-included, and tvision's own header problems: `tspan.h` uses `nullptr`,
-`compat/borland/iosfwd.h` expects `std::streampos`, and `util.h` declares
-`stricmp`/`strupr` with the wrong calling convention for Watcom (`E619/E670`,
-`watcall`). And `tv.h` currently decides that anything which is neither Borland
-nor Win32 is Unix -- defining `_TV_UNIX` and `#define __cdecl` over a Watcom
-keyword -- so the fork's first change is a compiler branch there.
+translation units produce 210 errors in 18 files, and not one of them is about
+include paths -- the headers atui asks for either resolve or are in the absent
+column above. The work, in rough order of size: replace what uses
+`std::function` and `<sstream>`, neither of which exists here at all; supply the
+OS-shaped headers (`mutex`, `thread`, `atomic`, `chrono`, `condition_variable`,
+`sys/wait.h`, `dirent.h`); C++11 syntax the 1998 grammar rejects (`nullptr`,
+`override`, in-class initialisers, `>>` in nested templates); `std::string`
+without `front`/`back`/the three-argument `compare`, and no `std::to_string`;
+`find()` through a `const std::map &`; `memcpy`/`getenv`/`mkdir`/`getcwd` absent
+from the global namespace when only `<cstring>`/`<cstdlib>` are included; and
+tvision's own header problems -- `tspan.h` uses `nullptr`,
+`compat/borland/iosfwd.h` expects `std::streampos`, `util.h` declares `stricmp`
+and `strupr` into a calling-convention clash (`E619`/`E670`, `watcall`) -- plus
+`tv.h`, which decides that anything neither Borland nor Win32 is Unix, defining
+`_TV_UNIX` and `#define __cdecl` over a Watcom keyword. The fork's first change
+is a compiler branch there.
 
 ## Open question (minor, does not affect final rendering)
 

@@ -128,7 +128,11 @@ extern char *_getcwd( char *, int );
 extern int _mkdir( const char * );
 extern int _stat( const char *, void * );
 extern int _snprintf( char *, size_t, const char *, ... );
-extern int _vsnprintf( char *, size_t, const char *, void * );
+/* No _vsnprintf here.  Declaring it produced E617, cannot overload extern C
+   functions, against <cstdio> -- a compile error that carries good news: the
+   function exists, and the collision was the probe getting in the way of the
+   answer it wanted.  Watcom spells the va_list argument char**, which is not
+   something to guess. */
 extern long _timezone;
 
 /* --- OS/2 native, what the thread and process shims would call */
@@ -222,7 +226,6 @@ int main( void )
     g_sink += _mkdir( "x" );
     g_sink += _stat( "x", 0 );
     g_sink += _snprintf( scratch, sizeof( scratch ), "x" );
-    g_sink += _vsnprintf( scratch, sizeof( scratch ), "x", 0 );
     g_sink += _timezone;
     g_sink += DosCreateThread( 0, 0, 0, 0, 0, 0 );
     g_sink += DosWaitChild( 0, 0, 0, 0 );
