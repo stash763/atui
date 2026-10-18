@@ -1,0 +1,12 @@
+/* Not `#include <streambu>`: Watcom's own streambuf header cannot be included
+on its own.  It uses streampos and streamoff (streambu lines 92, 95, 114, 119)
+without defining them or including anything that does, and the result is twenty
+errors inside the compiler's own header.  <fstream> is self-contained, pulls
+streambuf in correctly, and is what a program that wants std::streambuf can be
+given.  Measured: <fstream>, <sstream>, <iostream> and <iomanip> all compile on
+their own; <streambuf> alone does not.
+
+So this forwarder deliberately offers more than its name suggests, which is
+cheaper than the alternative of patching the compiler's headers.
+*/
+#include <fstream>

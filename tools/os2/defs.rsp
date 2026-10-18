@@ -1,0 +1,9 @@
+-bt=os2
+-5
+-od
+-w3
+-xs
+-i=compat\os2\include
+-i=tvision\include
+-i=src
+-DATUI_VERSION="0.0.0-os2"

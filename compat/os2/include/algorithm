@@ -1,0 +1,11 @@
+/* Watcom's OS/2 include tree keeps its extensionless C++ headers under 8.3
+names -- "algorith", "stdexcep", "type_tra" -- so #include <algorithm> fails
+even though the header is installed.  The filesystem is not the problem (long
+names work fine here); this installation lost the long names, and Watcom's own
+headers include each other by the short spellings.
+
+The port therefore carries a directory of forwarders and puts it on the include
+path first, which leaves the compiler's own tree untouched.  Anything that needs
+a name longer than eight characters goes in here.
+*/
+#include <algorith>

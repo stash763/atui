@@ -1397,10 +1397,12 @@ existing workflow changes; `run` names the bridge instead of `./build/atui`.
     tui-test submit "echo hello"                # runs on the remote machine
     tui-test close
 
-    tools/atui-remote --exec "make -f build.os2"   # login, run, print, exit
+    tools/atui-remote --exec "dir d:\\atui"       # login, run one command, print, exit
     tools/atui-remote put src/main.cpp 'd:\atui\src\main.cpp'
-    tools/atui-remote bridge-test                  # local suite, no target needed
-    tools/atui-remote probe                        # asks the real target questions
+    tools/atui-remote sync                        # mirror the sources, by hash
+    tools/atui-remote build                       # sync, build on the target, report
+    tools/atui-remote bridge-test                 # local suite, no target needed
+    tools/atui-remote probe                       # asks the real target questions
 
 `bridge-test` runs against a fake target the tool also provides (`serve`), so it
 works with the OS/2 machine switched off; `probe` asks the real machine the same
@@ -1454,6 +1456,118 @@ probe caught two of its own.
 - `--log-raw PREFIX` writes `PREFIX.out`/`PREFIX.in` byte-exact. Use it before
   reasoning about what the wire carried: a charset conversion is invisible in
   decoded text, and it was caught only by comparing hex.
+
+### Building on the target (Open Watcom, OS/2)
+
+The port is written here and compiled there, so the bridge is also a build loop:
+
+    tools/atui-remote build                    # sync, compile, bring build.log back
+    tools/atui-remote build --batch-args tvision
+    tools/atui-remote sync --dry-run           # what would be sent
+    tools/atui-remote build --no-sync --tail 40
+
+`build` mirrors the sources by hash (367 files, ~74 s the first time and nothing
+on a second run), runs `tools/os2/build.cmd` on the target, fetches `build.log`
+over FTP and exits with the status the batch printed. Everything about those
+three steps is load-bearing, and the reasons are the facts below.
+
+**The toolchain** (`D:\WATCOM`, Open Watcom 1.9, 2010 build, in `PATH`):
+
+* `wpp` is the **16-bit** C++ compiler and what it links cannot run in an OS/2
+  session (`SYS0191`) -- use `wpp386`. Verify the compiler by running its output;
+  "compiled with no errors" and "runs" are different claims.
+* The linker spells the target differently from the compiler: `wlink system os2`
+  quietly means **16-bit** and then fails on 32-bit libraries
+  (`E2053: cannot reach a DLL with a relative relocation`). **`system os2v2`** is
+  the 32-bit image. Omitting `system` happens to give 32-bit; do not rely on it.
+* `-fo=name` names the *object*, not the executable, and there is no `-fe=`.
+  `-fo=dir\` writes `<source-base>.obj` into `dir`, which is what makes a
+  wildcard-driven build possible. `hello.exe` was an OMF object for a while
+  because of exactly this.
+* **C++ exceptions are off by default**, and the symptom is not a message about
+  exceptions: Watcom's own `<string>` and `<vector>` fail with `E625 exceptions
+  must be enabled to use feature (use 'xs' option)` from inside the header. `-xs`
+  in `defs.rsp` took the first full build from 4142 errors to about 210 on atui's
+  own sources. Read the E-numbers before writing any porting code.
+* `long long` exists and is 8 bytes; `stdint.h`, `cstdint`, `inttypes.h` are
+  there. Flat 32-bit: pointers and `long` are 4.
+* There is **no libcurl and no pthread**, and no `<mutex>`, `<thread>`,
+  `<atomic>`, `<chrono>`, `<condition_variable>` -- those are the port's own work.
+  `dirent.h` is missing too (`direct.h`, `io.h`, `unistd.h`, `fcntl.h`,
+  `sys/stat.h` exist).
+* **Watcom has BSD sockets**: `h\os2\sys\socket.h`, `select.h`, `ioctl.h`,
+  `netinet\in.h`, `arpa\netdb.h` and the import library `lib386\os2\tcpip32.lib`.
+  So the network transport is sockets and a small HTTP client, not libcurl. The
+  socket probe (`tools/os2/probe_sock.c`) has not been run yet, so treat "it
+  connects" as unproven -- headers and a library are not a connection.
+
+**The 8.3 include problem.** The C++ standard headers are installed, but the
+extensionless ones are stored truncated to eight characters: `algorith`,
+`exceptio`, `stdexcep`, `streambu`, `function`, `type_tra`, `unordere`. So
+`#include <algorithm>` fails while `<string>` (7 letters) works, and Watcom's own
+headers include each other by the truncated spelling (`<vector>` includes
+`<stdexcep>`). The filesystem is innocent -- long names are accepted and listed
+correctly -- this installation just lost them. The port carries
+`compat/os2/include/`, one forwarder per long name, first on the include path,
+which leaves the compiler's tree alone. Two details worth knowing:
+
+* `streambuf` cannot forward to `<streambu>`, because that header cannot be
+  included on its own: it uses `streampos` and `streamoff` without defining them
+  or including what does, and produces twenty errors inside the compiler's own
+  files. `<fstream>` is self-contained and pulls it in correctly, so the
+  forwarder deliberately offers `#include <fstream>`. Measured individually:
+  `<fstream>`, `<sstream>`, `<iostream>`, `<iomanip>` compile alone; `<streambuf>`
+  does not.
+* `D:` is HPFS-with-long-names as far as the FTP account is concerned... except
+  that the **FTP account is jailed to `d:\atui`** (550 on any other directory)
+  while telnet is not. To read one of Watcom's headers from the host, copy it
+  into the work directory and fetch it from there.
+
+**What this target's command processor will and will not do.** Every one of these
+was found by a build script failing quietly rather than by reading a manual,
+because there is no manual installed:
+
+* An interactive command line longer than about **315 characters is silently
+  discarded** -- 310 runs, 320 does not, and nothing is printed either way. A
+  compile command with these switches is longer than that, so the build lives in
+  a batch file and is started with a short command.
+* **`set X=value` refuses a value containing `=`**: no error, the variable is
+  simply not stored, and every later `%X%` expands to nothing. This presented as
+  `SYS1041: The name -fo is not recognized`, because the compile line lost its
+  command word. The fix is a response file (`wpp386 @defs.rsp`), which works and
+  also keeps quoting out of cmd.exe entirely -- but note that a response file is
+  bare options: `//` comment lines would be parsed as switches.
+* No `%%~nf` modifier (no way to strip an extension off a `for` variable), no
+  `call :label`, and `wlib` takes no wildcards. `start /bg` does return
+  immediately, and `for %%f in (path\*.cpp)` keeps the path in the variable, so
+  `-fo=obj\` plus a directory wildcard is the workable shape.
+* `if errorlevel 1 (echo a>>log) else (echo b>>log)` works **inside a batch file**
+  but is rejected (`SYS1003`) on an interactive command line -- which is why the
+  batch writes its own `ATUI-BUILD-RC=` verdict and the tool reads that instead
+  of wrapping the call.
+* Redirection works inside a `for` body, so each file's compiler output can go to
+  the log while one line per file goes to the screen. That split matters: the
+  tool decides a build is over by watching for output, and a build with every
+  byte redirected is indistinguishable from a hung one.
+* **LF-only sources compile cleanly**, so no translation is needed on the way
+  over; batch files do need CRLF, which `sync` applies to `.cmd`/`.bat` only.
+* `INCLUDE` in the login environment also names the IBM toolkit, which has its
+  own `sys\socket.h`. Build scripts therefore *set* INCLUDE to Watcom's two
+  directories rather than extending it; mixing the two sets of declarations is
+  silent, and fatal in the interesting direction.
+
+**Where the port stands** (measured 2026-10-18, `-od -w3 -xs -5`): atui's own 23
+translation units produce 210 errors in 18 files. The categories, in order of
+volume, are the missing C++11 headers (`mutex`, `chrono`, `condition_variable`,
+`sys/wait.h`, `dirent.h`), C++11 syntax the 1998 grammar rejects, `std::string`
+without `front`/`back`/the three-argument `compare`, `memcpy`/`getenv`/`mkdir`/
+`getcwd` not in the global namespace when only `<cstring>`/`<cstdlib>` are
+included, and tvision's own header problems: `tspan.h` uses `nullptr`,
+`compat/borland/iosfwd.h` expects `std::streampos`, and `util.h` declares
+`stricmp`/`strupr` with the wrong calling convention for Watcom (`E619/E670`,
+`watcall`). And `tv.h` currently decides that anything which is neither Borland
+nor Win32 is Unix -- defining `_TV_UNIX` and `#define __cdecl` over a Watcom
+keyword -- so the fork's first change is a compiler branch there.
 
 ## Open question (minor, does not affect final rendering)
 
