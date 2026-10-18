@@ -1380,6 +1380,81 @@ Recreate from /tmp/opencode/atui_pty_test.py pattern:
   (non-BIOS attrs become 0x5F) — widget `cp*` strings are index chains that
   terminate at the app palette.
 
+## Remote targets (OS/2 over telnet)
+
+A target machine that cannot show us its screen is still testable:
+`tools/atui-remote` is a telnet bridge that runs **as the program tui-test
+starts**, so every tui-test verb acts on the remote screen and there is still
+exactly one screen model in the system -- the emulator's. Nothing about the
+existing workflow changes; `run` names the bridge instead of `./build/atui`.
+
+    # one time: credentials in the environment, out of the shell history
+    export ATUI_REMOTE_HOST=10.196.88.129 ATUI_REMOTE_USER=atui ATUI_REMOTE_PASSWORD=...
+
+    tui-test run --cols 80 --rows 25 -- tools/atui-remote
+    tui-test expect text "ATUI-SCREEN-MARKER"   # asserts against the remote screen
+    tui-test cells 0 3 44 3 --json              # colours/attributes, remotely
+    tui-test submit "echo hello"                # runs on the remote machine
+    tui-test close
+
+    tools/atui-remote --exec "make -f build.os2"   # login, run, print, exit
+    tools/atui-remote put src/main.cpp 'd:\atui\src\main.cpp'
+    tools/atui-remote bridge-test                  # local suite, no target needed
+    tools/atui-remote probe                        # asks the real target questions
+
+`bridge-test` runs against a fake target the tool also provides (`serve`), so it
+works with the OS/2 machine switched off; `probe` asks the real machine the same
+questions. Both are worth running -- the fake target caught two bridge bugs, the
+probe caught two of its own.
+
+### What was measured on the OS/2 box (eComStation, P4, 2026-10-17)
+
+* **The server echoes.** The bridge therefore puts the local terminal in raw
+  mode with echo off. Getting this wrong is not cosmetic: a doubled echo makes
+  every screen assertion lie, so `bridge-test` includes a control session with
+  echo deliberately forced on and requires the check to see the text twice.
+* **Terminal type selects the character set**, which is not obvious and silently
+  ruins the screen. Answering `vt100` or `ansi` makes the server convert the
+  session's CP437 output to Latin-1: `0x80` arrives as `0xC7` ('Ç') and every
+  box-drawing byte becomes a punctuation mark. `pcansi`, `xterm` and `ibmpc`
+  pass CP437 through unchanged (`0x80`→`0x80`, `0xda`→`0xda`), so the bridge
+  answers **`pcansi`** by default. If box drawing arrives as accented letters,
+  look at `--ttype` before looking at anything else.
+* **Escape sequences pass through untouched**, `ESC ( 0`/`ESC ( B` (VT alternate
+  character set) included, *even when the high-bit bytes beside them are being
+  converted*. That is the durable lesson for the OS/2 display backend: express
+  graphics as escapes, not as high-bit bytes, and no charset negotiation on
+  either side can corrupt them.
+* One wrinkle: a received `ESC[2J` comes back with an `ESC[0;0H` inserted after
+  it, so the server interprets some output rather than being purely a pipe.
+* **NAWS works in both directions**: the bridge reports the tui-test session
+  size and re-sends it on `tui-test resize 60 20`, which the target sees.
+* **Output streams while a program runs** -- verified by running `ping` and
+  reading lines as they appeared, not after it exited. Without this no TUI can
+  work; with a shell alone you would never find out.
+* **FTP is byte-transparent** (0..255 round-tripped identical, `STOR` and
+  `RETR`), so it is safe for sources as well as payloads, and `D:` is not FAT --
+  long filenames survive. `C:\usr\bin\curl.exe` exists and P4 reaches the model
+  endpoint (10.196.88.170, ICMP 0 ms), so HTTP can be checked before atui has a
+  socket layer of its own.
+* The server sets `TERM=DUMB`, which is a red herring: nothing on the OS/2 side
+  reads it, and the bridge decides everything from negotiation and `--charset`.
+
+### Gotchas with the bridge itself
+
+- `tui-test cells`/`text` are **0-based**; row 3 is the fourth row.
+- A character typed at the OS/2 prompt without Enter stays in the input line.
+  The probe learned this the hard way: its echo test left a bare `q` behind and
+  the next command ran as `qtype ...`, which reported itself as a transparency
+  failure. Abandon such lines with Ctrl-C (`0x03`).
+- macOS has no `telnet` client (that is why this tool exists) and no `timeout`.
+  `nc` exists but does not negotiate, which is not the same thing.
+- `tui-test close --all` can leave children alive: `pgrep -f atui-remote` before
+  believing a session is gone.
+- `--log-raw PREFIX` writes `PREFIX.out`/`PREFIX.in` byte-exact. Use it before
+  reasoning about what the wire carried: a charset conversion is invisible in
+  decoded text, and it was caught only by comparing hex.
+
 ## Open question (minor, does not affect final rendering)
 
 With `ATUI_THEME=dark`, startup produces two full-screen flushes: the first

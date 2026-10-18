@@ -1,0 +1,1249 @@
+#!/usr/bin/env python3
+"""
+atui-remote -- the telnet bridge used to drive a remote atui target.
+
+atui targets machines that cannot show us their screen: OS/2 over telnet today,
+DOS and other serial/console sessions tomorrow. tui-test already renders a
+terminal, waits on it, searches it and clicks it, so the bridge is a telnet
+client that runs as the program tui-test starts:
+
+    tui-test run --cols 80 --rows 25 -- tools/atui-remote --host 10.196.88.129
+
+Every tui-test verb (text, find, expect, cells, key, type, resize, screenshot)
+then acts on the remote screen, and there is still only one screen model in the
+system -- the emulator's. A second "expected screen" here would mean testing the
+model instead of the application.
+
+Why a program at all, when macOS used to ship telnet: it no longer does, and
+`nc` does not speak RFC 854, so negotiation never happens and a full-screen
+program cannot work. What this adds over a socket is what a TUI depends on:
+
+  * negotiation answered, never invented -- see Negotiator;
+  * NAWS, so the target is told the size tui-test gave the session, and told
+    again on `tui-test resize`;
+  * echo owned by exactly one side, taken from what the server negotiates rather
+    than guessed, because a doubled echo corrupts every screen assertion;
+  * character set translation (OS/2 speaks code page 437, an emulator expects
+    UTF-8), which is what makes box drawing legible;
+  * login automation, so a session starts at a prompt;
+  * byte-exact logging of both directions, because "the screen is wrong" is only
+    diagnosable from the bytes.
+
+Subcommands:
+    (none)        connect and relay -- this is what tui-test runs
+    serve         a local fake target, so the bridge itself has a test subject
+    bridge-test   local acceptance suite (needs tui-test)
+    probe         ask a real target the questions the port depends on
+    put / get     move one file over FTP, for the build loop
+
+Stdlib only, and it is development tooling: nothing in src/ refers to it, and it
+is never compiled or shipped.
+"""
+
+import argparse
+import errno
+import ftplib
+import io
+import os
+import re
+import select
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import termios
+import threading
+import time
+import tty
+
+# Telnet command bytes (RFC 854) and the options this bridge cares about.
+IAC, DONT, DO, WONT, WILL, SB, SE = 255, 254, 253, 252, 251, 250, 240
+OPT_ECHO, OPT_SGA, OPT_TTYPE, OPT_NAWS, OPT_BINARY = 1, 3, 24, 31, 0
+TTYPE_IS = 0
+
+# Credentials come from the environment by default so they stay out of the shell
+# history and out of `ps`, which on a shared machine is where they get read.
+DEFAULT_HOST = os.environ.get("ATUI_REMOTE_HOST", "")
+DEFAULT_USER = os.environ.get("ATUI_REMOTE_USER", "")
+DEFAULT_PASSWORD = os.environ.get("ATUI_REMOTE_PASSWORD", "")
+
+# eComStation's telnetd gives the session code page 437. Character set is a
+# property of the target, not of telnet, so it is a flag -- but the default has
+# to be right, or every box-drawing character a tvision screen emits arrives as
+# mojibake and the first UI session looks broken when nothing is.
+DEFAULT_CHARSET = "cp437"
+
+# The OS/2 prompt here is `[<P4>-C:\]` (PROMPT=[$lP4$g-$p]). Deliberately loose:
+# the bridge should notice *a* prompt, not identify a particular machine.
+DEFAULT_PROMPT_RE = r"[>\]$#]\s*$"
+
+# The terminal type we report is not cosmetic: eComStation's telnetd chooses the
+# *client's* character set from it. Answering vt100 or ansi makes it convert the
+# session's CP437 output to Latin-1, so every box-drawing byte arrives as an
+# accented letter and any TUI looks broken; pcansi, xterm and ibmpc pass CP437
+# through unchanged (measured against P4: 0x80 arrives as 0x80, and 0xda as
+# 0xda). pcansi is the honest name for what is actually on the wire.
+DEFAULT_TTYPE = "pcansi"
+
+# CP437 box drawing, for the checks that care whether it survived.
+BOX_CHARS = "\u250c\u2510\u2514\u2518\u2502\u2500"
+
+
+def warn(msg):
+    sys.stderr.write("atui-remote: %s\n" % msg)
+
+
+def _telnet_escape(data):
+    """Doubles an IAC byte, the only way a 0xFF can appear in telnet data.
+
+    Needed both for subnegotiation bodies (a 255-column terminal) and for the
+    fake target's output. Anything else that writes raw bytes to a telnet socket
+    owes the same fix, which is why it is a named function rather than a replace.
+    """
+    return data.replace(b"\xff", b"\xff\xff")
+
+
+def _name(b):
+    """Option and command names for the negotiation trace."""
+    return {IAC: "IAC", DO: "DO", DONT: "DONT", WILL: "WILL", WONT: "WONT",
+            SE: "SE", SB: "SB",
+            OPT_ECHO: "ECHO", OPT_SGA: "SGA", OPT_TTYPE: "TTYPE",
+            OPT_NAWS: "NAWS", OPT_BINARY: "BINARY"}.get(b, "opt%d" % b)
+
+
+def now():
+    return time.time()
+
+
+# -------------------------------------------------------------- primitives ---
+
+
+def is_tty(fd):
+    try:
+        return os.isatty(fd)
+    except OSError:
+        return False
+
+
+def get_winsize(fd):
+    """The local window size, or 80x25 if there is no window to ask.
+
+    `struct winsize` is four native shorts, rows first -- unpacking it as big
+    endian on a little-endian machine reports 80 columns as 20480, which is a
+    size no terminal has ever had. The bridge only noticed because the fake
+    target started echoing the number back instead of showing its own default.
+    """
+    import fcntl
+    try:
+        packed = fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8)
+    except (OSError, termios.error):
+        return (80, 25)
+    rows, cols = struct.unpack("=HH", packed[:4])
+    return (cols or 80, rows or 25)
+
+
+class RawTerminal:
+    """Raw mode for the local side, restored whatever happens.
+
+    Raw is not a nicety. In the default cooked mode the local tty line-buffers
+    input and echoes it, so nothing reaches the remote program until Enter and
+    every keystroke is displayed twice -- which is precisely the failure that
+    looks like a broken bridge.
+    """
+
+    def __init__(self, fd):
+        self.fd = fd
+        self.is_tty = is_tty(fd)
+        self._echo = None
+
+    def __enter__(self):
+        if self.is_tty:
+            self.saved = termios.tcgetattr(self.fd)
+            tty.setraw(self.fd)
+        return self
+
+    def __exit__(self, *_args):
+        if self.is_tty:
+            termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
+
+    def set_local_echo(self, on):
+        """The fallback for a server that refuses to echo (line mode): with
+        neither side echoing, typed input is invisible.
+
+        Written out rather than as a conditional expression: when this was
+        `x | ECHO if on else x & ~ECHO` the two branches did the opposite of
+        what they were named for, and every keystroke showed up twice.
+        """
+        if not self.is_tty or self._echo == on:
+            return
+        self._echo = on
+        mode = termios.tcgetattr(self.fd)
+        if on:
+            mode[3] |= termios.ECHO
+        else:
+            mode[3] &= ~termios.ECHO
+        termios.tcsetattr(self.fd, termios.TCSADRAIN, mode)
+
+
+class Negotiator:
+    """Answers telnet control sequences and keeps them out of the data stream.
+
+    Two rules keep this honest. Options are answered, never invented: if the far
+    end does not ask, we say nothing, because unrequested WILLs are how clients
+    end up in negotiation loops. And each answer is sent once -- RFC 854 is
+    explicit that a WILL/DO exchange that reopens itself must be broken by one
+    side, and the side that understands the problem is the one that should.
+    """
+
+    def __init__(self, send, trace=None, ttype=DEFAULT_TTYPE, want_naws=True):
+        self.send = send
+        self.trace = trace
+        self.ttype = ttype
+        self.want_naws = want_naws
+        self.pending = b""
+        self.answered = set()
+        self.server_echo = None      # None unknown / True WILL / False WONT
+        self.naws = None
+        self.their_naws = None
+
+    def feed(self, data):
+        """Returns the data with control sequences removed."""
+        buf = self.pending + data
+        out = bytearray()
+        i = 0
+        while i < len(buf):
+            if buf[i] != IAC:
+                out.append(buf[i])
+                i += 1
+                continue
+            if i + 1 >= len(buf):
+                break                                # command split across reads
+            cmd = buf[i + 1]
+            if cmd == IAC:
+                out.append(IAC)                      # an escaped 0xFF
+                i += 2
+                continue
+            if cmd in (WILL, WONT, DO, DONT):
+                if i + 2 >= len(buf):
+                    break
+                self._verb(cmd, buf[i + 2])
+                i += 3
+                continue
+            if cmd == SB:
+                end = buf.find(bytes([IAC, SE]), i + 2)
+                if end < 0:
+                    break                            # subnegotiation continues
+                self._sub(buf[i + 2:end])
+                i = end + 2
+                continue
+            i += 2                                   # two-byte command, or unknown
+        self.pending = buf[i:]
+        return bytes(out)
+
+    def open(self):
+        """The only thing volunteered: our window size, if we have one."""
+        if self.want_naws:
+            self._say(WILL, OPT_NAWS)
+            self.send_naws()
+
+    def send_naws(self, cols=None, rows=None):
+        if cols is None or rows is None:
+            cols, rows = get_winsize(0) if is_tty(0) else (80, 25)
+        size = _telnet_escape(struct.pack(">HH", cols & 0xFFFF, rows & 0xFFFF))
+        self.naws = (cols, rows)
+        self._log("-> NAWS %dx%d" % (cols, rows))
+        self.send(bytes([IAC, SB, OPT_NAWS]) + size + bytes([IAC, SE]))
+
+    def send_ttype(self):
+        self._log("-> TTYPE IS %s" % self.ttype)
+        self.send(bytes([IAC, SB, OPT_TTYPE, TTYPE_IS])
+                  + self.ttype.encode("ascii", "replace") + bytes([IAC, SE]))
+
+    def _verb(self, cmd, opt):
+        self._log("<- %s %s" % (_name(cmd), _name(opt)))
+        if cmd == WILL:
+            if opt == OPT_ECHO:
+                self.server_echo = True
+                self._say(DO, OPT_ECHO)
+            elif opt in (OPT_SGA, OPT_BINARY):
+                self._say(DO, opt)
+            else:
+                self._say(DONT, opt)
+        elif cmd == WONT:
+            if opt == OPT_ECHO:
+                self.server_echo = False
+        elif cmd == DO:
+            if opt == OPT_NAWS:
+                self._say(WILL, OPT_NAWS)
+                self.send_naws()
+            elif opt == OPT_TTYPE:
+                self.send_ttype()
+            else:
+                self._say(WONT, opt)
+        # Anything else the far end declines needs no answer, only a trace.
+
+    def _sub(self, body):
+        if not body:
+            return
+        if body[0] == OPT_TTYPE and len(body) >= 2 and body[1] == 1:
+            self.send_ttype()
+        elif body[0] == OPT_NAWS and len(body) >= 5:
+            self.their_naws = struct.unpack(">HH", bytes(body[1:5]))
+
+    def _say(self, verb, opt):
+        key = (verb, opt)
+        if key in self.answered:
+            return
+        self.answered.add(key)
+        self._log("-> %s %s" % (_name(verb), _name(opt)))
+        self.send(bytes([IAC, verb, opt]))
+
+    def _log(self, line):
+        if self.trace is not None:
+            self.trace.append(line)
+
+
+class LineEndings:
+    """Turns keystrokes into NVT lines (CR LF).
+
+    A raw pty delivers Enter as CR; a bare CR leaves a line-mode server waiting,
+    which looks exactly like a bridge that drops input. A CR/LF pair split
+    across reads still has to produce one CRLF, so the state survives calls.
+    """
+
+    def __init__(self):
+        self.owe_lf = False
+
+    def convert(self, data):
+        if self.owe_lf:
+            self.owe_lf = False
+            if data[:1] == b"\n":
+                return data[1:]
+            data = b"\n" + data
+        out = bytearray()
+        i = 0
+        n = len(data)
+        while i < n:
+            b = data[i:i + 1]
+            if b == b"\r":
+                nxt = data[i + 1:i + 2]
+                if nxt == b"\n":
+                    out += b"\r\n"
+                    i += 2
+                    continue
+                if i + 1 >= n:
+                    self.owe_lf = True
+                out += b"\r\n"
+                i += 1
+                continue
+            if b == b"\n":
+                out += b"\r\n"
+                i += 1
+                continue
+            out += b
+            i += 1
+        return bytes(out)
+
+
+class Codec:
+    """Byte passthrough or code page translation, decided once per session."""
+
+    def __init__(self, charset):
+        self.charset = None if charset in (None, "", "none", "binary") else charset
+
+    def inbound(self, data):
+        if not self.charset:
+            return data
+        return data.decode(self.charset, "replace").encode("utf-8")
+
+    def outbound(self, data):
+        if not self.charset:
+            return data
+        return data.decode("utf-8", "replace").encode(self.charset, "replace")
+
+    def decode(self, data):
+        """Text for humans, in whatever the terminal speaking to us expects."""
+        return data.decode(self.charset or "latin-1", "replace")
+
+
+class StreamLog:
+    """Both directions, byte-exact, in two files.
+
+    Two files rather than one interleaved log because `cmp` against a known
+    payload is the difference between proving escape sequences survive and
+    guessing that they do.
+    """
+
+    def __init__(self, prefix):
+        self.out = open(prefix + ".out", "wb") if prefix else None
+        self.inp = open(prefix + ".in", "wb") if prefix else None
+
+    def sent(self, data, redact=False):
+        if self.out:
+            self.out.write(b"[redacted]\r\n" if redact else data)
+            self.out.flush()
+
+    def received(self, data):
+        if self.inp:
+            self.inp.write(data)
+            self.inp.flush()
+
+    def close(self):
+        for f in (self.out, self.inp):
+            if f:
+                f.close()
+
+
+# ----------------------------------------------------------------- session ---
+
+
+class Session:
+    """One telnet connection, with login and command reading handled."""
+
+    def __init__(self, host, port, args):
+        self.args = args
+        self.sock = socket.create_connection((host, port), timeout=args.timeout)
+        self.sock.setblocking(False)
+        self.trace = [] if args.trace else None
+        self.nego = Negotiator(self._raw, trace=self.trace, ttype=args.ttype,
+                               want_naws=not args.no_naws)
+        self.codecs = Codec(args.charset)
+        self.endings = LineEndings()
+        self.log = StreamLog(args.log_raw)
+        self.prompt_re = re.compile(args.prompt_re or DEFAULT_PROMPT_RE)
+
+    # -- bytes ------------------------------------------------------------
+
+    def _raw(self, data):
+        try:
+            self.sock.sendall(data)
+        except OSError:
+            pass
+
+    def send_text(self, text, redact=False):
+        """Text as keystrokes would produce them: through the line translator."""
+        self.send_bytes(self.endings.convert(self.codecs.outbound(
+            text.encode("utf-8"))), redact=redact)
+
+    def send_bytes(self, data, redact=False):
+        self.log.sent(data, redact=redact)
+        self._raw(data)
+
+    def pump(self, seconds, sink=None):
+        """Reads for a while; returns the clean bytes received."""
+        end = now() + seconds
+        got = bytearray()
+        while now() < end:
+            try:
+                self.sock.settimeout(max(0.02, end - now()))
+                data = self.sock.recv(8192)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if not data:
+                break
+            clean = self.nego.feed(data)
+            if not clean:
+                continue
+            got += clean
+            self.log.received(clean)
+            if sink:
+                sink(self.codecs.inbound(clean))
+        return bytes(got)
+
+    # -- conversation -----------------------------------------------------
+
+    def start(self):
+        self.nego.open()
+
+    def login(self, user, password, timeout=20.0):
+        """Answers login/password prompts and stops at the first prompt."""
+        tail = ""
+        sent = {"user": False, "password": False}
+        end = now() + timeout
+        while now() < end:
+            tail += self.codecs.decode(self.pump(0.25))
+            low = tail.lower()
+            if user and not sent["user"] and "login" in low:
+                self.send_text(user + "\r\n", redact=True)
+                sent["user"] = True
+                tail = ""
+                continue
+            if password and not sent["password"] and "password" in low:
+                self.send_text(password + "\r\n", redact=True)
+                sent["password"] = True
+                tail = ""
+                continue
+            if sent["user"] and sent["password"] and self.at_prompt(tail):
+                break
+        return tail
+
+    def at_prompt(self, text):
+        return bool(text.strip()) and bool(self.prompt_re.search(text[-400:]))
+
+    def run(self, command, timeout=60.0, idle=1.2, sink=None):
+        """One command, and its output as text."""
+        return self.codecs.decode(self.run_bytes(command, timeout, idle, sink))
+
+    def run_bytes(self, command, timeout=60.0, idle=1.2, sink=None):
+        """Like run(), but undecoded -- for checking byte-for-byte transparency.
+
+        A charset conversion is invisible in decoded text, and that is exactly
+        the failure mode worth catching: the screen fills with accented letters
+        where box drawing should be. `sink` gets each chunk as it arrives, so a
+        long build log streams instead of appearing all at once.
+        """
+        self.send_text(command + "\r\n")
+        out = bytearray()
+        end, quiet = now() + timeout, now()
+        while now() < end:
+            chunk = self.pump(0.2)
+            if chunk:
+                out += chunk
+                quiet = now()
+                if sink:
+                    sink(self.codecs.inbound(chunk))
+            elif now() - quiet > idle:
+                break
+            # A prompt that has been sitting there for a moment means the
+            # command is done; without this every command costs the full idle.
+            if now() - quiet > 0.35 and self.at_prompt(
+                    self.codecs.decode(out[-200:])):
+                break
+        return bytes(out)
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+        self.log.close()
+
+
+# ------------------------------------------------------------ relay (default) ---
+
+
+def cmd_relay(args):
+    """The bridge: pty one way, socket the other, and no interpretation between."""
+    if not args.host:
+        warn("no --host (and ATUI_REMOTE_HOST is unset)")
+        return 2
+    try:
+        session = Session(args.host, args.port, args)
+    except OSError as exc:
+        warn("cannot reach %s:%d: %s" % (args.host, args.port, exc))
+        return 1
+
+    session.start()
+    if args.user and not args.no_login:
+        session.login(args.user, args.password)
+
+    if args.exec_cmd:
+        out = session.run(args.exec_cmd, timeout=args.run_timeout, idle=args.idle,
+                          sink=lambda b: os.write(1, b))
+        if not out.strip():
+            warn("command produced no output")
+        if args.trace:
+            sys.stderr.write("\n".join(session.nego.trace) + "\n")
+        session.close()
+        return 0
+
+    if args.cmd:
+        session.send_text(args.cmd + "\r\n")
+
+    stdin_fd = 0
+    resized = {"pending": False}
+
+    def on_winch(_signum, _frame):
+        resized["pending"] = True
+
+    have_winch = hasattr(signal, "SIGWINCH")
+    if have_winch:
+        signal.signal(signal.SIGWINCH, on_winch)
+
+    with RawTerminal(stdin_fd) as term:
+        # Whichever side echoes is settled by negotiation; by now the answer is
+        # known, and a server that refuses has to be compensated for locally.
+        # The forced case exists only so the bridge-test suite can prove its own
+        # echo check fails when echo really is doubled.
+        want_echo = args.force_local_echo or session.nego.server_echo is False
+        term.set_local_echo(want_echo)
+        last_size = get_winsize(stdin_fd) if is_tty(stdin_fd) else None
+
+        while True:
+            try:
+                readable, _, _ = select.select([session.sock, stdin_fd], [], [], 0.2)
+            except OSError as exc:
+                if exc.errno == errno.EINTR:
+                    continue         # a signal (SIGWINCH); the loop re-reads size
+                raise
+            term.set_local_echo(want_echo)
+
+            if resized["pending"]:
+                resized["pending"] = False
+                size = get_winsize(stdin_fd) if is_tty(stdin_fd) else None
+                if size and size != last_size:
+                    last_size = size
+                    session.nego.send_naws(*size)
+
+            if session.sock in readable:
+                try:
+                    data = session.sock.recv(8192)
+                except OSError:
+                    data = b""
+                if not data:
+                    break
+                clean = session.nego.feed(data)
+                if clean:
+                    session.log.received(clean)
+                    os.write(1, session.codecs.inbound(clean))
+
+            if stdin_fd in readable:
+                data = os.read(stdin_fd, 8192)
+                if not data:
+                    break
+                # Convert once: the translator is stateful across calls.
+                wire = session.endings.convert(session.codecs.outbound(data))
+                session.log.sent(wire)
+                session._raw(wire)
+
+    if not args.quiet:
+        sys.stderr.write("\r\natui-remote: connection closed\r\n")
+    session.close()
+    return 0
+
+
+# ------------------------------------------------------------------- serve ---
+
+
+def cmd_serve(args):
+    """A local fake target, which is the bridge's own test subject.
+
+    Small and deliberately a server: the bridge is only worth trusting once it
+    has been tested against something that negotiates, draws in colour and code
+    page 437, reports a window size and takes its time drawing -- none of which
+    a unit test can say anything about.
+    """
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", args.port))
+    srv.listen(1)
+    sys.stderr.write("atui-remote serve: listening on 127.0.0.1:%d (%s)\n"
+                     % (args.port, args.mode))
+    while True:
+        conn, _ = srv.accept()
+        sys.stderr.write("atui-remote serve: client connected\n")
+        if args.once:
+            _serve_client(conn, args)
+            break
+        # Threads, because the suite holds one session open while it opens a
+        # second to check a control case, and a target that can only serve one
+        # client at a time makes that read as "the bridge showed nothing".
+        threading.Thread(target=_serve_client, args=(conn, args),
+                         daemon=True).start()
+
+
+def _serve_client(conn, args):
+    try:
+        FakeTarget(conn, args).serve()
+    except OSError:
+        pass
+    finally:
+        conn.close()
+        sys.stderr.write("atui-remote serve: client gone\n")
+
+
+class FakeTarget:
+    """One client of the fake target.
+
+    It behaves like the thing we actually care about: a program that draws with
+    escape sequences, expects the terminal to tell it how big it is, and echoes
+    what it is typed exactly once. The `frames` mode exists only to make a
+    timing claim the tests can check -- that output produced two seconds apart
+    is *seen* two seconds apart, which is the only way to catch buffering.
+    """
+
+    def __init__(self, conn, args):
+        self.conn = conn
+        self.args = args
+        self.cols, self.rows = 80, 25
+        self.keys = 0
+        self.last = "-"
+        self.started = now()
+        self.frame_b = False
+        self.leftover = b""
+
+    def serve(self):
+        self.write(bytes([IAC, WILL, OPT_ECHO, IAC, WONT, OPT_SGA]))
+        self.conn.settimeout(0.1)
+        self.draw()
+        while True:
+            try:
+                data = self.conn.recv(4096)
+            except socket.timeout:
+                data = b""
+            except OSError:
+                return
+            if data:
+                clean = self.strip(data)
+                if clean:
+                    self.keys += len(clean)
+                    self.last = _describe(clean[-1:])
+                    # Echoed once, here. A local echo that should have been off
+                    # makes it twice, and that is what the echo check counts --
+                    # so this line must not be repainted away, and the counters
+                    # below have to leave the cursor exactly where the echo put
+                    # it.
+                    self.write(clean.replace(b"\r", b"\r\n"))
+                    self.status()
+            elif self.keys and self.args.idle_exit and \
+                    now() - self.started > self.args.idle_exit:
+                return
+            if self.args.mode == "frames" and not self.frame_b and \
+                    now() - self.started > self.args.frame_gap:
+                self.frame_b = True
+                self.write(b"\x1b[4;1HATUI-FRAME-B t=%dms\x1b[K"
+                           % int((now() - self.started) * 1000))
+
+    def write(self, data):
+        try:
+            self.conn.sendall(_telnet_escape(data))
+        except OSError:
+            pass
+
+    def status(self):
+        """Counters, on their own line, with the cursor preserved (SCP/RC)."""
+        self.write(b"\x1b[s\x1b[2;1Hkeys=%-4d last=%-6s NAWS=%dx%d\x1b[u"
+                   % (self.keys, self.last.encode(), self.cols, self.rows))
+
+    def draw(self):
+        out = bytearray()
+        out += b"\x1b[H\x1b[2J"
+        out += b"\x1b[1;7m" + b" ATUI-BRIDGE-TARGET ".ljust(79) + b"\x1b[0m\r\n"
+        self.write(bytes(out))
+        self.status()
+        out = bytearray()
+        out += b"\x1b[3;1HATUI-FRAME-A\r\n"
+        out += (b"\x1b[5;1H\x1b[31mred\x1b[0m \x1b[32mgreen\x1b[0m "
+                b"\x1b[34mblue\x1b[0m \x1b[36mcyan\x1b[0m\r\n")
+        out += b"\x1b[6;1H" + bytes([0xDA, 0xBF, 0xC0, 0xD9, 0xC4, 0xB3])
+        out += b" box drawing\r\n"
+        out += b"\x1b[8;1Htype: characters must appear exactly once\r\n"
+        out += b"\x1b[10;1H"          # echo starts on a row of its own
+        self.write(bytes(out))
+
+    def strip(self, data):
+        """Removes control sequences, answers them, and notes the window size."""
+        buf = self.leftover + data
+        out = bytearray()
+        i = 0
+        while i < len(buf):
+            if buf[i] != IAC:
+                out.append(buf[i])
+                i += 1
+                continue
+            if i + 1 >= len(buf):
+                break
+            cmd = buf[i + 1]
+            if cmd == IAC:
+                out.append(IAC)
+                i += 2
+                continue
+            if cmd in (WILL, WONT, DO, DONT):
+                if i + 2 >= len(buf):
+                    break
+                # Agree with whatever the client proposes; a test target that
+                # argues about options tests nothing.
+                self.write(bytes([IAC, DO if cmd == WILL else WONT, buf[i + 2]]))
+                i += 3
+                continue
+            if cmd == SB:
+                end = buf.find(bytes([IAC, SE]), i + 2)
+                if end < 0:
+                    break
+                body = buf[i + 2:end]
+                if len(body) >= 5 and body[0] == OPT_NAWS:
+                    size = struct.unpack(">HH", bytes(body[1:5]))
+                    if size != (self.cols, self.rows):
+                        self.cols, self.rows = size
+                        # Report the new size now: the resize check does not
+                        # type anything, and a real terminal repaints on resize.
+                        self.status()
+                i = end + 2
+                continue
+            i += 2
+        self.leftover = buf[i:]
+        return bytes(out)
+
+
+def _describe(b):
+    if not b:
+        return "-"
+    v = bytearray(b)[0]
+    if v == 13:
+        return "CR"
+    if v == 3:
+        return "^C"
+    return chr(v) if 32 <= v < 127 else "0x%02x" % v
+
+
+# ------------------------------------------------------------ bridge-test ----
+
+
+class Suite:
+    """Tiny pass/fail collector, so a failure names itself."""
+
+    def __init__(self):
+        self.fails = []
+
+    def check(self, ok, what):
+        print("  [%s] %s" % ("ok" if ok else "FAIL", what))
+        if not ok:
+            self.fails.append(what)
+
+    def report(self, name):
+        print()
+        if self.fails:
+            print("%s: %d FAILED" % (name, len(self.fails)))
+            for f in self.fails:
+                print("  - %s" % f)
+            return 1
+        print("%s: all checks passed" % name)
+        return 0
+
+
+def free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def cmd_bridge_test(args):
+    """Local acceptance suite: proves the bridge does not distort the screen.
+
+    Run against `serve`, so it works with the OS/2 machine switched off. Each
+    check fails for one specific reason:
+
+      screen   the target's drawing arrives at all
+      echo     typed characters arrive once -- rules out a double echo (local
+               cooked mode, or echoing something the server already echoed)
+      colour   SGR reaches the emulator
+      charset  code page 437 box drawing arrives as box drawing, not mojibake
+      naws     the session size, and `tui-test resize`, reach the far side
+      frames   frame A is visible before frame B arrives -- rules out buffering
+               anywhere in the path, which no amount of shell testing shows
+    """
+    suite = Suite()
+    if subprocess.run(["tui-test", "--help"], capture_output=True).returncode != 0:
+        warn("tui-test is not installed; this suite drives the bridge through it")
+        return 2
+
+    here = os.path.abspath(__file__)
+
+    # --- phase 1: a screen that reacts to input ---------------------------
+    port = free_port()
+    serve = subprocess.Popen([sys.executable, here, "serve", "--port", str(port)],
+                             stderr=subprocess.DEVNULL)
+    session = "atui-bridge-%d" % os.getpid()
+    time.sleep(0.4)
+    try:
+        run = subprocess.run(["tui-test", "--session", session, "run",
+                              "--cols", "80", "--rows", "25", "--",
+                              sys.executable, here, "--host", "127.0.0.1",
+                              "--port", str(port)],
+                             capture_output=True, text=True)
+        if run.returncode != 0:
+            warn("cannot start tui-test session: %s%s" % (run.stdout, run.stderr))
+            return 1
+        time.sleep(1.5)
+
+        def screen():
+            return subprocess.run(["tui-test", "--session", session, "text"],
+                                  capture_output=True, text=True).stdout
+
+        def expect(text):
+            return subprocess.run(["tui-test", "--session", session,
+                                   "expect", "text", text],
+                                  capture_output=True).returncode == 0
+
+        suite.check(expect("ATUI-BRIDGE-TARGET"), "screen: target banner visible")
+        suite.check(expect("red green blue cyan"), "colour: SGR text visible")
+        suite.check(any(c in screen() for c in BOX_CHARS),
+                    "charset: cp437 box drawing decoded")
+
+        subprocess.run(["tui-test", "--session", session, "type", "xyzq"])
+        time.sleep(0.6)
+        seen = screen().count("xyzq")
+        suite.check(seen == 1, "echo: typed once, seen %d time(s)" % seen)
+
+        # Control: with local echo deliberately forced on -- the cooked-mode bug
+        # this whole path is designed to avoid -- the check above must see the
+        # text twice. A check that cannot fail is not a check.
+        forced = _echo_count(here, port, session + "-echo", force_local_echo=True)
+        suite.check(forced >= 2,
+                    "echo: doubling is detected (control saw %d)" % forced)
+
+        got = _naws(screen())
+        suite.check(got == (80, 25),
+                    "naws: session size reported as 80x25 (%s)" % (got,))
+        subprocess.run(["tui-test", "--session", session, "resize", "60", "20"],
+                       capture_output=True)
+        time.sleep(0.8)
+        got = _naws(screen())
+        suite.check(got == (60, 20),
+                    "naws: resize reported as 60x20 (%s)" % (got,))
+    finally:
+        subprocess.run(["tui-test", "--session", session, "close"],
+                       capture_output=True)
+        _stop(serve)
+
+    # --- phase 2: two frames separated in time ----------------------------
+    port = free_port()
+    serve = subprocess.Popen([sys.executable, here, "serve", "--port", str(port),
+                              "--mode", "frames", "--frame-gap", "2.5"],
+                             stderr=subprocess.DEVNULL)
+    time.sleep(0.4)
+    try:
+        subprocess.run(["tui-test", "--session", session, "run", "--cols", "80",
+                        "--rows", "25", "--", sys.executable, here, "--host",
+                        "127.0.0.1", "--port", str(port)],
+                       capture_output=True)
+        time.sleep(0.8)
+        early = subprocess.run(["tui-test", "--session", session, "text"],
+                               capture_output=True, text=True).stdout
+        a_first = "ATUI-FRAME-A" in early and "ATUI-FRAME-B" not in early
+        time.sleep(2.5)
+        later = subprocess.run(["tui-test", "--session", session, "text"],
+                               capture_output=True, text=True).stdout
+        b_arrives = "ATUI-FRAME-B" in later
+        suite.check(a_first, "frames: first frame on screen before the second")
+        suite.check(b_arrives, "frames: second frame arrives while running")
+    finally:
+        subprocess.run(["tui-test", "--session", session, "close"],
+                       capture_output=True)
+        _stop(serve)
+
+    return suite.report("bridge-test")
+
+
+def _stop(proc):
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
+def _naws(screen):
+    m = re.search(r"NAWS=(\d+)x(\d+)", screen)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _echo_count(here, port, session, sample="xyzq", force_local_echo=False):
+    """A session of its own, and how many times `sample` ended up on screen."""
+    relay = [sys.executable, here, "--host", "127.0.0.1", "--port", str(port),
+             "--no-login"]
+    if force_local_echo:
+        relay.append("--force-local-echo")
+    subprocess.run(["tui-test", "--session", session, "run", "--cols", "80",
+                    "--rows", "25", "--"] + relay, capture_output=True)
+    time.sleep(1.2)
+    subprocess.run(["tui-test", "--session", session, "type", sample],
+                   capture_output=True)
+    time.sleep(0.7)
+    text = subprocess.run(["tui-test", "--session", session, "text"],
+                          capture_output=True, text=True).stdout
+    subprocess.run(["tui-test", "--session", session, "close"], capture_output=True)
+    return text.count(sample)
+
+
+# ------------------------------------------------------------------- probe ---
+
+
+def cmd_probe(args):
+    """Ask a real target the questions the port depends on.
+
+    Two of these decide the shape of the OS/2 work and cannot be answered from
+    documentation: whether escape sequences survive the server untouched, and
+    whether output is delivered while a program is running. A full-screen
+    application needs both; a shell needs neither, which is why a working login
+    proves much less than it appears to.
+    """
+    try:
+        session = Session(args.host, args.port, args)
+    except OSError as exc:
+        print("probe: cannot reach %s:%d: %s" % (args.host, args.port, exc))
+        return 1
+
+    report = []
+    session.start()
+    # The login prompt is part of the stream: reading a banner "first" here
+    # would consume `login:` and the next command sent would arrive at the
+    # server as a username, which is a confusing way to fail.
+    if args.user:
+        seen_text = session.login(args.user, args.password)
+    else:
+        seen_text = session.codecs.decode(session.pump(2.0))
+    prompt = session.at_prompt(seen_text)
+    if not prompt:
+        print("probe: %s:%d -- no prompt after login attempt" % (args.host,
+                                                                 args.port))
+        print("  last text: %r" % (seen_text[-120:],))
+        print("  try --trace, or --prompt-re if the target's prompt is unusual")
+        session.close()
+        return 1
+    report.append(("login", "ok", ""))
+
+    # `set` rather than `ver`: the command line itself gets echoed, so a marker
+    # in it would prove nothing. COMSPEC appears in the output only if the
+    # command actually ran and its output came back.
+    out = session.run("set", timeout=20)
+    report.append(("run command", "ok" if "COMSPEC" in out else "no output seen",
+                   "%d bytes" % len(out)))
+
+    # Echo: does a typed character come back? How input is set up follows from
+    # this alone, and it differs between telnet servers.
+    session.send_bytes(b"q")
+    echoed = session.codecs.decode(session.pump(1.0))
+    # The `q` is still sitting in the shell's input line: leave it there and the
+    # next command runs as `qtype ...`, which looks like a transparency failure
+    # and is not one. Ctrl-C abandons the line.
+    session.send_bytes(b"\x03")
+    session.pump(0.5)
+    report.append(("echo", "server echoes" if "q" in echoed else "no echo",
+                   "local echo will be %s"
+                   % ("off" if "q" in echoed else "on")))
+
+    # Transparency, checked as bytes: make the target emit sequences and high-bit
+    # characters we chose, and compare. Reading the screen would hide the one
+    # failure that matters here, because a charset conversion still looks like
+    # text. ESC-based sequences and the alternate character set are what an ANSI
+    # backend emits, so both are checked; the high bytes report whether the
+    # target is sending CP437 unchanged or a translation of it.
+    high = bytes(range(0x80, 0x88))
+    payload = (b"\x1b[2J\x1b[H\x1b[31mATUI-ESCAPE-OK\x1b[0m"
+               b"\x1b(0lkmjqx\x1b(B" + high + b"\r\n")
+    if _ftp_put(args, payload, args.probe_file):
+        raw = session.run_bytes("type %s" % args.probe_file, timeout=20, idle=2.0)
+        seq = b"\x1b[31m" in raw and b"ATUI-ESCAPE-OK" in raw
+        report.append(("escape sequences", "transparent" if seq else "NOT RECEIVED",
+                       "%d bytes back" % len(raw)))
+        acs = b"\x1b(0lkmjqx\x1b(B" in raw
+        report.append(("alternate charset", "passes" if acs else "MANGLED",
+                       "ESC ( 0 ... ESC ( B"))
+        # The high bytes follow the alternate-character-set reset; collect them
+        # ignoring line endings, since a server may re-emit those.
+        got = bytearray()
+        if acs:
+            for b in raw[raw.rfind(b"\x1b(B") + 3:]:
+                if b >= 0x80:
+                    got.append(b)
+                    if len(got) == len(high):
+                        break
+        got = bytes(got)
+        if got == high:
+            verdict = "raw (CP437 unchanged)"
+        elif got and got[0] == 0xC7:
+            verdict = "CONVERTED to Latin-1"
+        else:
+            verdict = "unrecognised (%s)" % (got.hex(" ") or "nothing")
+        report.append(("high-bit bytes", verdict,
+                       "ttype=%s; sent %s, got %s"
+                       % (args.ttype, high[:4].hex(" "), got[:4].hex(" "))))
+        if got and got[0] == 0xC7:
+            report.append(("  advice", "report a different terminal type",
+                           "--ttype pcansi (or xterm) sends CP437 unchanged"))
+    else:
+        report.append(("escape sequences", "skipped", "FTP upload failed"))
+
+    # Leave nothing behind: a probe that litters the target gets run less often.
+    if args.probe_file:
+        session.run("del %s" % args.probe_file, timeout=10, idle=0.6)
+
+    # Does output arrive while the program runs? The IBM stack's ping takes the
+    # packet count as a positional argument, so this one terminates by itself.
+    out = session.run("ping 127.0.0.1 56 4", timeout=25, idle=2.0)
+    lines = [l for l in out.splitlines() if "bytes from" in l]
+    report.append(("streams while running", "yes" if len(lines) >= 2 else "unproven",
+                   "%d output lines" % len(lines)))
+
+    if session.nego.trace is not None:
+        report.append(("negotiation", "%d events" % len(session.nego.trace),
+                       "; ".join(session.nego.trace[-5:])))
+
+    width = max(len(r[0]) for r in report)
+    print("probe: %s:%d" % (args.host, args.port))
+    for what, verdict, detail in report:
+        print("  %-*s  %-26s %s" % (width, what, verdict, detail))
+    session.close()
+    return 0
+
+
+# --------------------------------------------------------------------- ftp ---
+
+
+def _ftp(args):
+    ftp = ftplib.FTP(timeout=args.timeout)
+    ftp.connect(args.host, args.ftp_port)
+    ftp.login(args.user, args.password)
+    # Passive first, active second: an OS/2-era server may support only one,
+    # and which one is not something to guess about.
+    for pasv in (True, False):
+        try:
+            ftp.set_pasv(pasv)
+            ftp.voidcmd("PWD")
+            ftp.pasv = pasv
+            return ftp
+        except ftplib.all_errors:
+            continue
+    return ftp
+
+
+def _ftp_put(args, payload, remote):
+    try:
+        ftp = _ftp(args)
+        directory, name = remote.rsplit("\\", 1) if "\\" in remote else ("", remote)
+        if directory:
+            try:
+                ftp.cwd(directory)
+            except ftplib.all_errors:
+                # A scratch directory that does not exist yet is the normal case
+                # on a fresh target, not a reason to give up.
+                try:
+                    ftp.mkd(directory)
+                    ftp.cwd(directory)
+                except ftplib.all_errors:
+                    return False
+        ftp.storbinary("STOR %s" % name, io.BytesIO(payload))
+        ftp.quit()
+        return True
+    except (ftplib.all_errors, OSError) as exc:
+        warn("ftp put failed: %s" % exc)
+        return False
+
+
+def _ftp_get(args, remote, local):
+    try:
+        ftp = _ftp(args)
+        directory, name = remote.rsplit("\\", 1) if "\\" in remote else ("", remote)
+        if directory:
+            ftp.cwd(directory)
+        buf = io.BytesIO()
+        ftp.retrbinary("RETR %s" % name, buf.write)
+        ftp.quit()
+        with open(local, "wb") as f:
+            f.write(buf.getvalue())
+        return len(buf.getvalue())
+    except (ftplib.all_errors, OSError) as exc:
+        warn("ftp get failed: %s" % exc)
+        return None
+
+
+def cmd_put(args):
+    with open(args.file, "rb") as f:
+        data = f.read()
+    if not _ftp_put(args, data, args.remote):
+        return 1
+    print("put: %s -> %s (%d bytes)" % (args.file, args.remote, len(data)))
+    return 0
+
+
+def cmd_get(args):
+    size = _ftp_get(args, args.remote, args.file)
+    if size is None:
+        return 1
+    print("get: %s -> %s (%d bytes)" % (args.remote, args.file, size))
+    return 0
+
+
+# -------------------------------------------------------------------- main ---
+
+
+def add_common(p):
+    p.add_argument("--host", default=DEFAULT_HOST)
+    p.add_argument("--port", type=int, default=23)
+    p.add_argument("--ftp-port", type=int, default=21)
+    p.add_argument("--user", default=DEFAULT_USER)
+    p.add_argument("--password", default=DEFAULT_PASSWORD)
+    p.add_argument("--charset", default=DEFAULT_CHARSET,
+                   help="target character set (default cp437; none for raw bytes)")
+    p.add_argument("--ttype", default=DEFAULT_TTYPE,
+                   help="terminal type to report (default %s)" % DEFAULT_TTYPE)
+    p.add_argument("--no-naws", action="store_true", help="do not report window size")
+    p.add_argument("--timeout", type=float, default=15.0)
+    p.add_argument("--prompt-re", default="",
+                   help="regex matching the target prompt (default: a shell prompt)")
+    p.add_argument("--trace", action="store_true", help="report negotiations")
+
+
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog="atui-remote", description="telnet bridge for driving a remote atui target",
+        epilog="Run it under tui-test:\n"
+               "  tui-test run --cols 80 --rows 25 -- tools/atui-remote --host HOST\n")
+    add_common(p)
+    p.add_argument("--cmd", default="", help="run this once logged in, then interact")
+    p.add_argument("--exec", dest="exec_cmd", default="",
+                   help="non-interactive: run this, print output, exit")
+    p.add_argument("--no-login", action="store_true", help="do not answer login prompts")
+    p.add_argument("--run-timeout", type=float, default=120.0)
+    p.add_argument("--idle", type=float, default=1.2,
+                   help="finish a command after this many quiet seconds")
+    p.add_argument("--quiet", action="store_true")
+    p.add_argument("--force-local-echo", action="store_true",
+                   help="test hook: keep the local echo on, as cooked mode would")
+    p.add_argument("--log-raw", default="",
+                   help="write PREFIX.out / PREFIX.in byte-exact")
+
+    sub = p.add_subparsers(dest="sub")
+
+    s = sub.add_parser("serve", help="local fake target")
+    add_common(s)
+    s.add_argument("--mode", default="screen", choices=("screen", "frames"))
+    s.add_argument("--frame-gap", type=float, default=2.0)
+    s.add_argument("--idle-exit", type=float, default=0.0,
+                   help="hang up after this long with no input (0: never)")
+    s.add_argument("--once", action="store_true", help="serve one client and exit")
+
+    sub.add_parser("bridge-test", help="local acceptance suite (needs tui-test)")
+
+    q = sub.add_parser("probe", help="ask a real target the port's questions")
+    add_common(q)
+    q.add_argument("--probe-file", default="d:\\atui\\atui-esc.bin")
+
+    u = sub.add_parser("put", help="FTP one file to the target")
+    add_common(u)
+    u.add_argument("file")
+    u.add_argument("remote")
+
+    g = sub.add_parser("get", help="FTP one file from the target")
+    add_common(g)
+    g.add_argument("remote")
+    g.add_argument("file")
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(sys.argv[1:] if argv is None else argv)
+    if args.sub == "serve":
+        return cmd_serve(args)
+    if args.sub == "bridge-test":
+        return cmd_bridge_test(args)
+    if args.sub == "probe":
+        return cmd_probe(args)
+    if args.sub == "put":
+        return cmd_put(args)
+    if args.sub == "get":
+        return cmd_get(args)
+    return cmd_relay(args)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

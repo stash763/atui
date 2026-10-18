@@ -12,6 +12,9 @@ atui.exe
 # local per-user atui config (not version controlled)
 .atui/atui.json
 
+# host-side tooling (tools/atui-remote is Python; nothing shipped depends on it)
+__pycache__/
+
 # editors
 *.swp
 *.swo
