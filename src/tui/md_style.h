@@ -47,8 +47,17 @@ enum Role
     rNumber,
     rFunction,
     rPreproc,
-    rOperator
+    rOperator,
+
+    // The input area at the bottom of the transcript. It is drawn by the same
+    // view, so it shares this numbering rather than keeping one of its own.
+    rInput,        // the text being typed
+    rInputSep      // the rule above it
 };
+
+// One past the last role: the per-role attribute tables in theme.cpp are sized
+// with it, so a new role has to be added to every one of them, and here.
+const int rRoleCount = rInputSep + 1;
 
 // A run of text that shares a single Role.
 struct Span

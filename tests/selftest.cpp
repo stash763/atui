@@ -256,6 +256,90 @@ int test_theme_switch()
     return 0;
 }
 
+// The two questions the theme tests ask about an attribute, answered in whichever
+// terms this build's color model offers: an attribute is two nibbles of a byte in
+// the legacy model and two TColor values in the modern one.
+static bool attrReadable( TColorAttr attr )
+{
+#if defined( TVISION_LEGACY_COLORS )
+    return (attr & 0x0F) != ((attr >> 4) & 0x0F);
+#else
+    return !(attr.getForeground() == attr.getBackground());
+#endif
+}
+
+static bool sameBackground( TColorAttr a, TColorAttr b )
+{
+#if defined( TVISION_LEGACY_COLORS )
+    return ((a >> 4) & 0x0F) == ((b >> 4) & 0x0F);
+#else
+    return a.getBackground() == b.getBackground();
+#endif
+}
+
+int test_theme_role_contrast()
+{
+    // A role is how the transcript asks for a color, so every piece of text
+    // atui draws goes through this table: foreground on the same color would
+    // come out invisible, and replies would vanish one word at a time. Sixteen
+    // colors is easy to paint into a corner with, which is exactly when this
+    // test earns its keep.
+    int unchanged = 0;
+    for( int r = 0; r < atui::tui::rRoleCount; ++r )
+    {
+        atui::tui::setTheme( atui::tui::ThemeClassic );
+        TColorAttr classic = atui::tui::roleAttr( atui::tui::Role( r ) );
+        atui::tui::setTheme( atui::tui::ThemeDark );
+        TColorAttr dark = atui::tui::roleAttr( atui::tui::Role( r ) );
+        if( !attrReadable( classic ) ) return -(2 * r + 1);
+        if( !attrReadable( dark ) ) return -(2 * r + 2);
+        if( classic == dark ) ++unchanged;
+    }
+    // Both themes have to be designs in their own right; a dark theme that
+    // handed back the classic colors would pass every assertion above.
+    if( unchanged > atui::tui::rRoleCount / 4 )
+        return -100;
+
+    // Code reads as a panel inside the prose, which needs its own background.
+    atui::tui::setTheme( atui::tui::ThemeDark );
+    if( sameBackground( atui::tui::roleAttr( atui::tui::rNormal ),
+                        atui::tui::roleAttr( atui::tui::rCode ) ) )
+        return -101;
+    // ...and the input line is a role like any other, not a color literal in
+    // the view that draws it.
+    if( !attrReadable( atui::tui::roleAttr( atui::tui::rInput ) ) )
+        return -102;
+
+    atui::tui::setTheme( atui::tui::ThemeClassic );
+    return 0;
+}
+
+int test_theme_palette_contrast()
+{
+    // The application palette colors everything atui does not paint itself:
+    // dialogs, buttons, menus, scrollbars. Both themes are derived from the
+    // classic cpAppColor bytes, and a mapping that put text on its own color
+    // only shows up later as a dialog that appears empty.
+    for( int t = atui::tui::ThemeClassic; t <= atui::tui::ThemeDark; ++t )
+    {
+        atui::tui::setTheme( atui::tui::Theme( t ) );
+        TPalette& palette = atui::tui::themePalette();
+        if( !(palette[0] == 135) )
+            return -1;
+        int colored = 0;
+        for( int i = 1; i <= 135; ++i )
+        {
+            if( palette[i] == 0 ) continue;  // subpalette terminators
+            if( !attrReadable( palette[i] ) ) return -(1000 * t + i);
+            ++colored;
+        }
+        if( colored < 100 )
+            return -2;  // a palette that was never filled in
+    }
+    atui::tui::setTheme( atui::tui::ThemeClassic );
+    return 0;
+}
+
 int test_provider_singleton_mutable()
 {
     // providerSettings() is one process-wide instance the Providers dialog
@@ -2717,6 +2801,8 @@ void init()
     register_test( "theme: palette layout", &test_theme_palette_layout );
     register_test( "theme: dark recolor", &test_theme_dark_recolor );
     register_test( "theme: switch", &test_theme_switch );
+    register_test( "theme: role contrast", &test_theme_role_contrast );
+    register_test( "theme: palette contrast", &test_theme_palette_contrast );
     register_test( "provider: singleton mutable", &test_provider_singleton_mutable );
     register_test( "provider: store add/switch/delete", &test_provider_store );
     register_test( "provider: model lists", &test_provider_model_lists );

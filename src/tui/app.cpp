@@ -528,84 +528,9 @@ public:
 
     virtual TColorAttr mapColor( uchar index )
     {
-        const bool dark = ( currentTheme() == ThemeDark );
-        const int bg = 0x152238;   // dark navy background
-        const int cbg = 0x0C1626;  // code background (slightly darker)
-        if( dark )
-        {
-            switch( index )
-            {
-                // transcript blocks
-                case rUser:      return TColorAttr( TColor( 0x9BD49E ), TColor( bg ) );
-                case rThinking:  return TColorAttr( TColor( 0x8A94A0 ), TColor( bg ) );
-                case rHead:      return TColorAttr( TColor( 0x74CFCF ), TColor( bg ) );
-                case rStatus:    return TColorAttr( TColor( 0xE9CB94 ), TColor( bg ) );
-                case rTool:      return TColorAttr( TColor( 0x9CDCF0 ), TColor( bg ),
-                                                    slBold );
-                case rToolOut:   return TColorAttr( TColor( 0xB6C2CF ), TColor( bg ) );
-                // markdown inline
-                case rHeading:   return TColorAttr( TColor( 0xF7D488 ), TColor( bg ),
-                                                    slBold );
-                case rBold:      return TColorAttr( TColor( 0xF5EDCB ), TColor( bg ),
-                                                    slBold );
-                case rItalic:    return TColorAttr( TColor( 0xCFE3B8 ), TColor( bg ),
-                                                    slItalic );
-                case rBoldItalic:return TColorAttr( TColor( 0xF5EDCB ), TColor( bg ),
-                                                    slBold | slItalic );
-                case rCodeInline:return TColorAttr( TColor( 0xE8BFA0 ), TColor( cbg ) );
-                case rLink:      return TColorAttr( TColor( 0x7FB6FF ), TColor( bg ),
-                                                    slUnderline );
-                case rQuote:     return TColorAttr( TColor( 0xA9B2BC ), TColor( bg ) );
-                case rMarker:    return TColorAttr( TColor( 0x74CFCF ), TColor( bg ) );
-                case rStrike:    return TColorAttr( TColor( 0x7E8794 ), TColor( bg ) );
-                case rDim:       return TColorAttr( TColor( 0x8A94A0 ), TColor( bg ) );
-                // code + syntax (all on the code background)
-                case rCode:      return TColorAttr( TColor( 0xE6E1CE ), TColor( cbg ) );
-                case rKeyword:   return TColorAttr( TColor( 0xF08B9A ), TColor( cbg ) );
-                case rType:      return TColorAttr( TColor( 0x7FD1A6 ), TColor( cbg ) );
-                case rString:    return TColorAttr( TColor( 0xC9C17A ), TColor( cbg ) );
-                case rChar:      return TColorAttr( TColor( 0xC9C17A ), TColor( cbg ) );
-                case rComment:   return TColorAttr( TColor( 0x6E7683 ), TColor( cbg ),
-                                                    slItalic );
-                case rNumber:    return TColorAttr( TColor( 0xE0A86B ), TColor( cbg ) );
-                case rFunction:  return TColorAttr( TColor( 0x87B0F0 ), TColor( cbg ) );
-                case rPreproc:   return TColorAttr( TColor( 0xB88AD0 ), TColor( cbg ) );
-                case rOperator:  return TColorAttr( TColor( 0xC8C4B6 ), TColor( cbg ) );
-                case rNormal:
-                default:         return TColorAttr( TColor( 0xF2E4AC ), TColor( bg ) );
-            }
-        }
-        switch( index )
-        {
-            case rUser:      return TColorAttr( 0x1A );
-            case rThinking:  return TColorAttr( 0x17 );
-            case rHead:      return TColorAttr( 0x13 );
-            case rStatus:    return TColorAttr( 0x1D );
-            case rTool:      return TColorAttr( 0x1F );   // bright white command
-            case rToolOut:   return TColorAttr( 0x17 );   // gray output
-            case rHeading:   return TColorAttr( 0x1E );
-            case rBold:      return TColorAttr( 0x1F );
-            case rItalic:    return TColorAttr( 0x17 );
-            case rBoldItalic:return TColorAttr( 0x17 );
-            case rCodeInline:return TColorAttr( 0x71 );
-            case rLink:      return TColorAttr( 0x19 );
-            case rQuote:     return TColorAttr( 0x17 );
-            case rMarker:    return TColorAttr( 0x1B );
-            case rStrike:    return TColorAttr( 0x17 );
-            case rDim:       return TColorAttr( 0x17 );
-            case rCode:      return TColorAttr( 0x17 );
-            case rKeyword:   return TColorAttr( 0x1E );
-            case rType:      return TColorAttr( 0x1A );
-            case rString:    return TColorAttr( 0x1D );
-            case rChar:      return TColorAttr( 0x1D );
-            case rComment:   return TColorAttr( 0x18 );
-            case rNumber:    return TColorAttr( 0x1F );
-            case rFunction:  return TColorAttr( 0x1B );
-            case rPreproc:   return TColorAttr( 0x1D );
-            case rOperator:  return TColorAttr( 0x17 );
-            case rNormal:
-            default:         return TColorAttr( 0x1E );
-        }
+        // Roles are the styling vocabulary (see md_style.h); what a role looks
+        // like is the theme's business (see theme.h).
+        return roleAttr( Role( index ) );
     }
 
 private:
@@ -837,10 +762,10 @@ public:
     {
         // Fill everything, then paint row 0 (the separator) and the text rows.
         for( int r = 0; r < size.y; ++r )
-            writeChar( 0, (short) r, ' ', rInput, (ushort) size.x );
+            writeChar( 0, (short) r, ' ', (uchar) rInput, (ushort) size.x );
 
         if( size.y >= 1 )
-            writeChar( 0, 0, '-', rSep, (ushort) size.x );
+            writeChar( 0, 0, '-', (uchar) rInputSep, (ushort) size.x );
 
         rewrap( columnWidth() );
 
@@ -868,7 +793,7 @@ public:
             {
                 const std::string &row = rows_[idx];
                 if( !row.empty() )
-                    writeStr( 0, (short)(r + 1), row.c_str(), rInput );
+                    writeStr( 0, (short)(r + 1), row.c_str(), (uchar) rInput );
             }
         }
 
@@ -1058,16 +983,9 @@ protected:
         }
     }
 
-    static const uchar rInput = 1;
-    static const uchar rSep   = 2;
-
     virtual TColorAttr mapColor( uchar index )
     {
-        const bool dark = ( currentTheme() == ThemeDark );
-        if( index == rSep )
-            return TColorAttr( TColor( 0x3A4A63 ), TColor( 0x152238 ) );
-        return TColorAttr( TColor( dark ? 0xF2E4AC : 0x000000 ),
-                           TColor( dark ? 0x152238 : 0xFFFFFF ) );
+        return roleAttr( Role( index ) );
     }
 
     std::string              buf_;
