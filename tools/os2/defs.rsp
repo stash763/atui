@@ -9,5 +9,4 @@
 -i=tvision\include\tvision
 -i=tvision\include\tvision\compat\windows
 -i=src
--DNO_STREAMABLE
 -DATUI_VERSION="0.0.0-os2"

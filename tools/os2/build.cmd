@@ -133,7 +133,11 @@ rem text `%~nf`, and `if /I not` dies with SYS1079 "not was unexpected at this
 rem time" (both measured with a two-form test batch).
 for %%f in (tvision\source\tvision\*.cpp) do if not "%%f"=="tvision\source\tvision\geninc.cpp" (echo [tv] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\tv\ %%f >> %LOG% 2>&1 || set RC=1)
 
-if "%1"=="tvision" goto summary
+rem Archiving is part of building the library: stopping at the objects leaves
+rem obj\tvision.lib from the previous run in place, and a link then reports the
+rem *last* build's undefined symbols -- identical output, no sign that the fix
+rem under test was never tried.  Measured the hard way on a 53-symbol list.
+if "%1"=="tvision" goto lib
 
 :atui
 echo ================== atui ==================
@@ -192,6 +196,14 @@ if exist link.rsp del link.rsp
 echo system os2v2 > link.rsp
 echo name %3 >> link.rsp
 echo op m >> link.rsp
+rem  A stack size of our own, set while a "Stack Overflow!" from the target was
+rem  being run down.  It was not the stack: doubling it changed nothing, because
+rem  the recursion was an unbounded one in the screen cell's own assignment
+rem  operator (fork ab73350), and the message was the target's, not tvision's.
+rem  It stays because the default for a character-mode OS/2 program was never
+rem  measured and tvision's drawing walks the view tree by recursion, and 256 KB
+rem  is nothing to ask of a machine that has 300 MB free.
+echo option stack=256k >> link.rsp
 for %%f in (obj\one\*.obj) do echo file %%f >> link.rsp
 echo library obj\tvision.lib >> link.rsp
 echo library os2386.lib >> link.rsp

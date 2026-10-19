@@ -1941,12 +1941,15 @@ exact about *how*, because the first attempt at it was the wrong shape:
   what a directory entry stores; `struct ftime` is guarded so either header may
   define it. `dir.h` also gained `<direct.h>` for Watcom, whose `unistd.h` does not
   declare `chdir`.
-* **Two switches, both borrowed from the Borland build.** `-xr`, because the one
-  `dynamic_cast` in the library is the streamable-object registry. And
-  `-DNO_STREAMABLE`, the option `project/makefile` already offers, which drops the
-  `TStreamableClass` registration objects from the `s*.cpp`/`nm*.cpp` files --
-  registrations for reading views out of a stream, which atui never does, and which
-  is 40-odd objects of dead weight on a target where size matters.
+* **One switch borrowed from the Borland build, and one that turned out not to
+  exist.** `-xr`, because the one `dynamic_cast` in the library is the
+  streamable-object registry. `-DNO_STREAMABLE`, which `project/makefile` offers,
+  was tried first and is gone: it hides each class's `name`/`read`/`write` while
+  the class's vtable goes on referring to all three, so what it produces is 53
+  undefined symbols rather than a smaller library. Dropping it cost nothing -- the
+  streaming code compiled with no errors at all -- so it is not in `defs.rsp`, and
+  the size saving has to come from somewhere that is actually dead.
+
 * **`geninc.cpp` is left out of the loop** (it generates DOS driver tables at build
   time; CMake excludes it too), and excluding it has to compare whole paths, since
   this command processor has neither `%%~n` modifiers nor `if /I`.
@@ -2050,20 +2053,127 @@ symbols in three groups**, which is the port's work list in the linker's words:
    apart, and drive the screen with VT escapes, since VIO belongs to a session
    the telnet server cannot create.
 2. **53 streamable symbols** — `Tx::name`, `Tx::read`, `Tx::write` for 21
-   classes. These are the consequence of `-DNO_STREAMABLE`, which the fork's
-   Borland build offers: it drops the `TStreamableClass` registrations, but the
-   classes still reference their own `name`/`read`/`write`. The flag therefore
-   does not produce a linkable library at this layer. The next thing to try is
-   building without it — the fork has already taught `tobjstrm.cpp` the
-   pre-standard streambuf, so the streaming code may well compile — before
-   anyone writes stubs for 53 symbols.
+   classes. These were the consequence of `-DNO_STREAMABLE`, which the fork's
+   Borland build offers: it drops the `TStreamableClass` registrations, but each
+   class's vtable still refers to its own `name`/`read`/`write`, so hiding them
+   cannot produce a linkable library. *Measured, and the flag is gone*: with
+   `-DNO_STREAMABLE` dropped from `tools/os2/defs.rsp` the streaming code compiled
+   with **no errors** and the 53 symbols went with it. Nothing had to be written
+   for them, which is the question this item was asking.
 3. **`TView::writeBuf` and `TView::writeLine` taking `const TScreenCell *`** —
    declared for the legacy colour model in `views.h`, but in `tvwrite.cpp` the
    first sits inside a `#if defined( __BORLANDC__ )` block and the second under
    `#if !defined( __BORLANDC__ ) && __cplusplus >= 201103L`. So a compiler that
    takes the legacy model *without* C++11 — which is exactly Watcom — has the
-   declarations and neither definition. A fork fix: answer the condition the
-   header declares them under.
+   declarations and neither definition. Fixed in the fork at `5c8d638`, which puts
+   the declarations under the test the definitions use. A header that promises an
+   overload nothing defines is a link error, and the compile that passed is why it
+   stayed hidden.
+
+## The classic library links, and a tvision program draws (measured 2026-10-19)
+
+That work list is closed: **106 undefined symbols to none**, and the program that
+asked for them runs. `tools/os2/tvrun.cpp` is now the reference program -- an
+application, a dialog with a label, an input line and two buttons, its own event
+loop so the screen can be looked at:
+
+    ok main
+    ok application
+    ok dialog inserted
+      after insert: focus=000f12b0 size=(32,1) origin=(9,5)
+      key 1c0d text ' ' len 0            <- Enter: the default button answers
+      broadcast 000e                       (cmDefault), and cmOK follows it
+      key 2368 text 'h' len 1            <- typed, and 'h' appears in the field
+      key 0f09                           <- Tab: focus 32x1 -> 12x2, the OK button
+      key 011b ends the loop             <- Esc
+    ok leaving                           exit status 0, screen restored
+
+The screen, read back through `tui-test cells`: a stippled desktop, a framed dialog
+titled `atui on OS/2`, the label in black on the dialog's grey, the input line white
+on blue, the focused button on cyan with its 3-D shadow, and `Alt-X Exit` in the
+status line. Every one of those is a BIOS attribute byte from tvision's own palette
+carried through the driver as SGR -- the 16-colour theme work needs no change to
+look right here, which was the point of it.
+
+The driver is `tvision/source/tvision/hardwvos2.cpp` (fork `76c15cb`), and its own
+header comment carries the design and the limits: escapes out of stdout, keys in
+through `kbhit`/`getch`, no VIO (measured above), no shift state for ordinary keys
+because a byte stream does not carry it, Home and End left as the two characters
+this session delivers, no clipboard because the Presentation Manager clipboard
+belongs to a session this process does not have.
+
+**What stopped the first program was not the driver, and its symptom lied.** The
+target printed `Stack Overflow!` from inside `new TApplication`. A 256 KB stack
+(`option stack=` in the link directives, kept -- it is worth having regardless)
+changed nothing, which is how recursion was separated from a stack too small. Then
+in stages: the five objects `TAppInit` builds, then `TProgram`'s constructor body,
+then the four calls inside `TGroup::insert`, then the three statements of
+`TBackground::draw`, each stage a program that writes a line before it acts. That
+landed on a single `TDrawBuffer::moveChar` writing *one* cell into a valid buffer.
+The cause was two lines in the fork: the legacy `TScreenCell`'s operators reach
+their bytes by casting `*this` to a `ushort` reference, and for a cast to a
+reference type a class conversion function is tried first -- so `operator ushort()`
+calls `operator ushort()`, and the copy assignment gets there through its
+right-hand operand. Every cell copy is infinite recursion on a compiler that
+follows that rule; fixed member by member in fork `ab73350`. Worth remembering that
+this code has been in the tree through every Linux and DOS build, because none of
+them compiles that branch.
+
+**How that last step was actually done**, since it is the reusable part: reading the
+library was not going to find a cycle, so the library was instrumented. `TVTRACE`
+calls appending to `d:\atui\tvtrace.log` were added to the draw path
+(`tview.cpp`, `tgroup.cpp`, `tvwrite.cpp`, `tvexposd.cpp`, `tbkgrnd.cpp`) behind
+`#ifdef TV_TRACE`, `-DTV_TRACE` was added to `defs.rsp`, and the library rebuilt.
+The trace said in eleven lines what had taken four probe programs to narrow to a
+function, and it was reverted afterwards (`git checkout` on those five files) --
+instrumentation that ships is instrumentation that rots. Two cautions from doing
+it: scripted edits of tvision sources must preserve CRLF or the whole file shows as
+rewritten (`git ls-files --eol` says what is stored), and a *one-file* instrumented
+copy can be compiled into `obj\one` and linked ahead of `tvision.lib` instead of
+rebuilding the library at all, which is minutes rather than minutes-and-a-half.
+
+**Compiling is not linking, and linking is not archiving.** `tvision` mode used to
+stop after compiling, and the next `link` then reported the *previous* build's
+undefined symbols out of a `obj\tvision.lib` that had not been rewritten -- 106
+identical lines, which looked like a fix that had not taken. Mode `tvision` now
+falls through to `lib`. The general form: a build's real output is its artifact, so
+confirm the artifact (`get tvrun.exe` and check the size, or `del` it first and see
+it come back) before believing any log or exit line.
+
+**Sizes so far**, all unstripped with a map file, so each has slack in it: the plain
+C++ hello world 23,022 bytes; `tvhello` 254,697; `tvrun` (dialog, buttons, input
+line, event loop) **259,929**; the driver-only probe 40 KB. So the classic layer
+costs roughly 235 KB over a hello world, before `wstrip`. Against the 1.5 MB that
+was too big, that leaves room for atui itself, which is the number still to be
+measured.
+
+### Building and running it today
+
+    # from the workstation, everything through the bridge
+    tools/atui-remote sync                                  # mirror the tree
+    tui-test submit --session os2tv 'd:\atui\build.cmd tvision'    # the library, ~4 min
+    tui-test submit --session os2tv 'd:\atui\build.cmd link tvrun.cpp tvrun.exe'
+    tui-test submit --session os2tv 'd:\atui\tvrun.exe'
+    tui-test text  --session os2tv                # what the driver drew
+    tui-test cells --session os2tv 18 6 44 17     # and its attribute bytes
+    tui-test key press --session os2tv tab        # keys, by name
+    # program logs come back over FTP, which does not disturb the console:
+    tools/atui-remote get tvrun.log /tmp/tvrun.log
+
+Three traps, each of which produced a wrong conclusion before it was seen:
+
+* **A source file uploaded seconds ago can be compiled stale.** A `sync` followed
+  immediately by a build sometimes compiles the previous contents, and the compile
+  error names a line that no longer exists. Wait, or rebuild with `--no-sync`.
+* **An unrefreshed `build.log` means the batch never ran** -- `build.cmd` deletes
+  it on its first lines. `build` reports whatever log comes back, so a stale one
+  reads as success (this happened with `rc=0` and 19 lines, twice, for a build that
+  did not start). Check the log names the file it claims to have built.
+* **Nothing may be submitted to the session while a program holds the console.**
+  A running tvrun reads the submitted command line as keystrokes: the build command
+  never ran, and the trace filled with `d`, `:`, `\`, `a`, `t`, `u`, `i`. Keys
+  only, or end the program first. (`tui-test` sessions also survive a program that
+  quits on Esc, which makes the whole loop above possible.)
 
 ## Open question (minor, does not affect final rendering)
 
