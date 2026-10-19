@@ -27,6 +27,37 @@ C++ headers. Measured on the target, that theory is wrong twice over:
   our own forwarder sitting first on the include path, which is how this got
   noticed: the forwarder was correct, uploaded, and never opened.
 
+One exception to that second point, and it is a nastier one: the rule is about
+the *extensionless* name. A file in an `-i=` directory whose name is the standard
+one plus `.h` **does** capture the include. Measured with a directory holding
+nothing but an `iostream.h` that defines a marker: `#include <iostream>` opened
+it, not `D:\WATCOM\h\iostream`. Which means a directory of Borland-era header
+names can never be added to this include path — tvision's
+`include/tvision/compat/borland` is exactly such a directory, owning `iostream.h`,
+`fstream.h`, `iomanip.h`, `strstrea.h`, `mem.h` and `iosfwd.h`, and adding it
+quietly replaces all of those with headers that then include the real ones under a
+name which resolves back to themselves.
+
+
+## The two headers that are here, and why
+
+`dir.h` and `alloc.h`, each a one-line forwarder to tvision's own emulation in
+`include/tvision/compat/borland/`. Both are Borland RTL names that Open Watcom
+does not provide — from `D:\WATCOM\h`: `io.h`, `dos.h`, `mem.h`, `bios.h`,
+`direct.h` and `fcntl.h` are all there, `dir.h` and `alloc.h` are not — and the
+classic layer includes both by angle bracket: `<dir.h>` from six files
+(stddlg.cpp, tdircoll.cpp, tdirlist.cpp, tfillist.cpp and co) and `<alloc.h>`
+from four (tcollect.cpp, new.cpp, tfiledtr.cpp and tvision's own compat header).
+
+A forwarder rather than the directory itself, for the reason just given. And
+that is all that is needed: the compat headers reach their own siblings
+(`dir.h` includes `"_defs.h"`) with *quoted* includes, which resolve relative to
+the including file; angle includes do not (measured: a header asking for
+`<sibling>` did not find the `sibling.h` lying next to it). So `_defs.h` and
+`_null.h` need no entry here — nothing outside that directory asks for them
+except in branches only Borland takes.
+
+
 ## Two traps in the headers that *are* there
 
 Watcom 1.9's C++ library has files that exist in order to mislead you. Each of

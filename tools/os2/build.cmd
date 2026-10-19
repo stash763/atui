@@ -56,6 +56,34 @@ rem   -5       Pentium code, because that is what the box is.
 rem   -od      no optimisation while nothing compiles; -os returns when the
 rem            binary has to be small.
 rem   -w3      warnings visible.  A port that does not read them ships them.
+rem
+rem Nothing else goes in defs.rsp: it is a Watcom response file, and those have
+rem no comment syntax -- a '#' at the start of a line is taken for a file name
+rem and the compile dies with "unable to open '#'" (measured).  So the notes
+rem about its contents live here instead.
+rem
+rem The include paths mirror tv_add_private_includes() in
+rem tvision/CMakeLists.txt, which is how tvision's own sources are compiled:
+rem
+rem   compat\borland   the emulated Borland RTL (dir.h, io.h, malloc.h,
+rem                    iostream.h, ...).  The classic layer includes those
+rem                    names directly -- the README says its source still
+rem                    depends on them.
+rem   compat\windows   BOOL, DWORD, CHAR_INFO and friends, which hardware.h
+rem                    includes whenever __FLAT__ is defined; Watcom defines
+rem                    __FLAT__ by itself in a flat-model compile.
+rem
+rem CMake's fourth directory, compat\malloc, is deliberately NOT here.  It exists
+rem for systems whose C library has no malloc.h (macOS, mainly); Open Watcom has
+rem one, and putting the shim on the include path only hides the real one -- and
+rem the shim cannot even compile here, because it asks whether malloc_np.h exists
+rem with __has_include, which is C++17 (measured: E767 "unmatched left
+rem parenthesis" from inside the shim).
+rem
+rem No -D switches here for the same reason: which language dialect and which
+rem colour model tvision uses is decided inside tvision from the compiler's own
+rem macros, the way it already decides them for Borland, and a build line that
+rem can overturn that is a build line that quietly builds a different library.
 set WPP=wpp386 @defs.rsp
 
 set RC=0
@@ -63,10 +91,28 @@ set RC=0
 if "%1"=="atui" goto atui
 
 echo ================== tvision library ==================
-for %%f in (tvision\source\tvision\*.cpp) do (echo [tv] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\ %%f >> %LOG% 2>&1 || set RC=1)
-
-echo ================== tvision platform ==================
-for %%f in (tvision\source\platform\*.cpp) do (echo [tv] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\ %%f >> %LOG% 2>&1 || set RC=1)
+rem Only source/tvision, and not geninc.cpp.  This is what the Borland build in
+rem tvision/project/makefile compiles -- 175 of the 178 files there, the three
+rem exceptions being hardware.cpp (the modern implementation lives in
+rem source/platform), swapst.cpp and sysint.cpp -- and it is not an accident of
+rem history that the old-compiler build stops at this directory.
+rem
+rem source/platform is the terminal layer for C++14 compilers: display buffers,
+rem the event waiter, the ANSI writer, the UTF-8 text engine.  An old compiler
+rem does not build it and does not need it, because tvision's headers carry a
+rem second, complete implementation of everything the classic classes require
+rem (ttext.h inlines the single-byte text engine, colors.h and scrncell.h
+rem substitute the BIOS colour model, config.h sets maxCharSize to 1).  Those
+rem branches are what an OS/2 build joins; bending the modern layer to C++98
+rem would mean maintaining a third version of all of it.
+rem
+rem geninc.cpp is a program that generates tables for the DOS driver at build
+rem time; CMake leaves it out of the library too.  Excluding it compares whole
+rem paths, because this command processor has neither the `if /I` switch nor the
+rem `%%~n` name modifiers of NT's cmd -- `%%~nf` comes out of it as the literal
+rem text `%~nf`, and `if /I not` dies with SYS1079 "not was unexpected at this
+rem time" (both measured with a two-form test batch).
+for %%f in (tvision\source\tvision\*.cpp) do if not "%%f"=="tvision\source\tvision\geninc.cpp" (echo [tv] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\ %%f >> %LOG% 2>&1 || set RC=1)
 
 if "%1"=="tvision" goto summary
 

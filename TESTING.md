@@ -1659,9 +1659,13 @@ three steps is load-bearing, and the reasons are the facts below.
   sees something no one expected. tvision's configuration machinery is exactly
   that kind of code.
 * **RTTI is off by default too**, in the same spirit as exceptions: `typeid` and
-  `dynamic_cast` are `E875 ... RTTI must be enabled (use 'xr' option)`. The port
-  does not enable it, so `#if defined( __RTTI__ )` guards are how a probe can ask
-  the question without failing the build.
+  `dynamic_cast` are `E875 ... RTTI must be enabled (use 'xr' option)`, and the
+  option the message names is the right one -- `-xr` compiles a `dynamic_cast`
+  that `-` and `-vr` both reject (`-vr` is not a switch at all: `E059: unable to
+  open 'r'`, the compiler taking `v` as an option and `r` as a file name). The
+  build enables `-xr`, because the one `dynamic_cast` in tvision is
+  `ipstream::readData` registering the most-derived object address. `probe_rtti.cpp`
+  holds the three-case test.
 * `printf` **does** understand `%zu`, `%lld` and `%llu` -- measured, and worth
   measuring, because it decides whether the port needs helper functions for
   printing sizes and 64-bit values. It does not.
@@ -1692,10 +1696,31 @@ facts, measured on the target:
   first on the include path, and the compiler still opened
 `D:\WATCOM\h\streambu`.
 
-`compat/os2/include/` therefore holds only headers this compiler does not have
-at all -- `dirent.h`, `sys/wait.h`, `mutex`, `thread`, `atomic`, `chrono`,
-`condition_variable` -- which is exactly the point at which this directory is
-useful.
+**That rule is about the extensionless name, and there is an exception to it which
+costs more.** A file in an `-i=` directory whose name is a standard header's plus
+`.h` *does* capture the include: with a directory holding nothing but an
+`iostream.h` that defines a marker macro, `#include <iostream>` opened it and not
+`D:\WATCOM\h\iostream`. So an appended-`.h` match in an include directory beats
+the exact name in Watcom's own. The practical consequence is that a directory of
+Borland-era header names can never go on this include path -- tvision's
+`include/tvision/compat/borland` is exactly such a directory, owning `iostream.h`,
+`fstream.h`, `iomanip.h`, `mem.h`, `strstrea.h` and `iosfwd.h`, and adding it
+replaced the standard library with headers whose own `#include <iostream>`
+resolved back to themselves (measured: fourteen files failing with
+`std::cerr has not been declared`). Angle brackets do not search the including
+file's directory -- measured, with a `<sibling>` that had a `sibling.h` next to it
+and did not find it -- so the fix is not a path at all: only the two Borland
+names Watcom truly lacks get one-line forwarders here, and tvision reaches the
+rest through its own headers by path.
+
+`compat/os2/include/` therefore holds headers this compiler does not have at all
+-- the OS-shaped ones (`dirent.h`, `sys/wait.h`, `mutex`, `thread`, `atomic`,
+`chrono`, `condition_variable`, still to write) and, since the tvision build,
+`dir.h` and `alloc.h`: Borland RTL names Watcom's `h` directory does not contain
+(`io.h`, `dos.h`, `mem.h`, `bios.h`, `direct.h`, `fcntl.h` all do), which the
+classic layer includes by angle bracket, and which forward to tvision's own
+emulation. That is still the rule, applied honestly: forwarders for names this
+installation lacks, never for names it has.
 
 **Empty headers, which is worse than missing ones.** Some of Watcom's C++
 headers open, compile, and declare nothing. The important one is `<sstream>`:
@@ -1786,8 +1811,13 @@ because there is no manual installed:
   `SYS1041: The name -fo is not recognized`, because the compile line lost its
   command word. The fix is a response file (`wpp386 @defs.rsp`), which works and
   also keeps quoting out of cmd.exe entirely -- but note that a response file is
-  bare options: `//` comment lines would be parsed as switches.
-* No `%%~nf` modifier (no way to strip an extension off a `for` variable), no
+  bare options with **no comment syntax of any kind**: a line starting `#` is taken
+  for a file name and the compile dies with `E059: unable to open '#'` (measured),
+  while `//` would be parsed as a switch. So the notes about what each switch is
+  for live in the batch file's `rem` block, not in `defs.rsp`.
+* No `%%~nf` modifier (no way to strip an extension off a `for` variable: `%%~nf`
+  survives as the literal text `%~nf`), no `if /I` (`SYS1079: not was unexpected at
+  this time`, so exclusions compare whole paths case-sensitively), no
   `call :label`, and `wlib` takes no wildcards. `start /bg` does return
   immediately, and `for %%f in (path\*.cpp)` keeps the path in the variable, so
   `-fo=obj\` plus a directory wildcard is the workable shape.
@@ -1824,8 +1854,79 @@ because there is no manual installed:
   directories rather than extending it; mixing the two sets of declarations is
   silent, and fatal in the interesting direction.
 
-**Where the port stands** (measured 2026-10-18, `-od -w3 -xs -5`): atui's own 23
-translation units produce 210 errors in 18 files, and not one of them is about
+**tvision's classic layer builds (measured 2026-10-19, fork commit `687ee5c`).**
+All **177** files of `tvision/source/tvision` compile with `wpp386` with **no
+errors**; what is left is warnings in code that predates this compiler -- 104
+x `W446` from `TSpan`'s conversion to its own class, and a handful of
+`W666`/`W687`/`W887`/`W728`. The command is `tools/atui-remote build --batch-args
+tvision`. It took the library error count from 3967 to nil, and it is worth being
+exact about *how*, because the first attempt at it was the wrong shape:
+
+* **The fork already had a build for old compilers, and that is the one to join.**
+  `tvision/project/makefile` is a Borland build; it compiles `source/tvision` and
+  not `source/platform`, because `source/platform` -- the display buffers, the
+  event waiter, the ANSI writer, the UTF-8 text engine -- is the C++14 terminal
+  layer. An old compiler does not build it and does not need it: the headers carry
+  a second, complete implementation of everything the classic classes require
+  (`ttext.h` inlines the single-byte text engine, `colors.h` substitutes a BIOS
+  attribute byte for `TColorAttr`, `scrncell.h` a two-byte DOS cell, `config.h`
+  sets `maxCharSize` to 1). `__FLAT__`-shaped Watcom joining that path is the
+  whole port of the library; bending `source/platform` to C++98 instead -- which
+  is what the first attempt did, 2500 lines of it, rewriting constructs by hand --
+  means maintaining a third version of all of it.
+* **Conditions widen two ways, and which one is right depends on what the branch
+  is for.** Where the modern branch needs C++11 (the colour model, `TSpan`'s
+  nullptr and array constructors, `TText`'s callback family), the test is the one
+  `ttypes.h` already uses for the C++11 keywords: `defined( __BORLANDC__ ) ||
+  __cplusplus < 201103L` -- Borland satisfies it as it always did, so nothing
+  changes for Borland, and any other pre-C++11 compiler joins for free. Where a
+  branch is about a Borland-shaped *library* rather than the language -- the
+  pre-standard `streambuf` with public `seekoff`/`do_sputn`, `ios::open_mode`, the
+  DOS RTL's `stricmp` -- the test names the compiler: `defined( __BORLANDC__ ) ||
+  defined( __WATCOMC__ )`. A dialect test would be wrong there, because GCC with
+  `-std=c++98` has `xsputn` and `pubseekoff` and Watcom, at any dialect, does not.
+* **Three things turned out to be Borland-not-Watcom**, and each was only visible
+  by compiling: `ios::hardfail` (Watcom's `ios` has no such enumerand, so its
+  `fail()` is complete without it); the DOS helpers in `compat/borland/util.h`,
+  which Watcom's RTL provides already; and `__BORLANDC__` as a proxy for "not
+  Unix" in `tapplica.cpp`, where raising `SIGTSTP` is Unix behaviour and OS/2 wants
+  the `$COMSPEC` branch.
+* **Two Watcom headers make tvision's emulations of them unreachable**, because a
+  compiler's own header cannot be shadowed: `dos.h` (which is where `FA_DIREC`
+  lives) and `io.h` (which is where `struct ftime` lives). Both moved to
+  `compat/borland/dir.h`, the header Watcom does not have, since both describe
+  what a directory entry stores; `struct ftime` is guarded so either header may
+  define it. `dir.h` also gained `<direct.h>` for Watcom, whose `unistd.h` does not
+  declare `chdir`.
+* **Two switches, both borrowed from the Borland build.** `-xr`, because the one
+  `dynamic_cast` in the library is the streamable-object registry. And
+  `-DNO_STREAMABLE`, the option `project/makefile` already offers, which drops the
+  `TStreamableClass` registration objects from the `s*.cpp`/`nm*.cpp` files --
+  registrations for reading views out of a stream, which atui never does, and which
+  is 40-odd objects of dead weight on a target where size matters.
+* **`geninc.cpp` is left out of the loop** (it generates DOS driver tables at build
+  time; CMake excludes it too), and excluding it has to compare whole paths, since
+  this command processor has neither `%%~n` modifiers nor `if /I`.
+
+What this does *not* prove: nothing has been linked yet, so there is no evidence
+about size or about missing symbols -- in particular `findfirst`/`fnmerge`/`fnsplit`
+are declared by `compat/borland/dir.h` and *implemented* in
+`source/platform/dir.cpp`, which the classic file set does not compile, so the link
+line will have to decide that. And there is no OS/2 platform layer: the seam is
+`THardwareInfo`, 64 statics, implemented for DOS by `source/tvision/hardwrvr.cpp`
+and for modern systems by `source/platform/hardware.cpp`; the OS/2 one is what the
+VIO and stream measurements are for.
+
+**One consequence to decide before the UI work.** The legacy model is 16 attribute
+colours and single-byte characters -- no `TColor`, no `TColorRGB`, `maxCharSize` 1.
+atui's theme is written against the modern one: 60 references to `TColor`/RGB
+hexes across `src/tui/theme.cpp` and `src/tui/app.cpp`. So the OS/2 build needs the
+palette expressed as BIOS attributes (the same thing a DOS build needs), while the
+desktop build keeps the RGB theme. The single-byte half is free: the transcript is
+ASCII by design and box drawing is CP437.
+
+**Where atui's own sources stand** (measured 2026-10-18, `-od -w3 -xs -5`): atui's
+own 23 translation units produce 210 errors in 18 files, and not one of them is about
 include paths -- the headers atui asks for either resolve or are in the absent
 column above. The work, in rough order of size: replace what uses
 `std::function` and `<sstream>`, neither of which exists here at all; supply the
@@ -1834,13 +1935,11 @@ OS-shaped headers (`mutex`, `thread`, `atomic`, `chrono`, `condition_variable`,
 `override`, in-class initialisers, `>>` in nested templates); `std::string`
 without `front`/`back`/the three-argument `compare`, and no `std::to_string`;
 `find()` through a `const std::map &`; `memcpy`/`getenv`/`mkdir`/`getcwd` absent
-from the global namespace when only `<cstring>`/`<cstdlib>` are included; and
-tvision's own header problems -- `tspan.h` uses `nullptr`,
-`compat/borland/iosfwd.h` expects `std::streampos`, `util.h` declares `stricmp`
-and `strupr` into a calling-convention clash (`E619`/`E670`, `watcall`) -- plus
-`tv.h`, which decides that anything neither Borland nor Win32 is Unix, defining
-`_TV_UNIX` and `#define __cdecl` over a Watcom keyword. The fork's first change
-is a compiler branch there.
+from the global namespace when only `<cstring>`/`<cstdlib>` are included. The
+tvision header problems this list used to carry -- `tspan.h`'s `nullptr`,
+`compat/borland/iosfwd.h` expecting `std::streampos`, `util.h` declaring `stricmp`
+into a `watcall` clash, and `tv.h` deciding that anything neither Borland nor Win32
+is Unix -- are fixed in the fork.
 
 ## Open question (minor, does not affect final rendering)
 
