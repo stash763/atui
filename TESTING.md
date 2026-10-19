@@ -1992,6 +1992,79 @@ tvision header problems this list used to carry -- `tspan.h`'s `nullptr`,
 into a `watcall` clash, and `tv.h` deciding that anything neither Borland nor Win32
 is Unix -- are fixed in the fork.
 
+## The toolchain links, and a program runs (measured 2026-10-19)
+
+Nothing had ever been linked on the box: every build stopped at an object file.
+`build.cmd link hello.cpp hello.exe` — `lib` and `link` are new modes, and
+`tools/os2/hello.cpp` is the question — gets
+
+    creating an OS/2 32-bit executable
+
+and running it from the telnet session prints
+
+    hello os/2: argv[0] is 17 bytes, static ctor saw 42
+
+so startup passes `argv`, static objects get their constructors before `main`,
+and the libraries `wlink` chooses for `system os2v2` by itself satisfy a C++
+program that uses `std::string`. The result is **23,022 bytes** for that hello
+world, which is the number to compare against the 1.5 MB that was too big.
+
+Toolchain facts, each from the tool's own output:
+
+* `wlink` takes `@directive_file`, and a `#` starts a comment inside it — the
+  opposite of a `wpp386` response file, where `#` is taken for a file name.
+* `wlib` has no response file, so `obj\tvision.lib` is grown one
+  `wlib lib +object` per object. 177 invocations, and adequate.
+* `wlib` with no arguments does not print usage, it traps: SYS1811. `wlink -?`
+  does print usage but pages with "press any key", which the relay cannot answer
+  — pipe a file into the bridge if the second page is ever needed.
+* `wlib -l=list.txt` names *symbols with their source modules*, not file names,
+  so counting `.obj` in that listing finds nothing and the honest report of what
+  went in is `dir obj\tv\*.obj | find "file(s)"`.
+* Objects are kept in three directories — `obj\tv` for the library, `obj\at` for
+  atui, `obj\one` for a program being linked — because tvision's
+  `source/tvision/app.cpp` and atui's `src/tui/app.cpp` both want to be
+  `app.obj`, and while nothing linked that was harmless.
+
+## What the first tvision link says the port still needs (measured 2026-10-19)
+
+`tools/os2/tvhello.cpp` constructs a `TApplication`, inserts and draws a
+`TDialog`, then waits for one event: the display path and the input path, with
+nothing invented for the test. It compiles, and the link reports **106 undefined
+symbols in three groups**, which is the port's work list in the linker's words:
+
+1. **24 `THardwareInfo` members** — the console driver. `hardwrvr.cpp` guards the
+   bodies with `#ifdef __BORLANDC__`, so Watcom is handed the class and not the
+   implementation. What this program referenced is enough to see the shape:
+   `setUpConsole`, `restoreConsole`, `getScreenRows`/`Cols`/`Mode`,
+   `setScreenMode`, `clearScreen`, `flushScreen`, `allocateScreenBuffer`,
+   `freeScreenBuffer`, caret get/set/position, `cursorOn`/`Off`,
+   `getButtonCount`, `getKeyEvent`, `getMouseEvent`, `waitForEvents`,
+   `interruptEventWait`, `getTickCountMs`, `setClipboardText`,
+   `requestClipboardText` — and whatever the drawing path asks for once these are
+   satisfied, `screenWrite` among them: the list is what this program reached,
+   not the whole class. This is the file the port has to write, and the
+   measured facts it has to satisfy are the two sections above: poll with
+   `kbhit()` and never hand fd 0 to `select()`, decode DOS extended key codes
+   with a pending-prefix reader because the two halves arrive up to 390 ms
+   apart, and drive the screen with VT escapes, since VIO belongs to a session
+   the telnet server cannot create.
+2. **53 streamable symbols** — `Tx::name`, `Tx::read`, `Tx::write` for 21
+   classes. These are the consequence of `-DNO_STREAMABLE`, which the fork's
+   Borland build offers: it drops the `TStreamableClass` registrations, but the
+   classes still reference their own `name`/`read`/`write`. The flag therefore
+   does not produce a linkable library at this layer. The next thing to try is
+   building without it — the fork has already taught `tobjstrm.cpp` the
+   pre-standard streambuf, so the streaming code may well compile — before
+   anyone writes stubs for 53 symbols.
+3. **`TView::writeBuf` and `TView::writeLine` taking `const TScreenCell *`** —
+   declared for the legacy colour model in `views.h`, but in `tvwrite.cpp` the
+   first sits inside a `#if defined( __BORLANDC__ )` block and the second under
+   `#if !defined( __BORLANDC__ ) && __cplusplus >= 201103L`. So a compiler that
+   takes the legacy model *without* C++11 — which is exactly Watcom — has the
+   declarations and neither definition. A fork fix: answer the condition the
+   header declares them under.
+
 ## Open question (minor, does not affect final rendering)
 
 With `ATUI_THEME=dark`, startup produces two full-screen flushes: the first

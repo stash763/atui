@@ -13,7 +13,13 @@ rem      build.cmd one src\tui\theme.cpp
 rem                           one file, then stop.  The port is being written
 rem                           file by file, and this asks the cheap question --
 rem                           does this file compile -- without waiting on 177
-rem                           others, or on a link that does not exist yet.
+rem                           others.
+rem      build.cmd lib       archive the library objects into obj\tvision.lib.
+rem      build.cmd link hello.cpp hello.exe
+rem                           compile one program and link it: %2 is the source,
+rem                           %3 the executable.  A first link is the milestone
+rem                           this exists for; the :link section says what it
+rem                           asks of the toolchain.
 rem
 rem  Why a batch file and not a command line: this target's command processor
 rem  silently discards an input line longer than about 315 characters and says
@@ -23,8 +29,11 @@ rem
 rem  Why a loop over each directory and not a list of objects: the tree is 236
 rem  files, two thirds of them tvision's, and a list would drift from the
 rem  sources it describes.  "Everything in this directory" is what is meant, so
-rem  "everything in this directory" is what is written.  Object names cannot
-rem  collide -- checked -- and the sources are 8.3-clean upstream.
+rem  "everything in this directory" is what is written.  The two trees keep
+rem  separate object directories, because tvision's source\tvision\app.cpp and
+rem  atui's src\tui\app.cpp both want to be app.obj: while nothing was being
+rem  linked that collision was invisible, and it is the kind that costs an
+rem  afternoon once something is.  The sources are 8.3-clean upstream.
 rem
 rem  Every file is compiled even after one fails.  At this stage the error
 rem  landscape is the deliverable, and Watcom caps what it reports within one
@@ -46,6 +55,8 @@ set LIB=D:\WATCOM\LIB386\OS2
 
 cd \atui
 if not exist obj mkdir obj
+if not exist obj\tv mkdir obj\tv
+if not exist obj\at mkdir obj\at
 if exist build.log del build.log
 set LOG=build.log
 
@@ -94,6 +105,8 @@ set WPP=wpp386 @defs.rsp
 set RC=0
 
 if "%1"=="one" goto one
+if "%1"=="lib" goto lib
+if "%1"=="link" goto link
 if "%1"=="atui" goto atui
 
 echo ================== tvision library ==================
@@ -118,24 +131,75 @@ rem paths, because this command processor has neither the `if /I` switch nor the
 rem `%%~n` name modifiers of NT's cmd -- `%%~nf` comes out of it as the literal
 rem text `%~nf`, and `if /I not` dies with SYS1079 "not was unexpected at this
 rem time" (both measured with a two-form test batch).
-for %%f in (tvision\source\tvision\*.cpp) do if not "%%f"=="tvision\source\tvision\geninc.cpp" (echo [tv] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\ %%f >> %LOG% 2>&1 || set RC=1)
+for %%f in (tvision\source\tvision\*.cpp) do if not "%%f"=="tvision\source\tvision\geninc.cpp" (echo [tv] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\tv\ %%f >> %LOG% 2>&1 || set RC=1)
 
 if "%1"=="tvision" goto summary
 
 :atui
 echo ================== atui ==================
-for %%f in (src\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\ %%f >> %LOG% 2>&1 || set RC=1)
-for %%f in (src\core\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\ %%f >> %LOG% 2>&1 || set RC=1)
+for %%f in (src\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
+for %%f in (src\core\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
 rem The curl-backed transport is not part of this build: there is no libcurl
 rem for Open Watcom.  That mirrors -DATUI_HAVE_NETWORK=OFF in CMake, which is
 rem the configuration the requirements describe as a test harness -- so this
 rem build must not advertise agent mode either, which is what that option
 rem already arranges.  The socket transport that replaces it (Watcom has BSD
 rem sockets and tcpip32.lib) is port work still to do.
-for %%f in (src\net\provider.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\ %%f >> %LOG% 2>&1 || set RC=1)
-for %%f in (src\settings\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\ %%f >> %LOG% 2>&1 || set RC=1)
-for %%f in (src\tools\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\ %%f >> %LOG% 2>&1 || set RC=1)
-for %%f in (src\tui\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\ %%f >> %LOG% 2>&1 || set RC=1)
+for %%f in (src\net\provider.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
+for %%f in (src\settings\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
+for %%f in (src\tools\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
+for %%f in (src\tui\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
+
+:lib
+rem The archive a program links against.  wlib's usage lists no response file,
+rem and the command processor could not carry 177 object names on one line in
+rem any case, so the library is grown one object per call: slower than one
+rem invocation and completely adequate for something that runs when the library
+rem changes.
+if exist obj\tvision.lib del obj\tvision.lib
+echo [lib] growing obj\tvision.lib from obj\tv\*.obj
+for %%f in (obj\tv\*.obj) do wlib -q obj\tvision.lib +%%f >> %LOG% 2>&1
+if not exist obj\tvision.lib goto one_failed
+wlib -q -l=obj\tv\liblist.txt obj\tvision.lib >> %LOG% 2>&1
+dir obj\tvision.lib
+rem What went into it.  The listing wlib writes names a symbol per line with the
+rem module it came from -- it has no file names in it, so counting \".obj\" there
+rem finds nothing, which is a confusing way to report success.
+dir obj\tv\*.obj | find "file(s)"
+echo [lib] OK
+goto summary
+
+:link
+rem Compile one program and link it: %2 is the source, %3 the executable.  What
+rem a first link asks of a toolchain, and none of it is answered by a compile:
+rem whether `system os2v2` yields a character-mode program a telnet session can
+rem run, whether the libraries the linker picks by itself satisfy a C++
+rem program's startup, and how large the result is.  The object list goes into a
+rem response file a line at a time -- wlink documents "@directive_file", and a
+rem "#" at the start of a line is its comment, which wpp386 response files have
+rem no notion of.
+echo [link] %2 -> %3
+rem The object goes into a scratch directory of its own and the link takes
+rem everything in it: pointing at obj\at instead would link whatever else had
+rem been compiled there, and a second main() is not a linker error worth
+rem spending an afternoon on.
+echo [link] %2 -> %3
+if not exist obj\one mkdir obj\one
+if exist obj\one\*.obj del obj\one\*.obj
+%WPP% -fo=obj\one\ %2 >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+if exist link.rsp del link.rsp
+echo system os2v2 > link.rsp
+echo name %3 >> link.rsp
+echo op m >> link.rsp
+for %%f in (obj\one\*.obj) do echo file %%f >> link.rsp
+echo library obj\tvision.lib >> link.rsp
+echo library os2386.lib >> link.rsp
+wlink @link.rsp >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+dir %3
+echo [link] OK
+goto summary
 
 :one
 rem One file, with the environment set up above.  The switches come from
@@ -146,7 +210,7 @@ rem last command left behind and a block invites questions about which command
 rem that was.
 echo [one] %2
 echo ---- %2 ---- >> %LOG%
-%WPP% -fo=obj\ %2 >> %LOG% 2>&1
+%WPP% -fo=obj\at\ %2 >> %LOG% 2>&1
 if errorlevel 1 goto one_failed
 echo [one] OK
 goto summary
