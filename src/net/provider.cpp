@@ -14,7 +14,7 @@ namespace {
 
 const char *envOr( const char *name, const char *fallback )
 {
-    const char *v = getenv( name );
+    const char *v = std::getenv( name );
     return ( v && v[0] ) ? v : fallback;
 }
 
@@ -71,9 +71,9 @@ ProviderSettings defaultProviderSettings()
     s.baseUrl = envOr( "ATUI_BASE_URL", "http://127.0.0.1:8080/v1" );
     s.apiKey = envOr( "ATUI_API_KEY", "" );
     s.model = envOr( "ATUI_MODEL", "llama" );
-    const char *t = getenv( "ATUI_TEMPERATURE" );
+    const char *t = std::getenv( "ATUI_TEMPERATURE" );
     s.temperature = ( t && t[0] ) ? std::atof( t ) : 0.7;
-    s.thinkingResend = truthy( getenv( "ATUI_THINKING_RESEND" ) );
+    s.thinkingResend = truthy( std::getenv( "ATUI_THINKING_RESEND" ) );
     s.models = parseModelList( envOr( "ATUI_MODELS", "" ) );
     if( s.models.empty() ) s.models.push_back( s.model );
     return s;
@@ -249,7 +249,7 @@ namespace {
 // or not a number.
 int envMinutes( const char *name, int fallback )
 {
-    const char *v = getenv( name );
+    const char *v = std::getenv( name );
     if( !v || !v[0] ) return fallback;
     char *end = 0;
     const long n = std::strtol( v, &end, 10 );

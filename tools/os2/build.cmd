@@ -9,6 +9,11 @@ rem
 rem      build.cmd            tvision, then atui
 rem      build.cmd tvision    library sources only
 rem      build.cmd atui       the program only
+rem      build.cmd one src\tui\theme.cpp
+rem                           one file, then stop.  The port is being written
+rem                           file by file, and this asks the cheap question --
+rem                           does this file compile -- without waiting on 177
+rem                           others, or on a link that does not exist yet.
 rem
 rem  Why a batch file and not a command line: this target's command processor
 rem  silently discards an input line longer than about 315 characters and says
@@ -88,6 +93,7 @@ set WPP=wpp386 @defs.rsp
 
 set RC=0
 
+if "%1"=="one" goto one
 if "%1"=="atui" goto atui
 
 echo ================== tvision library ==================
@@ -130,6 +136,24 @@ for %%f in (src\net\provider.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG
 for %%f in (src\settings\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\ %%f >> %LOG% 2>&1 || set RC=1)
 for %%f in (src\tools\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\ %%f >> %LOG% 2>&1 || set RC=1)
 for %%f in (src\tui\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\ %%f >> %LOG% 2>&1 || set RC=1)
+
+:one
+rem One file, with the environment set up above.  The switches come from
+rem defs.rsp, which is what keeps this command line inside the length the
+rem command processor is willing to read at all.  Control jumps to labels rather
+rem than using a parenthesised block, because `if errorlevel` reads whatever the
+rem last command left behind and a block invites questions about which command
+rem that was.
+echo [one] %2
+echo ---- %2 ---- >> %LOG%
+%WPP% -fo=obj\ %2 >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+echo [one] OK
+goto summary
+:one_failed
+set RC=1
+echo [one] FAILED
+goto summary
 
 :summary
 echo ================== summary ==================

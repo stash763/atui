@@ -1295,12 +1295,55 @@ every BIOS fg/bg pair re-mapped: foregrounds become readable light shades,
 backgrounds dark slate/navy/teal equivalents. Foreground colors are kept
 bright (secondary text fgDark[8] = #A9B6C3) so contrast stays high.
 
-The chat transcript (`ChatTerminal` in `src/tui/app.cpp`) overrides the
+The chat transcript (`TranscriptView` in `src/tui/app.cpp`) overrides the
 stock TScroller palette: index 1 maps to app palette entry 13 (BIOS 0x1E,
 yellow on blue — the classic TV text-display style used by tvdemo's file
 viewer) instead of entry 6 (BIOS 0x28, gray on green), which had poor
 contrast. In dark mode this yields soft yellow #F2E4AC on dark navy
 #152238. Scrollbars stay stock (entries 4/5, same as tvdemo).
+
+### Two color models, one theme (OS/2 and DOS)
+
+All of the above needs tvision's modern color model. A build with the legacy
+one — `TColorAttr` is a BIOS attribute byte, with no `TColor`, `TColorRGB` or
+`slBold`, which is what Borland and Open Watcom give us — has sixteen colors and
+no shades to invent. `TVISION_LEGACY_COLORS`, defined by the fork in the header
+that picks the model, says which one a build got. Views never ask: they name
+what a piece of text *is* (`Role`, `src/tui/md_style.h`) and the theme answers
+with an attribute, through `themePalette()` and `roleAttr()`.
+
+- **classic** — 29 BIOS attribute bytes, used by both models: the legacy model
+  *is* an attribute byte and the modern one can be built from one. One visible
+  consequence on the desktop, where the input line used to ask for pure white
+  and now gets the BIOS light gray every other surface in this theme uses.
+- **dark, modern** — the RGB values above, as a table of {fg, bg, style}
+  instead of an 82-line switch in the view.
+- **dark, legacy** — a real sixteen-color theme rather than a fallback to
+  classic: backgrounds collapse onto black except the light-gray one, which
+  becomes dark gray so dialogs and menus still stand off the desktop, and
+  foregrounds become the bright value of their own hue. Measured against the 135
+  bytes of `cpAppColor`: no entry ends up with its foreground on the same color,
+  and 30 distinct entries survive as 13. What sixteen colors costs is saturated
+  backgrounds (green, cyan become black) and the dark-gray foreground Turbo
+  Vision uses for "present but not active"; roles pay neither, because their
+  pairs are chosen together, so de-emphasized text stays dark gray on black and
+  a code block keeps a background of its own. That background is attribute bit
+  7, which is a lighter black on OS/2's own display and a terminal, and blink on
+  a text-mode VGA configured for blink; nothing else in either theme sets it.
+
+`md_style.h`'s `rRoleCount` sizes every table, so a new role cannot skip a
+theme, and the input area is now part of the same vocabulary (`rInput`,
+`rInputSep`) instead of having a numbering of its own.
+
+Tested: `theme: role contrast` and `theme: palette contrast` require a
+foreground different from the background for every role and every palette entry
+in both themes. Checked by breaking one — putting `rBold` on its own background
+reports `theme: role contrast (rc=-18)` — so the assertion is not vacuous. The
+16-color tables are also checked as data (29 entries per table, no invisible
+pair, code background distinct from prose), and the path compiles as written:
+`build.cmd one src\tui\theme.cpp` on the box reports 420 lines, one warning
+(the known `tspan.h` W446) and no errors. How the 16-color dark theme *looks*
+can only be judged on a 16-color display: `ATUI_THEME=dark` on the box.
 
 ## Testing the TUI (theme verification)
 
@@ -1934,8 +1977,16 @@ OS-shaped headers (`mutex`, `thread`, `atomic`, `chrono`, `condition_variable`,
 `sys/wait.h`, `dirent.h`); C++11 syntax the 1998 grammar rejects (`nullptr`,
 `override`, in-class initialisers, `>>` in nested templates); `std::string`
 without `front`/`back`/the three-argument `compare`, and no `std::to_string`;
-`find()` through a `const std::map &`; `memcpy`/`getenv`/`mkdir`/`getcwd` absent
-from the global namespace when only `<cstring>`/`<cstdlib>` are included. The
+`find()` through a `const std::map &`; the C names Watcom keeps in `std::`
+alone, since a `<cxxx>` header is only obliged to declare them there -- a bare
+`getenv` with `<cstdlib>` included is E029, which is how the first atui file to
+compile on Watcom found out. `probe_stdhdrs.cpp` asks for every one atui uses and
+gets them: `std::size_t` through `std::strftime`, `std::FILE`, `std::snprintf`,
+`std::isspace`, all present, no errors. `va_start`, `va_arg` and `va_end` are
+macros, so they cannot be qualified at all (E777), while `std::va_list` can.
+Call sites written bare -- `getenv`, `memcpy`, `mkdir`, `getcwd` -- therefore have
+to be spelled `std::` or include the C header; which of the two for the last two
+is still to be measured. The
 tvision header problems this list used to carry -- `tspan.h`'s `nullptr`,
 `compat/borland/iosfwd.h` expecting `std::streampos`, `util.h` declaring `stricmp`
 into a `watcall` clash, and `tv.h` deciding that anything neither Borland nor Win32

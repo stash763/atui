@@ -5,8 +5,7 @@
 #include <tvision/tv.h>
 
 #include <cstddef>
-#include <cstring>
-#include <string>
+#include <cstdlib>
 
 #include "theme.h"
 
@@ -38,7 +37,9 @@ void initTheme_()
 {
     if( g_themeInit_ ) return;
     g_themeInit_ = true;
-    if( isClassicEnv( getenv( "ATUI_THEME" ) ) )
+    // std::, not bare: Watcom's <cstdlib> keeps the C names in std where
+    // they belong, so `getenv` alone does not compile there (measured).
+    if( isClassicEnv( std::getenv( "ATUI_THEME" ) ) )
         g_theme_ = ThemeClassic;
 }
 
