@@ -4,6 +4,8 @@
 #include "provider.h"
 
 #include "core/strutil.h"      // toString, startsWith: Watcom has neither
+#include "oai_body.h"          // buildBody, mergeToolFrags
+#include "sse.h"               // SseStream
 #ifdef ATUI_DEBUG_KEYS
 #include "dbg.h"
 #endif
@@ -17,222 +19,39 @@
 namespace atui {
 namespace net {
 
-// State carried by the curl write callback.
-struct SseParser {
-    std::string buf;       // raw data not yet parsed
+// State carried by the curl write callback.  The framing -- bytes to lines to
+// `data:` payloads -- is SseStream's, and the meaning of a payload is
+// applyStreamDelta's, which is the same code the event-loop transport runs: two
+// transports may disagree about sockets, not about what the model said.
+struct CurlSse : public SseStream::Sink, public DeltaSink {
+    SseStream sse;
     TokenCallback cb;
     void *ctx;
     OaiResponse *out;      // may be null
-    bool done;
+
+    virtual void onDelta( const std::string &text, bool thinking )
+    {
+        if( cb )
+            cb( text.c_str(), thinking, ctx );
+    }
+    virtual void onPayload( const std::string &payload )
+    {
+        applyStreamDelta( payload, out, this );
+    }
+    virtual void onDone() {}
 };
 
-namespace {
-
-// Merge a streaming delta.tool_calls fragment batch into the response, keyed
-// by the fragment index (id/name arrive once, arguments arrive in pieces).
-void mergeToolFrags( OaiResponse &resp, const std::vector<ToolCallFrag> &frags )
-{
-    for( size_t i = 0; i < frags.size(); ++i )
-    {
-        const ToolCallFrag &f = frags[i];
-        int idx = f.index < 0 ? 0 : f.index;
-        while( (int) resp.toolCalls.size() <= idx )
-            resp.toolCalls.push_back( OaiToolCall() );
-        OaiToolCall &tc = resp.toolCalls[idx];
-        if( !f.id.empty() ) tc.id = f.id;
-        if( !f.name.empty() && tc.name.empty() ) tc.name = f.name;
-        tc.arguments += f.arguments;
-    }
-}
-
-} // anonymous namespace
 
 namespace {
 
-// Build the JSON request body for /v1/chat/completions.
-std::string buildBody( const OaiRequest &req )
-{
-    std::string body;
-    body.reserve( 256 );
-    body += "{\"model\":\"";
-    body += jsonEscape( req.model );
-    body += "\",\"stream\":";
-    body += ( req.stream ? "true" : "false" );
-    body += ",\"temperature\":";
-    body += core::toString( req.temperature );
-    // Only sent when the caller asked for a cap: servers disagree about the
-    // default and some reject a field they do not implement, so an ordinary chat
-    // request stays exactly as it was.
-    if( req.maxTokens > 0 )
-    {
-        body += ",\"max_tokens\":";
-        body += core::toString( req.maxTokens );
-    }
-    // Servers disagree about how to say "skip the chain of thought", so all three
-    // spellings go out and the ones that are not understood are ignored.
-    if( req.disableThinking )
-    {
-        body += ",\"reasoning_effort\":\"none\"";
-        body += ",\"think\":false";
-        body += ",\"chat_template_kwargs\":{\"enable_thinking\":false}";
-    }
 
-    body += ",\"messages\":[";
-    for( size_t i = 0; i < req.messages.size(); ++i )
-    {
-        const OaiMessage &m = req.messages[i];
-        if( i > 0 ) body += ", ";
-        body += "{\"role\":\"";
-        body += jsonEscape( m.role );
-        body += "\",\"content\":";
-        // An assistant turn that only asks for tools may carry no text; emit
-        // null content then (some servers reject empty strings with tool_calls).
-        bool nullContent = ( m.role == "assistant" && !m.toolCalls.empty() &&
-                             m.content.empty() );
-        if( nullContent )
-            body += "null";
-        else
-        {
-            body += "\"";
-            body += jsonEscape( m.content );
-            body += "\"";
-        }
-
-        // Optional thinking text carried on an assistant turn (only present
-        // when the user enabled "resend thinking"). Emitted as
-        // reasoning_content, the common replay convention.
-        if( m.role == "assistant" && !m.reasoning.empty() )
-        {
-            body += ",\"reasoning_content\":\"";
-            body += jsonEscape( m.reasoning );
-            body += "\"";
-        }
-
-        if( m.role == "assistant" && !m.toolCalls.empty() )
-        {
-            body += ",\"tool_calls\":[";
-            for( size_t c = 0; c < m.toolCalls.size(); ++c )
-            {
-                const OaiToolCall &tc = m.toolCalls[c];
-                if( c ) body += ",";
-                body += "{\"id\":\"";
-                body += jsonEscape( tc.id );
-                body += "\",\"type\":\"function\",\"function\":{\"name\":\"";
-                body += jsonEscape( tc.name );
-                body += "\",\"arguments\":\"";
-                body += jsonEscape( tc.arguments ); // arguments is itself JSON text
-                body += "\"}}";
-            }
-            body += "]";
-        }
-
-        if( m.role == "tool" )
-        {
-            body += ",\"tool_call_id\":\"";
-            body += jsonEscape( m.toolCallId );
-            body += "\"";
-            if( !m.name.empty() )
-            {
-                body += ",\"name\":\"";
-                body += jsonEscape( m.name );
-                body += "\"";
-            }
-        }
-        body += "}";
-    }
-    body += "]";
-
-    if( !req.toolsJson.empty() )
-    {
-        body += ",\"tools\":";
-        body += req.toolsJson;
-        body += ",\"tool_choice\":\"auto\"";
-    }
-    body += "}";
-    return body;
-}
-
-// curl write callback: accumulate data and extract complete SSE events.
+// curl write callback: hand the bytes to the SSE framing and keep curl happy by
+// reporting all of them consumed.  Returning anything else aborts the transfer, so
+// a parse problem is recorded and reported at the end rather than acted on here.
 size_t writeData( char *ptr, size_t size, size_t nmemb, void *op )
 {
-    SseParser *sp = static_cast< SseParser * >( op );
-#ifdef ATUI_DEBUG_KEYS
-    atui::net::dbg( "writeData: bytes=%zu buf_len=%zu", size * nmemb, sp->buf.size() );
-#endif
-    sp->buf.append( ptr, size * nmemb );
-
-    while( true )
-    {
-        size_t nl = sp->buf.find( '\n' );
-        if( nl == std::string::npos )
-            break; // no complete line yet
-
-        std::string line = sp->buf.substr( 0, nl );
-        if( !line.empty() && line[line.size() - 1] == '\r' )   // no back() on Watcom
-            line.pop_back();
-
-        // Consume this line (keep the trailing incomplete one).
-        sp->buf.erase( 0, nl + 1 );
-
-        // Only "data:" lines carry payload; SSE spec concatenates data: values
-        // in an event, but the OpenAI API sends one JSON object per line.
-        if( line.size() >= 5 && core::startsWith( line, "data" ) &&
-            line[4] == ':' )
-        {
-            size_t start = 5;
-            if( start < line.size() && line[start] == ' ' )
-                ++start;
-            std::string payload = line.substr( start );
-
-#ifdef ATUI_DEBUG_KEYS
-            atui::net::dbg( "line data: payload_len=%zu", (size_t)payload.size() );
-#endif
-
-            if( payload == "[DONE]" )
-            {
-                sp->done = true;
-                break;
-            }
-            if( payload.empty() )
-                continue;
-
-            std::string content = deltaContent( payload );
-            if( !content.empty() )
-            {
-                if( sp->cb )
-                    sp->cb( content.c_str(), false, sp->ctx );
-                if( sp->out )
-                    sp->out->content += content;
-            }
-
-            std::string reasoning = deltaReasoning( payload );
-            if( !reasoning.empty() )
-            {
-                if( sp->cb )
-                    sp->cb( reasoning.c_str(), true, sp->ctx );
-                if( sp->out )
-                    sp->out->reasoning += reasoning;
-            }
-
-            if( sp->out )
-            {
-                std::string fr = finishReason( payload );
-                if( !fr.empty() )
-                    sp->out->finishReason = fr;
-
-                std::vector<ToolCallFrag> frags;
-                if( parseToolCallFrags( payload, frags ) )
-                    mergeToolFrags( *sp->out, frags );
-            }
-        }
-        else
-        {
-#ifdef ATUI_DEBUG_KEYS
-            atui::net::dbg( "line non-data: len=%zu first=%c",
-                            (size_t)line.size(), line.empty() ? ' ' : line[0] );
-#endif
-        }
-    }
+    CurlSse *sp = static_cast< CurlSse * >( op );
+    sp->sse.feed( ptr, size * nmemb, *sp );
     return size * nmemb;
 }
 
@@ -280,11 +99,11 @@ bool OaiClient::request( const std::string &baseUrl,
         url += "/";
     url += "chat/completions";
 
-    SseParser sp;
+    CurlSse sp;
     sp.cb = cb;
     sp.ctx = ctx;
     sp.out = out;
-    sp.done = false;
+    sp.sse = SseStream();
 
     struct curl_slist *headers = 0;
     headers = curl_slist_append( headers, "Content-Type: application/json" );
@@ -334,7 +153,7 @@ bool OaiClient::request( const std::string &baseUrl,
 
 #ifdef ATUI_DEBUG_KEYS
     atui::net::dbg( "request done res=%d (msg=%s) sp_done=%d",
-                    (int)res, curl_easy_strerror( res ), (int)sp.done );
+                    (int)res, curl_easy_strerror( res ), (int)sp.sse.done() );
 #endif
 
     if( res != CURLE_OK && err )

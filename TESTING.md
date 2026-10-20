@@ -6,7 +6,7 @@ which needs a real terminal (pty) to exercise.
 ## Build & unit tests
 
     cmake --build build          # from repo root
-    ./build/atui --self-test     # unit + integration tests (132/132 network build, 91/91 without)
+    ./build/atui --self-test     # unit + integration tests (146/146 network build, 91/91 without)
     # ...plus 4 live-server tests when ATUI_LIVE_BASE_URL is set (see 'Live endpoint testing')
 
 Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
@@ -548,6 +548,30 @@ one `onFinish(ok=true)`.  Repeated immediately: same again, which is the leak ch
 that matters — a socket closed with the wrong function is not a closed socket, and
 the second connection would have been the one to complain.  Nothing about this path
 uses threads, curl, or the toolkit libraries.
+
+The layers above it, added in the same direction:
+
+* `src/net/sse.{h,cpp}` — bytes to `data:` payloads.  Knows nothing about chat.
+* `src/net/oai_body.{h,cpp}` — the JSON of a completion in both directions:
+  `buildBody()` (moved out of `oai_client.cpp`), `applyStreamDelta()` (a payload's
+  content, reasoning, tool-call fragments and finish reason) and the fragment merge.
+  The curl client and the event-loop transport call the same two functions, which is
+  what keeps them from disagreeing about what the model said.
+* `src/net/chat_request.{h,cpp}` — one streaming completion: URL and body built,
+  transport driven, deltas reported as they arrive, one finish.  It also does what
+  the curl path never did — look at the status code: a 401 used to stream an empty
+  body through the SSE parser and come back as a perfectly successful answer with
+  nothing in it, which was indistinguishable from a model with nothing to say.
+* `src/net/url.{h,cpp}` — `http://host:port/v1` apart, with `https` refused rather
+  than downgraded.
+
+`tests/chat_request_test.cpp` covers those: the framing at every split size from 1
+byte up, reasoning kept apart from the answer and in the order it arrived, tool-call
+fragments merged across payloads, `[DONE]` ending the request while the server still
+holds the socket open, a truncated stream failing, and a refusal reporting the
+server's own words.  Control-checked: putting the "was the body well framed" check
+back in front of the status check fails exactly
+`chat: error status outranks a broken framing` and nothing else.
 
 `tests/http_test.cpp` runs it against `tests/http_pipe.h`, a scripted responder
 on `127.0.0.1` that writes whatever it is told, in pieces, with a pause between

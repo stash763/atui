@@ -87,6 +87,9 @@ if(ATUI_HAVE_NETWORK)
         # the set of sources does not depend on the host, which is what keeps a
         # cross build from finding one file missing.
         "${ATUI_SRC_DIR}/net/http.cpp"
+        "${ATUI_SRC_DIR}/net/sse.cpp"
+        "${ATUI_SRC_DIR}/net/oai_body.cpp"
+        "${ATUI_SRC_DIR}/net/chat_request.cpp"
         "${ATUI_SRC_DIR}/net/sock_posix.cpp"
         "${ATUI_SRC_DIR}/net/sock_os2.cpp"
         "${ATUI_SRC_DIR}/net/sock_win.cpp"
@@ -108,6 +111,7 @@ if(ATUI_BUILD_TESTS)
         "${ATUI_TESTS_DIR}/selftest.cpp"
         "${ATUI_TESTS_DIR}/oai_mock_test.cpp"
         "${ATUI_TESTS_DIR}/http_test.cpp"
+        "${ATUI_TESTS_DIR}/chat_request_test.cpp"
         "${ATUI_TESTS_DIR}/url_test.cpp"
         "${ATUI_TESTS_DIR}/oai_live_test.cpp"
         "${ATUI_TESTS_DIR}/markdown_test.cpp"
