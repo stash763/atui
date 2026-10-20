@@ -54,10 +54,11 @@ typedef char          *caddr_t;
 
 #include <unistd.h>
 
-#define HOST "10.196.88.170"   /* the llama.cpp endpoint: it answers a
-#define PORT 10001              /* request, which is all that is wanted,
-                                   and it costs no session slot on the
-                                   box being measured */
+/* The llama.cpp endpoint on the LAN: it answers a request, which is all that is
+   wanted, and talking to it costs no telnet session slot on the box being
+   measured -- those are the scarce resource here. */
+#define HOST "10.196.88.170"
+#define PORT 10001
 
 /* Ask the box a question about itself: this is the one define to flip. */
 /* #define USE_SOCK_ERRNO 1 */

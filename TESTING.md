@@ -1639,6 +1639,25 @@ mis-set window shows up as a dropped or doubled key.
 - `--exec "d: && cd \\atui && build.cmd ..."` does not run at all, while
   `--exec "d:\\atui\\build.cmd ..."` does.  The batch changes drive and directory
   itself, which is the reason it was written to do that.
+- **The box can run a command line twenty minutes after it was typed.** This is
+  the one that cost the most time, because it does not look like a broken channel:
+  it looks like a result.  A line typed while the session's login process was not
+  reading is held, and fed to a session later -- so `build --batch-args "netlink
+  probe_close.cpp probe_close.exe"` reported `ATUI-BUILD-RC=0` for a log that said
+  `probe_nb.cpp: 237 lines`, and a `probe_close.exe` that did not exist appeared to
+  have built.  Check that a build log names the file you sent before believing it,
+  and note `ftp size` on the expected output is a cheap second opinion: it reported
+  `error 10` for the executable that "had just been linked".  The bridge now sends
+  Ctrl-C and a CR before each command's start sentinel, which discards a pending
+  line at the cost of half a second.
+- **When the console goes quiet, stop poking it.** The symptoms arrive together --
+  commands that never echo, old commands that do, `probe_*.exe` that produce nothing
+  -- and each attempt adds input to whatever is queued.  FTP keeps working
+  throughout, which is how files were moved and measurements collected at all.
+- **A batch that ends inside another batch loses its caller.** `run_nb.cmd` built
+  and then never reached its own `echo ---- run ----`: nested batch files on this
+  command processor are worth avoiding when the same two commands can be sent down
+  one connection, which `--exec` repeated now does.
 - **`echo something -> file` in a batch is a redirection, not text.** The
   `:netlink` mode announced `[netlink] %2 -> %3`, which cmd read as "redirect this
   line to the file named by %3" -- so a failed compile left behind a 27-byte
@@ -1749,8 +1768,38 @@ three steps is load-bearing, and the reasons are the facts below.
   * `struct timeval` wants `<sys/time.h>`: `tcpustd.h` only forward-declares it,
     which surfaces as `'tv' has unknown size` where the code looks innocent.
 
-* **`__cplusplus` is `1`**, not `199711L`, and `__WATCOMC__` is 1290. Anything
-  that feature-detects with `#if __cplusplus >= 201103L` correctly sees C++98,
+* **What the calls do at run time**, from `tools/os2/probe_nb.cpp` against the LAN
+  endpoint, printing every return value (`sock=` below is a stub in that build; the
+  stack's own error number is a separate question, further down):
+
+  *Non-blocking first*: `ioctl(s, FIONBIO, 1)` -> 0; `connect()` -> **-1** with
+  nothing in errno; `select()` for writing -> 1; `getsockopt(SO_ERROR)` -> 0, so
+  **the connection came up and the return value said no**.  `send()` then took the
+  whole 46-byte request, and the answer came back (`HTTP/1.1 415`, as expected for a
+  `GET` at a chat endpoint) and ended with `recv` -> 0.
+  *Blocking first*: `connect()` -> 0, `ioctl(FIONBIO)` -> 0, `send()` -> 52, the body
+  arrived in 2 pieces, `recv` -> 0.  So either order does I/O, and only the first
+  order has to treat `-1` as "keep going" -- which is decided by `select()` plus
+  `SO_ERROR` and never by errno.
+  *And `close()` on a socket handle returns **-1***.  Closing a socket with the C
+  library's `close()` does not close it: a client that opened one connection per
+  chat turn would leak one handle per turn until the stack refused more, weeks after
+  the change that introduced it.
+
+* **The library exports more than the headers declare**, which is how the last point
+  is fixed.  `strings` over `D:\WATCOM\LIB386\OS2\tcpip32.lib` (15,872 bytes) lists
+  `soclose` -- the close that works on a socket handle -- `sock_errno`,
+  `sock_strerror`, `sock_init`, `shutdown`, `select` and `os2_select`, `send_file`,
+  `inet_ntop` and `inet_pton`, `gethostbyname2`, and the resolver's `__res_*`.
+  None of `soclose`/`sock_errno`/`sock_strerror`/`sock_init` is in Watcom's headers,
+  so atui declares them itself.  `tools/os2/probe_close.cpp` asks whether `soclose`
+  returns 0 where `close` returned -1, whether closed handles are reused (the leak
+  made visible), and what number `sock_errno` gives for a read that would block and
+  for a connection refused -- the comparison a state machine cannot be written
+  without, since errno is not maintained here.
+
+* **`__cplusplus` is `1`**, not `199711L`, and `__WATCOMC__` is 1290. Anything that
+  feature-detects with `#if __cplusplus >= 201103L` correctly sees C++98,
   but a library testing `#if __cplusplus` as a proxy for "standard C++ at all"
   sees something no one expected. tvision's configuration machinery is exactly
   that kind of code.

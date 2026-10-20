@@ -561,6 +561,17 @@ class Session:
         nonce = "%04x" % (int.from_bytes(os.urandom(2), "big"))
         start, finish = "ATUIRUN" + nonce, "ATUIDONE" + nonce
         for _ in range(tries):
+            # Abandon anything half-typed before asking anything else.  This box
+            # has been seen to accept a line while its login process was not
+            # reading, hold it, and feed it to a session twenty minutes later --
+            # so a fresh connection can find itself running yesterday's command,
+            # which is exactly what the log said had just been built.  Ctrl-C
+            # discards the pending line; the CR gives the discard a keystroke to
+            # belong to.  It costs a fraction of a second and removes a class of
+            # result that is otherwise indistinguishable from a wrong build.
+            self.send_text("\x03\r\n")
+            time.sleep(0.2)
+            self.pump(0.3)
             self.send_text("echo %s\r\n" % start)
             if self.pump_until(start, 6.0) is None:
                 continue                      # the line never reached anything
