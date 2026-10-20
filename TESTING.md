@@ -1006,6 +1006,40 @@ the arguments.
 property these tests exist for; a change that makes an unreadable answer mean
 "run" should be treated as a vulnerability, not a flake.
 
+### Agent mode does not exist in a build without a transport
+
+`tools::agentModeAvailable()` is the single answer to "can this build ask a model
+about a call", and it is a compile-time answer: no transport, no agent.  Everything
+else hangs off that one function, which is the point - the shipped default, the
+config file, the dialog and the code cannot drift apart and claim different things:
+
+* the default mode is `exact` and the network policy `ask`, not `agent`
+  (`shippedDefaultPermissionMode()` / `shippedDefaultNetworkPolicy()`, separate from
+  the live settings so a test can ask what a build ships rather than what the last
+  test left behind);
+* `permissionModeFromName( "agent" )` and `networkPolicyFromName( "agent" )` refuse
+  it, so `[permissions] mode = agent` written by a network build's config file, or an
+  `ATUI_PERMISSIONS=agent`, keeps the safe default instead of storing a capability
+  the program cannot perform - the same treatment a misspelling already gets;
+* Options > Settings does not offer the third mode, and does not show the judging
+  model or seconds fields: a text in their place says why.  A greyed-out field reads
+  as a promise held in reserve, and blank space reads as a bug.
+
+The status line already told the truth (it says "a model checks the rest" only when a
+judge is installed); this closes the difference between not having an answer and
+offering to look for one.  atui needs a server - there is no offline mode - so the
+build without a transport does not get to advertise the setting whose entire purpose
+is asking a server something.
+
+Covered by `permission: mode names and clamps`, which deliberately takes different
+branches in the two configurations: control-checked by putting `return -99` at the top
+of the no-agent branch, which fails `build-off/` and passes `build/`, so neither side
+of the test is vacuous.
+
+While here, `core::ChatModelStub` - what answers a message in a no-network build -
+used to echo the question back.  An echo is indistinguishable from a model that
+answers in one word; it now says there is nobody to ask.
+
 ### The dry run: `--judge-check`
 
 Nothing is executed, so it is safe on a corpus of `rm -rf`:

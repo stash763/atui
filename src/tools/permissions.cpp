@@ -567,6 +567,31 @@ bool envBool( const char *name, bool current )
 
 } // anonymous namespace
 
+bool agentModeAvailable()
+{
+#ifdef ATUI_HAVE_NETWORK
+    return true;
+#else
+    // No transport, so nobody to ask.  `decide()` was already careful enough to
+    // fall back to asking the user when a judgement cannot be had; what this
+    // function settles is that the mode is not *offered* either, so that the
+    // status line, the Settings dialog and the config file all describe the same
+    // program.  atui needs a network to work at all -- this build is the test
+    // harness -- so pretending otherwise would only ever mislead.
+    return false;
+#endif
+}
+
+PermissionMode shippedDefaultPermissionMode()
+{
+    return agentModeAvailable() ? pmAgent : pmExact;
+}
+
+NetworkPolicy shippedDefaultNetworkPolicy()
+{
+    return agentModeAvailable() ? npAgent : npAsk;
+}
+
 PermissionMode &permissionMode()
 {
     // Shipped default: in-project work goes ahead, anything reaching outside it
@@ -575,18 +600,25 @@ PermissionMode &permissionMode()
     // a session with no model to ask degrades to asking about commands, which is
     // what this default used to be everywhere.
     //
+    // A build with no transport cannot default to asking a model, so its default
+    // is the exact rung instead; see `agentModeAvailable()`.
+    //
     // ATUI_PERMISSIONS=ask_all is the one-command way back, and Settings keeps
-    // the same three choices.
+    // the same three choices -- two of them without a transport.
     static PermissionMode mode =
-        envEnum<PermissionMode>( "ATUI_PERMISSIONS", pmAgent,
+        envEnum<PermissionMode>( "ATUI_PERMISSIONS",
+                                 shippedDefaultPermissionMode(),
                                  permissionModeFromName );
     return mode;
 }
 
 NetworkPolicy &networkPolicy()
 {
+    // "Let the agent weigh it" is not a policy a build without a transport has;
+    // it defaults to asking, which is the direction every fallback here goes.
     static NetworkPolicy policy =
-        envEnum<NetworkPolicy>( "ATUI_PERMISSION_NETWORK", npAgent,
+        envEnum<NetworkPolicy>( "ATUI_PERMISSION_NETWORK",
+                                shippedDefaultNetworkPolicy(),
                                 networkPolicyFromName );
     return policy;
 }
@@ -638,7 +670,11 @@ bool permissionModeFromName( const std::string &name, PermissionMode &out )
     const std::string n = lowered( trimmed( name ) );
     if( n == "ask_all" || n == "ask" ) { out = pmAskAll; return true; }
     if( n == "exact" )                 { out = pmExact;  return true; }
-    if( n == "agent" )                 { out = pmAgent;  return true; }
+    // Refused, not accepted-and-ignored: the caller then keeps the default and
+    // says nothing, which is what it already does for a misspelling, and better
+    // than storing a mode this build cannot carry out.
+    if( n == "agent" && agentModeAvailable() )
+                                       { out = pmAgent;  return true; }
     return false;
 }
 
@@ -656,7 +692,7 @@ const char *networkPolicyName( NetworkPolicy policy )
 bool networkPolicyFromName( const std::string &name, NetworkPolicy &out )
 {
     const std::string n = lowered( trimmed( name ) );
-    if( n == "agent" ) { out = npAgent; return true; }
+    if( n == "agent" && agentModeAvailable() ) { out = npAgent; return true; }
     if( n == "ask" )   { out = npAsk;   return true; }
     if( n == "allow" ) { out = npAllow; return true; }
     return false;
@@ -1275,8 +1311,15 @@ Permission decideWithAgent( const PermissionSubject &subject,
         rememberPlan( key, plan );
     }
 
-    p = decide( subject, &plan );
-    if( cached ) p.reason += " (as before)";
+    return decideWithPlan( subject, &plan, cached );
+}
+
+Permission decideWithPlan( const PermissionSubject &subject,
+                           const EffectPlan *plan,
+                           bool fromCache )
+{
+    Permission p = decide( subject, plan );
+    if( fromCache ) p.reason += " (as before)";
     return p;
 }
 

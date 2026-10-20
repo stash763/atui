@@ -52,6 +52,23 @@ enum NetworkPolicy {
     npAllow = 2     // network is never a reason to ask
 };
 
+// Whether this build can ask a model about a call at all.
+//
+// The permission agent is a second model call, so it needs a transport.  A build
+// without one does not have agent mode, and does not offer it: the mode is not
+// accepted from a config file or an environment variable either, because a program
+// that stores a capability it cannot perform shows a status line that is untrue --
+// and a permission display is the one place where being untrue is the failure, not
+// an inconvenience.
+bool agentModeAvailable();
+
+// What a build starts with, before the config file or the environment have said
+// anything.  Separate from `permissionMode()` because the live value is whatever
+// the last settings load or test left there, and "what does this build ship" is a
+// question worth asking on its own -- it is what a test can assert.
+PermissionMode     shippedDefaultPermissionMode();
+NetworkPolicy      shippedDefaultNetworkPolicy();
+
 // Process-wide settings, seeded by settings::loadAll() and written by saveAll().
 PermissionMode &permissionMode();
 NetworkPolicy  &networkPolicy();
@@ -227,6 +244,15 @@ Permission decide( const PermissionSubject &subject,
 // installed, an answer that cannot be read, a model that took too long and said
 // nothing - comes back as poAsk. `agentMs` reports how long the model took (0
 // when it was not consulted, so the log can tell "fast" from "not asked").
+// A decision taken with the agent's description already in hand: `plan` null when
+// the agent was not asked, could not be reached, or produced nothing to parse.
+// This is `decideWithAgent`'s second half, split out for a caller that cannot block
+// waiting for a second model -- the event-loop chat turn asks the question, keeps
+// drawing, and finishes the decision when the answer comes back.
+Permission decideWithPlan( const PermissionSubject &subject,
+                           const EffectPlan *plan,
+                           bool fromCache );
+
 Permission decideWithAgent( const PermissionSubject &subject,
                             const std::string &toolName,
                             const std::string &argumentsJson,

@@ -11,8 +11,9 @@
 namespace atui {
 namespace core {
 
-// M0/M1 stub: returns the user message as the "reply" so the TUI flow can be
-// verified without a backend.
+// What answers when this build has no transport: not a model, and not an echo of
+// the question -- `ask()` says plainly that there is nobody to ask.  See ai.cpp.
+// The TUI keeps working around it so the interface can be exercised headlessly.
 class ChatModelStub
 {
 public:

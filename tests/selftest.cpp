@@ -2263,6 +2263,36 @@ int test_permission_mode_names()
     if( atui::tools::kDefaultJudgeSeconds < atui::tools::kMinJudgeSeconds ||
         atui::tools::kDefaultJudgeSeconds > atui::tools::kMaxJudgeSeconds )
         return -14;
+
+    // Whether "agent" is a name this build accepts is the same question as whether
+    // a judgement can be made here at all, and the two are not allowed to come
+    // apart.  A build with no transport that accepted `mode = agent` from a config
+    // file would go on to show a status line describing a decider it does not have:
+    // the refusal is what keeps the display and the behaviour one fact.
+    if( atui::tools::agentModeAvailable() )
+    {
+        mode = atui::tools::pmAskAll;
+        if( !atui::tools::permissionModeFromName( "agent", mode ) ||
+            mode != atui::tools::pmAgent ) return -15;
+        net = atui::tools::npAsk;
+        if( !atui::tools::networkPolicyFromName( "agent", net ) ||
+            net != atui::tools::npAgent ) return -16;
+        if( atui::tools::shippedDefaultPermissionMode() != atui::tools::pmAgent )
+            return -17;
+    }
+    else
+    {
+        mode = atui::tools::pmExact;
+        if( atui::tools::permissionModeFromName( "agent", mode ) ) return -18;
+        if( mode != atui::tools::pmExact ) return -19;   // refused, and not written
+        net = atui::tools::npAsk;
+        if( atui::tools::networkPolicyFromName( "agent", net ) ) return -20;
+        // ...and it does not ship in that mode either: asking, not judging.
+        if( atui::tools::shippedDefaultPermissionMode() != atui::tools::pmExact )
+            return -21;
+        if( atui::tools::shippedDefaultNetworkPolicy() != atui::tools::npAsk )
+            return -22;
+    }
     return 0;
 }
 

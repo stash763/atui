@@ -2225,12 +2225,19 @@ SettingsDialog::SettingsDialog()
     // without the user losing the thread.
     insert( new TStaticText( TRect( 3, 6, size.x - 3, 7 ),
                              "Before running something:" ) );
+    // The third choice is a second model call, so it is only offered by a build
+    // that can make one.  A dialog that listed it without a transport would be
+    // advertising a way of deciding that never decides -- and the mode would then
+    // be saved into the config file, where it outlives the argument for it.
+    TSItem *agentItem = atui::tools::agentModeAvailable()
+        ? new TSItem( "A model judges what the facts cannot settle (agent)",
+                      NULL )
+        : NULL;
     modes = new TRadioButtons(
         TRect( 5, 7, size.x - 4, 10 ),
         new TSItem( "Always ask before a tool runs (ask_all)",
         new TSItem( "In-project work is fine, ask outside (exact)",
-        new TSItem( "A model judges what the facts cannot settle (agent)",
-                    NULL ) ) ) );
+                    agentItem ) ) );
     insert( modes );
     ushort chosen = ( atui::tools::permissionMode() ==
                       atui::tools::pmExact ) ? 1
@@ -2238,21 +2245,33 @@ SettingsDialog::SettingsDialog()
                         atui::tools::pmAgent ) ? 2 : 0;
     modes->setData( &chosen );
 
-    insert( new TStaticText( TRect( 3, 11, 30, 12 ),
-                             "Judging model:" ) );
-    judgeModel = new TInputLine( TRect( fieldLeft, 11,
-                                        (short) ( fieldLeft + 26 ), 12 ), 40 );
-    insert( judgeModel );
+    if( atui::tools::agentModeAvailable() )
+    {
+        insert( new TStaticText( TRect( 3, 11, 30, 12 ),
+                                 "Judging model:" ) );
+        judgeModel = new TInputLine( TRect( fieldLeft, 11,
+                                            (short) ( fieldLeft + 26 ), 12 ), 40 );
+        insert( judgeModel );
 
-    insert( new TStaticText( TRect( 3, 12, 30, 13 ),
-                             "Judging seconds:" ) );
-    judgeSeconds = new TInputLine( TRect( fieldLeft, 12,
-                                          fieldLeft + 4, 13 ), 3 );
-    insert( judgeSeconds );
-    std::snprintf( range, sizeof range, "%d to %d",
-              atui::tools::kMinJudgeSeconds, atui::tools::kMaxJudgeSeconds );
-    insert( new TStaticText( TRect( fieldLeft + 6, 12, size.x - 3, 13 ),
-                             range ) );
+        insert( new TStaticText( TRect( 3, 12, 30, 13 ),
+                                 "Judging seconds:" ) );
+        judgeSeconds = new TInputLine( TRect( fieldLeft, 12,
+                                              fieldLeft + 4, 13 ), 3 );
+        insert( judgeSeconds );
+        std::snprintf( range, sizeof range, "%d to %d",
+                  atui::tools::kMinJudgeSeconds, atui::tools::kMaxJudgeSeconds );
+        insert( new TStaticText( TRect( fieldLeft + 6, 12, size.x - 3, 13 ),
+                                 range ) );
+    }
+    else
+    {
+        // Two fields that would configure a model this build cannot reach, and in
+        // their place the reason.  Empty space would read as a bug, and a
+        // greyed-out field as a promise.
+        insert( new TStaticText( TRect( 3, 11, size.x - 3, 13 ),
+            "Judging is done by a second model, which needs a\n"
+            "build with a network transport. This one asks." ) );
+    }
 
     // `[tools] command_timeout`, and deliberately the only one of the two command
     // settings that is here. `pass_env` - the names to hand a command anyway -
@@ -2270,8 +2289,10 @@ SettingsDialog::SettingsDialog()
 
     setInput_( wheel, atui::core::toString( atui::settings::wheelLines() ) );
     setInput_( timeout, atui::core::toString( atui::net::requestMinutes() ) );
-    setInput_( judgeModel, atui::tools::judgeModelOverride() );
-    setInput_( judgeSeconds, atui::core::toString( atui::tools::judgeSeconds() ) );
+    if( judgeModel )
+        setInput_( judgeModel, atui::tools::judgeModelOverride() );
+    if( judgeSeconds )
+        setInput_( judgeSeconds, atui::core::toString( atui::tools::judgeSeconds() ) );
     setInput_( cmdTimeout, atui::core::toString( atui::tools::commandTimeoutSeconds() ) );
 
     // TStaticText wraps at the width it was given and then clips to the height it
@@ -2279,14 +2300,19 @@ SettingsDialog::SettingsDialog()
     // box, not in sentences. The About box lost two lines that way, which is why
     // every row here is counted against the box it sits in and the dialog is 25
     // rows tall because DOS text mode is, and 25 rows is the whole screen.
+    // One line or the other about judging, and both are the same length so the
+    // paragraph below stays the same shape on screen.
+    const char *judgeHelp = atui::tools::agentModeAvailable()
+        ? "Judging is by a second model; blank uses the chat model."
+        : "Nothing is judged here: no model can be reached.";
     insert( new TStaticText( TRect( 3, 15, size.x - 3, 22 ),
+        ( std::string(
         "One wheel notch scrolls the chat by that many lines; the\n"
         "request timeout is per request, so a tool round gets it\n"
         "again. A command is stopped at its timeout along with\n"
         "everything it started, and 0 there means no limit. A\n"
         "field with no number in it keeps the value it has.\n"
-        "\n"
-        "Judging is by a second model; blank uses the chat model." ) );
+        "\n" ) + judgeHelp ).c_str() ) );
 
     TButton *ok     = new TButton( TRect( 19, 22, 31, 24 ), "~O~K",
                                    cmOK, bfDefault );
@@ -2334,16 +2360,22 @@ void TApp::showSettings()
                             : ( chosen == 2 ) ? atui::tools::pmAgent
                                               : atui::tools::pmAskAll;
 
-        std::string model( d->judgeModel->data );
-        const size_t from = model.find_first_not_of( " \t" );
-        const size_t to   = model.find_last_not_of( " \t" );
-        atui::tools::judgeModelOverride() =
-            ( from == std::string::npos ) ? std::string()
-                                          : model.substr( from, to - from + 1 );
+        // The judging fields are absent in a build that cannot reach a model, and
+        // absent fields change nothing -- in particular they do not clear a value
+        // written by a build that can.
+        if( d->judgeModel && d->judgeSeconds )
+        {
+            std::string model( d->judgeModel->data );
+            const size_t from = model.find_first_not_of( " \t" );
+            const size_t to   = model.find_last_not_of( " \t" );
+            atui::tools::judgeModelOverride() =
+                ( from == std::string::npos ) ? std::string()
+                                              : model.substr( from, to - from + 1 );
 
-        atui::tools::judgeSeconds() = atui::tools::clampJudgeSeconds(
-            SettingsDialog::numberIn( d->judgeSeconds,
-                                      atui::tools::judgeSeconds() ) );
+            atui::tools::judgeSeconds() = atui::tools::clampJudgeSeconds(
+                SettingsDialog::numberIn( d->judgeSeconds,
+                                          atui::tools::judgeSeconds() ) );
+        }
 
         // Unlike the other fields, 0 in this one is an answer: no limit. Only a
         // field with no digits in it at all means "leave it alone".
