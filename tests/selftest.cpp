@@ -41,6 +41,9 @@ namespace atui_test {
 
 // Defined in tests/oai_mock_test.cpp (network builds only).
 void init_network_tests();
+// Defined in tests/http_test.cpp (network builds only): the event-loop HTTP
+// transport, against a scripted responder on localhost.
+void init_http_transport_tests();
 // Defined in tests/oai_live_test.cpp (network builds only; registers nothing
 // unless ATUI_LIVE_BASE_URL names a server).
 void init_live_tests();
@@ -2823,6 +2826,8 @@ void init()
     // Socket-backed OpenAI client + chat-model integration tests (defined in
     // tests/oai_mock_test.cpp).
     init_network_tests();
+    // The transport underneath them (tests/http_test.cpp).
+    init_http_transport_tests();
 #endif
     register_test( "tool: get_time", &test_time_tool );
     register_test( "tool: registry render", &test_tool_registry );

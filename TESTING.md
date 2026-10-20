@@ -6,7 +6,7 @@ which needs a real terminal (pty) to exercise.
 ## Build & unit tests
 
     cmake --build build          # from repo root
-    ./build/atui --self-test     # unit + integration tests (106/106 network build, 79/79 without)
+    ./build/atui --self-test     # unit + integration tests (122/122 network build, 81/81 without)
     # ...plus 4 live-server tests when ATUI_LIVE_BASE_URL is set (see 'Live endpoint testing')
 
 Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
@@ -492,6 +492,61 @@ teardown. Coverage (`--self-test`, network build):
 These register via `atui_test::init_network_tests()` (called from
 `selftest.cpp` under `#ifdef ATUI_HAVE_NETWORK`); the file compiles to nothing
 in non-network builds (verified: 40/40 there, 60/60 with network).
+
+
+## The HTTP transport (state machine, no threads)
+
+`src/net/http.cpp` + `src/net/sock.h` are atui's own HTTP/1.1 client, written
+because the compiler atui is written for first has no threads and no libcurl:
+`OaiChatModel`'s worker thread and its `TokenQueue` are the things it replaces.
+It is a state machine — `start()`, then `step(waitMs)` from the event loop, then
+callbacks into whatever is drawing — and it deliberately understands only what a
+LAN client needs: status line and headers (which may split at any byte), a body
+framed by `Content-Length`, by `Transfer-Encoding: chunked`, or by the close of
+the connection, and the difference between an answer that ended and one that was
+cut short.  No redirects, no HTTPS, no keep-alive.
+
+The platform differences live in three files, each empty on the platforms it is
+not for:
+
+| file | what it is | compiled and run |
+| --- | --- | --- |
+| `sock_posix.cpp` | Linux, FreeBSD, macOS | yes (all the tests below) |
+| `sock_os2.cpp` | OS/2: `soclose`, `sock_errno`, `FIONBIO`, the include order | not yet (it is not in the Watcom build list yet) |
+| `sock_win.cpp` | Winsock2 | not yet (no Windows toolchain, and the file says so at the top) |
+
+`tests/http_test.cpp` runs it against `tests/http_pipe.h`, a scripted responder
+on `127.0.0.1` that writes whatever it is told, in pieces, with a pause between
+them — because a server that answers in one write tests nothing about a client
+that has to cope with a byte at a time:
+
+- `http: request on the wire` — request line, `Host:` with the port, the
+  `Authorization`/`Content-Type`/`Accept` lines, `Content-Length` matching the
+  body, `Connection: close`, and the body as the last bytes.
+- `http: plain body`, `http: empty body` — `Content-Length` framing, including
+  the answer that finishes with no body byte at all.
+- `http: headers split across reads` (7 bytes at a time),
+  `http: body split across reads` (3 at a time),
+  `http: chunked one byte at a time` — partial reads everywhere.
+- `http: chunked body`, `http: body until close` — the other two framings.
+- `http: error status is delivered` — a 415 reaches the caller with its body:
+  the transport reports, the caller decides.
+- `http: truncated body is an error` — promised 2000 bytes, got 20: `onFinish`
+  says failure with words. Control-checked: teaching `readOnce` to accept a close
+  mid-body fails exactly this test and nothing else.
+- `http: close without answering`, `http: not http` — an accept-and-close, and a
+  server that is not speaking HTTP.
+- `http: connection refused` — a closed port. Where the refusal appears differs
+  by platform (BSD fails in `start()`; OS/2 only once `select()` and `SO_ERROR`
+  have been asked), so the test accepts either and insists it is a failure.
+- `http: abort ends it once` — escape pressed mid-request: one `onFinish`, with
+  the caller's reason, and a second `abort()` adds nothing.
+
+Not wired into the program yet: the chat model still uses libcurl and a worker
+thread on the platforms that have them, so the transport is currently tested and
+not used.  That is the next change, and until it lands `--self-test` covers the
+transport while the old path still carries the traffic.
+
 
 
 ## Model picker (Providers dialog)

@@ -77,6 +77,15 @@ set(ATUI_SOURCES
 )
 if(ATUI_HAVE_NETWORK)
     list(APPEND ATUI_SOURCES
+        # The transport: HTTP/1.1 as a state machine over a socket layer small
+        # enough to hold the differences between the platforms.  All three socket
+        # files are listed -- each is empty on the platforms it is not for -- so
+        # the set of sources does not depend on the host, which is what keeps a
+        # cross build from finding one file missing.
+        "${ATUI_SRC_DIR}/net/http.cpp"
+        "${ATUI_SRC_DIR}/net/sock_posix.cpp"
+        "${ATUI_SRC_DIR}/net/sock_os2.cpp"
+        "${ATUI_SRC_DIR}/net/sock_win.cpp"
         "${ATUI_SRC_DIR}/net/oai_client.cpp"
         "${ATUI_SRC_DIR}/net/oai_chat_model.cpp"
         "${ATUI_SRC_DIR}/net/permission_judge.cpp"
@@ -85,12 +94,16 @@ if(ATUI_HAVE_NETWORK)
         "${ATUI_SRC_DIR}/net/dbg.cpp"
     )
     add_compile_definitions(ATUI_HAVE_NETWORK=1)
+    # NOTE: libcurl is still linked, because OaiClient still uses it.  The state
+    # machine above is what replaces it, and this line goes away when the chat
+    # model is driven by it (the OS/2 build has never had curl and never will).
 endif()
 if(ATUI_BUILD_TESTS)
     list(APPEND ATUI_SOURCES
         "${ATUI_TESTS_DIR}/runner.cpp"
         "${ATUI_TESTS_DIR}/selftest.cpp"
         "${ATUI_TESTS_DIR}/oai_mock_test.cpp"
+        "${ATUI_TESTS_DIR}/http_test.cpp"
         "${ATUI_TESTS_DIR}/oai_live_test.cpp"
         "${ATUI_TESTS_DIR}/markdown_test.cpp"
     )
@@ -122,6 +135,14 @@ if(ATUI_HAVE_NETWORK)
         PRIVATE
             CURL::libcurl
     )
+    if(WIN32)
+        # The other platforms have sockets in the C library; Windows keeps them in
+        # ws2_32, and net/sock_win.cpp is the only thing that wants it.
+        target_link_libraries(atui
+            PRIVATE
+                ws2_32
+        )
+    endif()
 endif()
 
 # Version string, consumed via the ATUI_VERSION macro, and the source root so a
