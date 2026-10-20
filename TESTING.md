@@ -2175,6 +2175,100 @@ Three traps, each of which produced a wrong conclusion before it was seen:
   only, or end the program first. (`tui-test` sessions also survive a program that
   quits on Esc, which makes the whole loop above possible.)
 
+## atui itself compiles, links and runs on OS/2 (measured 2026-10-20)
+
+`build.cmd atui` compiles every translation unit of the program -- 26 of them, the
+configuration CMake calls `ATUI_HAVE_NETWORK=OFF` -- and `build.cmd exe` links them
+into `atui.exe`. `ATUI-BUILD-RC=0`, and atui's own sources add no warnings: the
+three that remain are `tspan.h(84)` W446 and `textview.h(38)` W728, both inside the
+fork's headers, reached from settings.cpp, theme.cpp and app.cpp.
+
+    tools/atui-remote sync
+    tools/atui-remote build --batch-args atui          # the program
+    tools/atui-remote build --batch-args exe           # link it, and dir atui.exe
+    tools/atui-remote --exec "d:\atui\atui.exe --version"
+
+**It runs.** `--version` prints `atui 0.0.0-os2`, through Watcom's C++ I/O. The TUI
+draws on the streamed path. `--help` is not a top-level flag -- it belongs to
+`--judge-check` -- so `atui.exe --help` starts the interface, which is what the same
+command line does on every other platform.
+
+**Size, unstripped with a map: 1,079,405 bytes** (map 253,481). With the reference
+points above -- hello world 23,022, `tvhello` 254,697, `tvrun` 259,929 -- atui is
+roughly 820 KB over a tvision program that does nothing, before `wstrip`. That is
+the number to bring down next, and it is measured rather than assumed for the first
+time.
+
+### What the screen looks like, and where it differs (streamed path)
+
+Reference: `build-off/atui`, the same configuration, in `tui-test` at 80x25,
+compared row by row with `atui.exe` in the same tool at the same size.
+
+* Same: menu bar, transcript text, the scrollbar trough as 19 rows of `▓` in the
+  last column, the separator above the prompt, the status line's layout.
+* The status line reads `default | llama  perm: in-project ok, asks about commands`
+  because the box has no atui.ini to read, and the no-network build does not offer
+  the agent's `a model checks the rest`. Expected, and the second half of the
+  sentence is the requirement about not advertising agent mode holding.
+* **The scrollbar's arrows arrive as spaces.** The stream sends `[0;30;42m ` where
+  Linux draws `▲` and `▼`: the classic layer asks for CP437 `0x1E`/`0x1F`, which are
+  control codes to a VT terminal, and the driver substitutes a space for what it
+  cannot express. The shade characters (`0xB0`, `0xDB`) pass through untouched, so
+  it is two code points in a translation table rather than the drawing. Awaiting a
+  fork change, if the arrows are worth the round trip; on the box's own screen the
+  VIO path writes CP437 to video memory and is not affected.
+* **Startup draws twice**, and a capture taken inside the first frame shows the menu
+  bar underneath the desktop shade (`File  S░░░...`) and the separator 65 columns
+  wide. Any event repairs both, and the steady state is right: typing 90 characters
+  wraps at column 80 and the separator is 80 columns. This is the double flush
+  already noted below for the dark theme, seen from the other side -- here it was
+  mistaken for two layout bugs before anything was typed.
+
+### What the compiler said, and what atui does about it
+
+Each line was a compile or link error on the target, not a prediction. The fixes are
+shared helpers in `src/core/` rather than `std` shims, so that the rest of atui reads
+the same on every platform.
+
+* `std::string` has no `compare`, no `front`/`back`, no `pop_back`, no `to_string`;
+  `insert(pos, n, char)` is ambiguous. → `core::startsWith`, `core::endsWith`,
+  `core::toString`, and index/erase where the code looked at the ends of a string.
+* No free `std::getline`, no `operator<<(ostream &, const std::string &)`, and
+  `<sstream>` is an empty stub, so there is no `std::ostringstream`. →
+  `core::readLine` for files and for the SSE loop, `.c_str()` at the `<<`, and
+  `core::Fmt` for building a formatted string.
+* `<cstdio>` and `<cstring>` declare into `std` and make no global promise, so
+  `snprintf`, `FILE`, `rename`, `memcmp` are undeclared as written. → `std::` on
+  each. `va_*` is the exception and must not be qualified.
+* `std::streamsize` is not a member of `std`. → `long`, and passing the chunk size to
+  `read()` uncast, which is what both libraries accept.
+* printf has no `%zu` (`%lld` works). → `core::toString( (unsigned long) n )`. A
+  `%zu` on Watcom prints a plausible wrong number rather than complaining, which is
+  the worse failure.
+* No `gmtime_r`, no `localtime_r`. → `core::utcBreakdown`/`core::localBreakdown` in
+  `src/core/clock.{h,cpp}`, which says once what the non-reentrant form costs.
+* `std::map` has no `count()` at all and rejects `find()` through a const reference
+  (`tools/os2/probe_constmap.cpp`, control-checked). → `core::findEntry`/`core::hasEntry`.
+* A `using`-declaration of an external function inside an anonymous namespace becomes
+  an internal-linkage function that is never defined: "static function 'startsWith'
+  has not been defined", blamed on `D:\WATCOM\H\vector(453)`. → qualify the call sites.
+* `<queue>` is a stub. → `TokenQueue` is a `std::vector` with a read index, emptied
+  when the index reaches the end.
+* The C library's environment block is `environ`, not `_environ`; the link said
+  `__environ is an undefined reference`. It is used through the declaration in
+  `<stdlib.h>` and never redeclared, because a bare `extern char **_environ;` in a
+  C++ translation unit asks for a C++ object of that name.
+* **`noexcept` in atui's TUI code needs no change**, and this is the fork's own
+  mechanism rather than a new one: `tvision/include/tvision/ttypes.h` reserves
+  `constexpr`, `noexcept` and `thread_local` away when `__cplusplus < 201103L`, and
+  Watcom reports `__cplusplus == 1`. It works only in a file that includes a tvision
+  header first, which `src/tui/app.cpp` does; a `noexcept` in `src/core/` would not
+  compile.
+
+Still open on this target: the VIO path on the box's own screen (needs a person at
+it), the size after `wstrip` and `-os`, the socket transport that replaces libcurl,
+and a deadline for child commands, which `_popen` does not offer.
+
 ## Open question (minor, does not affect final rendering)
 
 With `ATUI_THEME=dark`, startup produces two full-screen flushes: the first
