@@ -520,7 +520,81 @@ class Session:
                 break
         return bytes(out)
 
+    def pump_until(self, needle, timeout=30.0, sink=None):
+        """Read until `needle` shows up in the decoded stream.
+
+        Returns the text that came before it, or None on timeout.  The search is
+        over everything read so far rather than over each chunk, so a sentinel
+        split across two telnet segments still matches.
+        """
+        buf, end = "", now() + timeout
+        while now() < end:
+            chunk = self.pump(0.2)
+            if chunk:
+                text = self.codecs.decode(chunk)
+                buf += text
+                if sink and text:
+                    sink(chunk)
+                if needle in buf:
+                    return buf[:buf.index(needle)]
+        return None
+
+    def run_until(self, command, timeout=60.0, tries=4, sink=None):
+        """One command, bracketed by echoes, and its output between them.
+
+        `run()` above waits for the prompt, and there are two ways that lies: a
+        prompt is already sitting on the screen when the session starts, so the
+        first command can be reported as finished before its output begins; and a
+        line typed at a command processor that has not finished coming up is
+        dropped without trace.  Both were measured, as commands that "produced no
+        output" while the program had run, or had never started, indistinguishably.
+
+        So each line is asked for by name: an `echo` of a nonce first, which
+        proves the command processor is awake and reading, then the command, then
+        the end nonce.  They are sent as separate lines rather than joined with
+        `&&`, because the command processor queues typed input, so the end marker
+        runs after the command whatever it returned -- and because this command
+        processor has been known to swallow a `&&`.  If the end marker never
+        arrives, the answer is "it is still running", which is a different fact
+        from "it printed nothing" and used to be reported as it.
+        """
+        nonce = "%04x" % (int.from_bytes(os.urandom(2), "big"))
+        start, finish = "ATUIRUN" + nonce, "ATUIDONE" + nonce
+        for _ in range(tries):
+            self.send_text("echo %s\r\n" % start)
+            if self.pump_until(start, 6.0) is None:
+                continue                      # the line never reached anything
+            self.send_text(command + "\r\n")
+            self.send_text("echo %s\r\n" % finish)
+            body = self.pump_until(finish, timeout, sink)
+            if body is None:
+                warn("no end marker within %ds of %s: it may still be running"
+                     % (timeout, command))
+                return None
+            # Drop the echoed command line: it is the first line of what is left,
+            # and the shell's echo of a line is not the line's output.
+            lines = body.splitlines(True)
+            if lines and command.split()[0] in lines[0]:
+                lines = lines[1:]
+            return "".join(lines)
+        warn("the command processor never echoed the start marker")
+        return None
+
     def close(self):
+        # Say goodbye, and wait for the server to finish saying it back.  Without
+        # the goodbye the server holds the session until TCP times out, and after a
+        # handful of bridge runs in a row -- which is what a build session is --
+        # logins stop completing, the symptom being a command that never echoes
+        # anything.  Closing the socket the moment `exit` is typed is nearly as
+        # bad: the runs then alternated failure, success, failure.  Draining to EOF
+        # lets the server reap the session instead of abandoning it.
+        try:
+            self.send_text("exit\r\n")
+            end = now() + 2.0
+            while now() < end and self.pump(0.2):
+                pass
+        except OSError:
+            pass
         try:
             self.sock.close()
         except OSError:
@@ -531,30 +605,73 @@ class Session:
 # ------------------------------------------------------------ relay (default) ---
 
 
+def open_session(args):
+    """A telnet session, logged in and ready."""
+    session = Session(args.host, args.port, args)
+    session.start()
+    if args.user and not args.no_login:
+        session.login(args.user, args.password)
+    return session
+
+
 def cmd_relay(args):
     """The bridge: pty one way, socket the other, and no interpretation between."""
     if not args.host:
         warn("no --host (and ATUI_REMOTE_HOST is unset)")
         return 2
+
+    if args.exec_cmd:
+        # --exec is the scripted path.  Several --exec options share one session:
+        # the box's telnet server keeps a session slot after the connection is
+        # gone, and a workflow that asks six questions makes six of them, which is
+        # how it ends up accepting connections and saying nothing.  Each command's
+        # output is printed under its own heading so a batch is still readable.
+        # It accepts a connection and then says nothing at all -- no banner, no
+        # login prompt, no echo -- when it is holding sessions that a previous run
+        # abandoned and have not yet timed out; and its command processor drops a
+        # line typed while it was still coming up.  Both used to come back as
+        # "command produced no output", which is how a command that never started
+        # and a command that printed nothing became the same report.  So the whole
+        # connection is retried after a pause to let the server reap what it holds,
+        # and each attempt says which attempt failed.
+        for attempt in range(1, args.tries + 1):
+            try:
+                session = open_session(args)
+            except OSError as exc:
+                warn("attempt %d: cannot reach %s:%d: %s"
+                     % (attempt, args.host, args.port, exc))
+                session = None
+            if session is not None:
+                failed = False
+                for n, command in enumerate(args.exec_cmd, 1):
+                    if len(args.exec_cmd) > 1:
+                        print("[%d/%d] %s" % (n, len(args.exec_cmd), command))
+                    out = session.run_until(command, timeout=args.run_timeout,
+                                            sink=lambda b: os.write(1, b))
+                    if out is None:
+                        warn("the command processor never answered %s" % command)
+                        failed = True
+                        break
+                    if not out.strip():
+                        warn("command produced no output")
+                if args.trace:
+                    sys.stderr.write("\n".join(session.nego.trace) + "\n")
+                session.close()
+                if not failed:
+                    return 1 if len(args.exec_cmd) == 0 else 0
+                # A half-finished batch is not retried from the top: the commands
+                # that already ran may have side effects.  The caller sees which
+                # one stopped, and the session was closed cleanly.
+                return 1
+            if attempt < args.tries:
+                time.sleep(4 * attempt)
+        return 1
+
     try:
-        session = Session(args.host, args.port, args)
+        session = open_session(args)
     except OSError as exc:
         warn("cannot reach %s:%d: %s" % (args.host, args.port, exc))
         return 1
-
-    session.start()
-    if args.user and not args.no_login:
-        session.login(args.user, args.password)
-
-    if args.exec_cmd:
-        out = session.run(args.exec_cmd, timeout=args.run_timeout, idle=args.idle,
-                          sink=lambda b: os.write(1, b))
-        if not out.strip():
-            warn("command produced no output")
-        if args.trace:
-            sys.stderr.write("\n".join(session.nego.trace) + "\n")
-        session.close()
-        return 0
 
     if args.cmd:
         session.send_text(args.cmd + "\r\n")
@@ -1444,7 +1561,11 @@ def cmd_build(args):
     remote_log = args.remote_root + "\\" + args.log
     _ftp_delete(args, remote_log)
 
-    session.run(command, timeout=args.run_timeout, idle=args.idle, sink=progress)
+    # The console is advisory -- the log is the verdict -- but the bracketed send
+    # is what makes a command line dropped on the way to a command processor that
+    # had not finished coming up a retry instead of an hour of polling.  The cap
+    # is short on purpose: after it the log decides, and the log cannot be stale.
+    session.run_until(command, timeout=min(args.run_timeout, 300.0), sink=progress)
     session.close()
 
     # Wait on the file rather than on the screen.  A link is a dozen silent
@@ -1533,10 +1654,18 @@ def build_parser():
                "  tui-test run --cols 80 --rows 25 -- tools/atui-remote --host HOST\n")
     add_common(p)
     p.add_argument("--cmd", default="", help="run this once logged in, then interact")
-    p.add_argument("--exec", dest="exec_cmd", default="",
-                   help="non-interactive: run this, print output, exit")
+    p.add_argument("--exec", dest="exec_cmd", action="append", default=[],
+                   help="non-interactive: run this, print output, exit.  Repeat "
+                        "it to run several commands down one connection, which is "
+                        "what this box's session slots prefer")
     p.add_argument("--no-login", action="store_true", help="do not answer login prompts")
     p.add_argument("--run-timeout", type=float, default=120.0)
+    p.add_argument("--tries", type=int, default=3,
+                   help="how often to make the whole telnet connection when the "
+                        "box accepts it and says nothing.  It does that while "
+                        "holding sessions that have not timed out yet -- and a "
+                        "retry opens another one, so this is a small number on "
+                        "purpose; when the box is deaf, waiting is what works")
     p.add_argument("--idle", type=float, default=1.2,
                    help="finish a command after this many quiet seconds")
     p.add_argument("--quiet", action="store_true")

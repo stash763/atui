@@ -27,6 +27,11 @@ rem                           compiling anything, which keeps the two questions
 rem                           -- does it compile, does it link -- apart.
 rem      build.cmd size      `atui` again with -os instead of -od, for the size
 rem                           measurement; the :size section says how to ask it.
+rem      build.cmd netlink probe_net.cpp probe_net.exe
+rem                           `link` plus tcpip32.lib, for the socket probes.
+rem                           Separate because an import library is a promise the
+rem                           loader has to keep, so it is not something to link
+rem                           into a program that never opens a socket.
 rem
 rem  Why a batch file and not a command line: this target's command processor
 rem  silently discards an input line longer than about 315 characters and says
@@ -139,6 +144,7 @@ if "%1"=="one" goto one
 if "%1"=="lib" goto lib
 if "%1"=="link" goto link
 if "%1"=="exe" goto exe
+if "%1"=="netlink" goto netlink
 if "%1"=="size" goto size
 if "%1"=="atui" goto atui
 
@@ -220,12 +226,12 @@ rem program's startup, and how large the result is.  The object list goes into a
 rem response file a line at a time -- wlink documents "@directive_file", and a
 rem "#" at the start of a line is its comment, which wpp386 response files have
 rem no notion of.
-echo [link] %2 -> %3
+echo [link] %2 to %3
 rem The object goes into a scratch directory of its own and the link takes
 rem everything in it: pointing at obj\at instead would link whatever else had
 rem been compiled there, and a second main() is not a linker error worth
 rem spending an afternoon on.
-echo [link] %2 -> %3
+echo [link] %2 to %3
 if not exist obj\one mkdir obj\one
 if exist obj\one\*.obj del obj\one\*.obj
 %WPP% -fo=obj\one\ %2 >> %LOG% 2>&1
@@ -249,6 +255,31 @@ wlink @link.rsp >> %LOG% 2>&1
 if errorlevel 1 goto one_failed
 dir %3
 echo [link] OK
+goto summary
+
+:netlink
+rem `link` with the TCP/IP import library added, which is what the socket probes
+rem need and nothing else wants.  It is a separate mode because an import library
+rem is not a passive thing: linking one records the DLL's entry points in the
+rem image, so a program that never opened a socket would still require the
+rem TCP/IP stack at load time.  %2 is the source, %3 the executable.
+echo [netlink] %2 to %3
+if not exist obj\one mkdir obj\one
+if exist obj\one\*.obj del obj\one\*.obj
+%WPP% -fo=obj\one\ %2 >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+if exist link.rsp del link.rsp
+echo system os2v2 > link.rsp
+echo name %3 >> link.rsp
+echo op m >> link.rsp
+echo option stack=256k >> link.rsp
+for %%f in (obj\one\*.obj) do echo file %%f >> link.rsp
+echo library tcpip32.lib >> link.rsp
+echo library os2386.lib >> link.rsp
+wlink @link.rsp >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+dir %3
+echo [netlink] OK
 goto summary
 
 :size

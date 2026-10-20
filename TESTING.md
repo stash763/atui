@@ -1616,6 +1616,36 @@ mis-set window shows up as a dropped or doubled key.
 - `--log-raw PREFIX` writes `PREFIX.out`/`PREFIX.in` byte-exact. Use it before
   reasoning about what the wire carried: a charset conversion is invisible in
   decoded text, and it was caught only by comparing hex.
+- **The server keeps session slots, and a busy bridge runs out of them.** When it
+  has, it accepts the TCP connection, negotiates, and then says nothing at all --
+  no banner, no login prompt, no echo -- which the bridge used to report as
+  "command produced no output" for a command that had never started.  Nothing in
+  `netstat` shows it, because the connections are gone: it is the server holding
+  sessions it has not reaped.  Three things follow.  End sessions with `exit` and
+  drain until quiet, which the bridge now does.  Ask several questions per
+  connection -- `--exec` is repeatable and the repeats share one session.  And
+  when the box has gone deaf, more connections are the wrong remedy: a retry opens
+  another slot, which is why `--tries` is three and why waiting minutes is what
+  actually works.
+- **A command line can be dropped on the way to the command processor**, and the
+  symptom is the same empty report.  So `--exec` brackets each command with two
+  `echo`s of a random nonce and waits for the pair: the first proves the processor
+  is awake and reading, the second says the command finished.  They are sent as
+  separate lines, not joined with `&&`, because typed input is queued -- so the end
+  marker runs whatever the command returned -- and because this command processor
+  has been seen to swallow a `&&`.  Absent end marker now means "it is still
+  running", which is a different fact from "it printed nothing" and used to be
+  reported as it.
+- `--exec "d: && cd \\atui && build.cmd ..."` does not run at all, while
+  `--exec "d:\\atui\\build.cmd ..."` does.  The batch changes drive and directory
+  itself, which is the reason it was written to do that.
+- **`echo something -> file` in a batch is a redirection, not text.** The
+  `:netlink` mode announced `[netlink] %2 -> %3`, which cmd read as "redirect this
+  line to the file named by %3" -- so a failed compile left behind a 27-byte
+  `probe_net.exe` containing the echo, and a link that had not run looked like a
+  link that had.  Write `to` or escape it (`-^>`).  The `:link` mode had the same
+  line twice and only survived because its link overwrote the file afterwards.
+
 
 ### Building on the target (Open Watcom, OS/2)
 
