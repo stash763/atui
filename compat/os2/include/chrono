@@ -1,0 +1,143 @@
+/* chrono -- <chrono> for the one compiler that has no version of it.
+
+   Same reason as mutex: Watcom 1.9 has no <chrono>, and atui needs elapsed time
+   in milliseconds in three places -- the deadline in run_command, the timeout on
+   the approval handshake, and how long the permission judge took, which is
+   written into the log because a judge that takes nine seconds is a fact about
+   the program worth recording.
+
+   Only what atui uses is here:
+
+      std::chrono::steady_clock::now()
+      std::chrono::steady_clock::time_point      + duration, - time_point
+      std::chrono::milliseconds, std::chrono::seconds
+      std::chrono::duration_cast< milliseconds >( x ).count()
+
+   The clock is DosTmrQueryTime, a 64-bit counter of timer ticks: measured on the
+   target at 1193167 ticks per second, monotonic, and 263 ms for a DosSleep( 250 )
+   -- the tick is about a microsecond, so milliseconds are no problem.  Clock ticks
+   are used rather than the wall clock because every use is a difference, and a
+   wall clock that jumps backwards, which on a machine whose time comes from
+   someone else's network is a thing that happens, should not be able to make a
+   command timeout last longer.
+
+   `duration` here is a class rather than the template the standard has, and
+   milliseconds and seconds derive from it by private-count conversion instead of
+   being typedefs of one another.  That is not laziness: if seconds had been a
+   second name for the same type as milliseconds, `now() + seconds( 30 )` would
+   have compiled, added thirty *milliseconds*, and shown up as a command being
+   killed almost immediately with nothing in the code to point at.
+*/
+#ifndef ATUI_OS2_COMPAT_CHRONO
+#define ATUI_OS2_COMPAT_CHRONO
+
+#include <os2.h>
+#include <stdlib.h>
+
+namespace std {
+namespace chrono {
+
+/* Declared here and defined below: steady_clock::now() is written in terms of
+   it, and the two need each other in that order. */
+inline long long elapsedMs();
+
+/* Every duration in here is a count of milliseconds whatever it was written as.
+   count() is the standard spelling; ms() is the same number and exists because
+   the conversions below would otherwise have to reach into each other. */
+class duration {
+public:
+    duration()
+        : ms_( 0 ) {}
+    duration( long long ms )
+        : ms_( ms ) {}
+
+    long long count() const { return ms_; }
+    long long ms()    const { return ms_; }
+
+private:
+    long long ms_;
+};
+
+class milliseconds : public duration {
+public:
+    explicit milliseconds( long long ms )
+        : duration( ms ) {}
+};
+
+class seconds : public duration {
+public:
+    explicit seconds( long long s )
+        : duration( s * 1000LL ) {}
+
+    /* count() of a seconds value is a number of seconds, as it is in the
+       standard; the milliseconds it holds are the internal representation. */
+    long long count() const { return ms() / 1000LL; }
+};
+
+/* Converting between the two is a change of representation, not of value, and
+   the only conversion atui ever asks for is "give me this in milliseconds". */
+template< class To >
+To duration_cast( const duration &d )
+{
+    return To( d.ms() );
+}
+
+class time_point {
+public:
+    time_point()
+        : ms_( 0 ) {}
+    explicit time_point( const duration &d )
+        : ms_( d.ms() ) {}
+
+    duration time_since_epoch() const { return duration( ms_ ); }
+
+    time_point operator+( const duration &d ) const { return time_point( duration( ms_ + d.ms() ) ); }
+    time_point operator-( const duration &d ) const { return time_point( duration( ms_ - d.ms() ) ); }
+
+    duration operator-( const time_point &o ) const { return duration( ms_ - o.ms_ ); }
+
+    bool operator<( const time_point &o )  const { return ms_ < o.ms_; }
+    bool operator>( const time_point &o )  const { return ms_ > o.ms_ ; }
+    bool operator<=( const time_point &o ) const { return ms_ <= o.ms_; }
+    bool operator>=( const time_point &o ) const { return ms_ >= o.ms_; }
+
+private:
+    long long ms_;
+};
+
+struct steady_clock {
+    typedef long long          rep;
+    typedef chrono::duration   duration;
+    typedef chrono::time_point time_point;
+
+    static time_point now()
+    {
+        return time_point( duration( elapsedMs() ) );
+    }
+};
+
+/* Ticks to milliseconds without overflowing and without needing 128-bit
+   intermediate arithmetic: the counter is 64 bits and 1193167 * 1000 fits in
+   anything, so the multiply cannot hurt. */
+inline long long elapsedMs()
+{
+    static long long freq = 0;
+    if( freq == 0 )
+    {
+        ULONG f = 0;
+        if( DosTmrQueryFreq( &f ) != 0 || f == 0 )
+            abort();
+        freq = (long long) f;
+    }
+
+    unsigned long long ticks = 0;
+    if( DosTmrQueryTime( (PQWORD) &ticks ) != 0 )
+        abort();
+
+    return (long long) ( ticks * 1000ULL / (unsigned long long) freq );
+}
+
+} // namespace chrono
+} // namespace std
+
+#endif /* ATUI_OS2_COMPAT_CHRONO */

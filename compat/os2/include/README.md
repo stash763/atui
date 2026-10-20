@@ -84,9 +84,25 @@ and which does work here.
 
 C++11 is not: no `std::function` (only the pre-standard adaptors), no
 `unique_ptr` (though `shared_ptr` and `auto_ptr` are there), no `to_string`, no
-`string::front`/`back`, no `enable_if`.
+`string::front`/`back`, no `string::compare` (the `compare` in `_strdef.h` belongs
+to `char_traits`), no `enable_if`.  `<array>` is another empty stub.  There is no
+free `std::getline` either, and no `operator<<(ostream &, const std::string &)`,
+which together is why file reading goes through `core::readLine` and every
+`<<`-built message streams `.c_str()`.
 
-And one library defect to design around rather than fight: `std::map` declares
-`find()` only as a non-const member, so calling `find()` through a
-`const std::map &` is a compile error — `count()` and `lower_bound()` do have
-const forms.
+And a lookup defect to design around rather than fight, measured file by file
+with a deliberate error in the same compile so that a clean run could not be
+silence (`tools/os2/probe_constmap.cpp`):
+
+* `std::map` has **no `count()` at all** — E715, the same diagnostic as for a
+  member that does not exist.
+* `std::map::find()` is **non-const only**: through a `const std::map &` it is
+  E419, "cannot call non-const function for a constant object".
+
+So a lookup in a map that is reached by const reference has to walk it, which is
+what `core::findEntry`/`core::hasEntry` do; on the maps atui searches (a parsed
+INI section, a handful of settings) the walk is not the cost of anything.
+Earlier text here claimed `count()` had a const form: that was taken from the
+interface listing printed in a comment block at the top of Watcom's own `<map>`,
+which is both out of date and mis-typed (`const_terator`), and a comment is not a
+declaration.

@@ -1163,7 +1163,7 @@ def _ftp_put(args, payload, remote):
         ok = _ftp_store(ftp, payload, remote)
         ftp.quit()
         return ok
-    except (ftplib.all_errors, OSError) as exc:
+    except ftplib.all_errors as exc:   # the tuple already holds OSError
         warn("ftp put failed: %s" % exc)
         return False
 
@@ -1346,7 +1346,7 @@ def _do_sync(args):
             failed += 1
     try:
         ftp.quit()
-    except (ftplib.all_errors, OSError):
+    except ftplib.all_errors:          # the tuple already holds OSError
         pass
     try:
         with open(args.manifest, "w") as f:
@@ -1450,21 +1450,36 @@ def cmd_build(args):
 # -------------------------------------------------------------------- main ---
 
 
-def add_common(p):
-    p.add_argument("--host", default=DEFAULT_HOST)
-    p.add_argument("--port", type=int, default=23)
-    p.add_argument("--ftp-port", type=int, default=21)
-    p.add_argument("--user", default=DEFAULT_USER)
-    p.add_argument("--password", default=DEFAULT_PASSWORD)
-    p.add_argument("--charset", default=DEFAULT_CHARSET,
+def add_common(p, defaults=True):
+    """Connection options: the same ones for the relay and for every subcommand.
+
+    `defaults` is False on a subcommand, and that is not tidiness.  argparse
+    parses a subcommand into a namespace of its own and then copies all of it --
+    defaults included -- over what the parent had already read, so a subcommand
+    that repeats --host with a default quietly replaces the --host written before
+    it.  Measured: `--host H --user U put f r` connected to the environment
+    default instead, and the failure was a bare "connection refused".  SUPPRESS
+    leaves the attribute untouched, which makes both positions work.
+    """
+    def default(value):
+        return value if defaults else argparse.SUPPRESS
+
+    p.add_argument("--host", default=default(DEFAULT_HOST))
+    p.add_argument("--port", type=int, default=default(23))
+    p.add_argument("--ftp-port", type=int, default=default(21))
+    p.add_argument("--user", default=default(DEFAULT_USER))
+    p.add_argument("--password", default=default(DEFAULT_PASSWORD))
+    p.add_argument("--charset", default=default(DEFAULT_CHARSET),
                    help="target character set (default cp437; none for raw bytes)")
-    p.add_argument("--ttype", default=DEFAULT_TTYPE,
+    p.add_argument("--ttype", default=default(DEFAULT_TTYPE),
                    help="terminal type to report (default %s)" % DEFAULT_TTYPE)
-    p.add_argument("--no-naws", action="store_true", help="do not report window size")
-    p.add_argument("--timeout", type=float, default=15.0)
-    p.add_argument("--prompt-re", default="",
+    p.add_argument("--no-naws", action="store_true", default=default(False),
+                   help="do not report window size")
+    p.add_argument("--timeout", type=float, default=default(15.0))
+    p.add_argument("--prompt-re", default=default(""),
                    help="regex matching the target prompt (default: a shell prompt)")
-    p.add_argument("--trace", action="store_true", help="report negotiations")
+    p.add_argument("--trace", action="store_true", default=default(False),
+                   help="report negotiations")
 
 
 def build_parser():
@@ -1489,7 +1504,7 @@ def build_parser():
     sub = p.add_subparsers(dest="sub")
 
     s = sub.add_parser("serve", help="local fake target")
-    add_common(s)
+    add_common(s, defaults=False)
     s.add_argument("--mode", default="screen", choices=("screen", "frames"))
     s.add_argument("--frame-gap", type=float, default=2.0)
     s.add_argument("--idle-exit", type=float, default=0.0,
@@ -1499,25 +1514,25 @@ def build_parser():
     sub.add_parser("bridge-test", help="local acceptance suite (needs tui-test)")
 
     q = sub.add_parser("probe", help="ask a real target the port's questions")
-    add_common(q)
+    add_common(q, defaults=False)
     q.add_argument("--probe-file", default="d:\\atui\\atui-esc.bin")
 
     u = sub.add_parser("put", help="FTP one file to the target")
-    add_common(u)
+    add_common(u, defaults=False)
     u.add_argument("file")
     u.add_argument("remote")
 
     g = sub.add_parser("get", help="FTP one file from the target")
-    add_common(g)
+    add_common(g, defaults=False)
     g.add_argument("remote")
     g.add_argument("file")
 
     y = sub.add_parser("sync", help="mirror the sources onto the target")
-    add_common(y)
+    add_common(y, defaults=False)
     add_sync_options(y)
 
     b = sub.add_parser("build", help="sync, run the makefile on the target, fetch the log")
-    add_common(b)
+    add_common(b, defaults=False)
     add_sync_options(b)
     b.add_argument("--batch", default="build.cmd",
                    help="batch file to run in the build root (default build.cmd)")

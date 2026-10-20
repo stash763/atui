@@ -1,0 +1,145 @@
+/* mutex -- <mutex> for the one compiler that has no version of it.
+
+   Open Watcom 1.9 has no <mutex>, <thread>, <atomic>, <chrono> or
+   <condition_variable> at all: the includes fail with E059 "unable to open",
+   which is the test this directory exists for (see README.md).  atui needs
+   mutual exclusion on every target -- the undo journal, the permissions cache,
+   the tool registry and the approval handshake are all guarded by it -- so the
+   header has to come from somewhere, and the place for it is here.
+
+   Adding to namespace std is not what the standard allows, and it is worth
+   saying why it is still the right answer here.  The alternative is a set of
+   atui-owned types with the same job, which means either rewriting the forty
+   places that already say std::mutex, or a using-declaration per name -- and the
+   second of those is this file with extra steps, while the first is a rewrite of
+   working code for a reason the code does not care about.  Nothing in this
+   installation declares these names (measured: no mutex, thread, atomic, chrono
+   or condition_variable in D:\WATCOM\H), so there is nothing here to conflict
+   with, and the file is only ever read by a compiler that lacks the real one.
+
+   What is implemented is the subset atui uses, no more:
+
+      std::mutex                      lock(), unlock(), try_lock()
+      std::lock_guard< M >            ctor( M & ), dtor
+      std::unique_lock< M >           ctor( M & ), lock(), unlock(), owns_lock()
+
+   No recursive_mutex, no scoped_lock, no call_once: a call to one of those is a
+   compile error rather than a silent substitute, which is the only way a missing
+   guarantee stays visible.
+
+   The implementation is OS/2 mutex semaphores.  Measured on the target with
+   tools/os2/kprobe.cpp: DosCreateMutexSem( 0, &h, 0, 0 ) creates a private
+   semaphore (flags 0 is right; the DC_* sharing flags are for named ones),
+   DosRequestMutexSem and DosReleaseMutexSem return 0, and asking for a semaphore
+   the calling thread already holds returns 0 as well -- the kernel's mutex is
+   recursive, where std::mutex is not.  That is more permissive than the standard
+   and it is a deviation rather than a bug: a program that relies on double
+   locking being legal is broken here exactly as everywhere else, and it fails
+   silently here instead of hanging.  Worth knowing when reading a hang that
+   cannot be reproduced on Linux.
+
+   A mutex that cannot be created is not something to run with, so the
+   constructor aborts.  Private mutex semaphores take no name, no sharing and no
+   memory beyond a handle, and the process is allowed thousands of them; atui
+   creates eight, so a failure means the kernel is out of handles and every
+   locked operation after it would be unlocked.  Locking quietly is the one
+   outcome worse than stopping.
+*/
+#ifndef ATUI_OS2_COMPAT_MUTEX
+#define ATUI_OS2_COMPAT_MUTEX
+
+#include <os2.h>
+#include <stdlib.h>
+
+namespace std {
+
+class mutex {
+public:
+    mutex()
+        : handle_( 0 )
+    {
+        if( DosCreateMutexSem( 0, &handle_, 0, 0 ) != 0 )
+            abort();
+    }
+
+    ~mutex()
+    {
+        if( handle_ )
+            DosCloseMutexSem( handle_ );
+    }
+
+    void lock()      { DosRequestMutexSem( handle_, SEM_INDEFINITE_WAIT ); }
+    void unlock()    { DosReleaseMutexSem( handle_ ); }
+    bool try_lock()  { return DosRequestMutexSem( handle_, SEM_IMMEDIATE_RETURN ) == 0; }
+
+private:
+    mutex( const mutex & );
+    mutex &operator=( const mutex & );
+
+    HMTX handle_;
+};
+
+template< class M >
+class lock_guard {
+public:
+    explicit lock_guard( M &m )
+        : mutex_( m )
+    {
+        mutex_.lock();
+    }
+
+    ~lock_guard()
+    {
+        mutex_.unlock();
+    }
+
+private:
+    lock_guard( const lock_guard & );
+    lock_guard &operator=( const lock_guard & );
+
+    M &mutex_;
+};
+
+/* Unlike lock_guard this one is movable-in-place in one direction only: it is
+   what condition_variable::wait() releases and reclaims around a wait, so
+   whether it is holding the mutex is state, not an assumption. */
+template< class M >
+class unique_lock {
+public:
+    explicit unique_lock( M &m )
+        : mutex_( m ), owns_( false )
+    {
+        lock();
+    }
+
+    ~unique_lock()
+    {
+        if( owns_ )
+            mutex_.unlock();
+    }
+
+    void lock()
+    {
+        mutex_.lock();
+        owns_ = true;
+    }
+
+    void unlock()
+    {
+        mutex_.unlock();
+        owns_ = false;
+    }
+
+    bool owns_lock() const { return owns_; }
+
+private:
+    unique_lock( const unique_lock & );
+    unique_lock &operator=( const unique_lock & );
+
+    M      &mutex_;
+    bool    owns_;
+};
+
+} // namespace std
+
+#endif /* ATUI_OS2_COMPAT_MUTEX */

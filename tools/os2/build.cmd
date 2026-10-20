@@ -20,6 +20,11 @@ rem                           compile one program and link it: %2 is the source,
 rem                           %3 the executable.  A first link is the milestone
 rem                           this exists for; the :link section says what it
 rem                           asks of the toolchain.
+rem      build.cmd exe       link atui.exe from the objects `build.cmd atui`
+rem                           compiled, against obj\tvision.lib.  Run after it:
+rem                           this mode links what is there rather than
+rem                           compiling anything, which keeps the two questions
+rem                           -- does it compile, does it link -- apart.
 rem
 rem  Why a batch file and not a command line: this target's command processor
 rem  silently discards an input line longer than about 315 characters and says
@@ -53,12 +58,23 @@ rem directories is allowed to be found by accident.
 set INCLUDE=D:\WATCOM\H\OS2;D:\WATCOM\H
 set LIB=D:\WATCOM\LIB386\OS2
 
+rem Switch drives first.  A telnet login starts on C: (the prompt is
+rem [<P4>-C:\]), where `cd \atui` is C:\atui: SYS0003, and the rest of the batch
+rem then runs in C:\ and reports failures that have nothing to do with the
+rem sources.  The drive letter is the one thing this file cannot learn by
+rem looking around, so it is written down; REMOTE_ROOT in tools/atui-remote says
+rem the same thing.
+d:
 cd \atui
 if not exist obj mkdir obj
 if not exist obj\tv mkdir obj\tv
 if not exist obj\at mkdir obj\at
-if exist build.log del build.log
+rem One build, one log.  `tools/atui-remote build` waits for the ATUI-BUILD-RC line
+rem at the end of this file to decide how the build went, so a previous run's line
+rem will answer for a build that has not finished -- or, measured, for an `exe` link
+rem that never ran at all: rc=0 and 172 lines of the build before it.
 set LOG=build.log
+if exist %LOG% del %LOG%
 
 rem The compiler switches live in defs.rsp rather than in a variable here,
 rem because OS/2's SET silently refuses a value containing '=' -- it stores
@@ -96,10 +112,23 @@ rem the shim cannot even compile here, because it asks whether malloc_np.h exist
 rem with __has_include, which is C++17 (measured: E767 "unmatched left
 rem parenthesis" from inside the shim).
 rem
-rem No -D switches here for the same reason: which language dialect and which
-rem colour model tvision uses is decided inside tvision from the compiler's own
-rem macros, the way it already decides them for Borland, and a build line that
-rem can overturn that is a build line that quietly builds a different library.
+rem No -D switch here changes what language or colour model is compiled: which
+rem dialect and which colour model tvision uses is decided inside tvision from
+rem the compiler's own macros, the way it already decides them for Borland, and a
+rem build line that can overturn that is a build line that quietly builds a
+rem different library.
+rem
+rem One -D switch is here that is not about the language: INCL_DOS.  <os2.h> is a
+rem three-line file that pulls in os2def.h (typedefs), bse.h and pm.h; the kernel
+rem calls themselves are in bsedos.h, and each group of them -- semaphores,
+rem process, file manager, profile (where DosTmrQueryTime lives) -- is behind an
+rem INCL_DOSxxx macro (measured: DosCreateMutexSem, DosSleep, DosTmrQueryFreq and
+rem friends are all "has not been declared" until a flag says otherwise).
+rem INCL_DOS is the one macro that switches all of those groups on at once, and
+rem it belongs here rather than in whichever header wants os2.h first: a header is
+rem read once per compilation, so a flag set later than somebody else's
+rem #include <os2.h> arrives too late to do anything -- which is exactly the
+rem situation once atui's sources and tvision's driver both want the kernel.
 set WPP=wpp386 @defs.rsp
 
 set RC=0
@@ -107,6 +136,7 @@ set RC=0
 if "%1"=="one" goto one
 if "%1"=="lib" goto lib
 if "%1"=="link" goto link
+if "%1"=="exe" goto exe
 if "%1"=="atui" goto atui
 
 echo ================== tvision library ==================
@@ -141,6 +171,11 @@ if "%1"=="tvision" goto lib
 
 :atui
 echo ================== atui ==================
+rem Compiled from scratch every time, and the objects cleared first: `exe` links
+rem whatever obj\at holds, so an object left behind by a file that is no longer
+rem part of the tree would go into the program instead of being missed.
+if not exist obj\at mkdir obj\at
+del obj\at\*.obj >> %LOG% 2>&1
 for %%f in (src\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
 for %%f in (src\core\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
 rem The curl-backed transport is not part of this build: there is no libcurl
@@ -211,6 +246,31 @@ wlink @link.rsp >> %LOG% 2>&1
 if errorlevel 1 goto one_failed
 dir %3
 echo [link] OK
+goto summary
+
+:exe
+rem atui itself, linked.  Run after `build.cmd atui`, which is what puts the
+rem objects in obj\at; that directory holds only atui's own translation units
+rem (tvision's go to obj\tv), so naming all of them is the whole program and not
+rem an accident with two main()s.  The directives are the ones :link measured --
+rem `system os2v2` for a character-mode program a telnet session can run, `op m`
+rem for the map file a size question is answered from, and os2386.lib because
+rem Watcom does not link the OS/2 kernel by default and compat/'s mutex calls
+rem DosCreateMutexSem out of it.
+echo ================== atui.exe ==================
+if not exist obj\at\main.obj goto one_failed
+if exist link.rsp del link.rsp
+echo system os2v2 > link.rsp
+echo name atui.exe >> link.rsp
+echo op m >> link.rsp
+echo option stack=256k >> link.rsp
+for %%f in (obj\at\*.obj) do echo file %%f >> link.rsp
+echo library obj\tvision.lib >> link.rsp
+echo library os2386.lib >> link.rsp
+wlink @link.rsp >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+dir atui.exe
+echo [exe] OK
 goto summary
 
 :one

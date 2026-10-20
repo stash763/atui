@@ -1,0 +1,136 @@
+/* condition_variable -- <condition_variable> for the one compiler that has no
+   version of it.
+
+   One use so far, and it is the one that matters: the approval handshake.  The
+   worker thread that wants to run a sensitive tool blocks here while the TUI
+   event loop stays responsive enough to draw the question, and a timeout has to
+   mean "refuse", because a stuck prompt must never turn into a running command.
+
+   What is implemented:
+
+      notify_all(), notify_one()
+      wait( unique_lock< mutex > & )
+      wait( unique_lock< mutex > &, pred )
+      wait_for( unique_lock< mutex > &, milliseconds )
+      wait_for( unique_lock< mutex > &, milliseconds, pred )   -> bool
+
+   The predicate forms are templates, so a predicate is a function object in
+   C++98 -- which is the reason the call site in tools/approval.cpp holds a small
+   struct rather than a lambda.
+
+   On an OS/2 event semaphore, measured with tools/os2/kprobe.cpp: create with
+   flags 0 and unposted, a timed wait on it while nothing has posted returns 640
+   (ERROR_TIMEOUT), a post makes the next wait return 0 immediately, and reset
+   reports how many posts were pending.
+
+   The reason wait() clears the semaphore *before* releasing the caller's mutex,
+   and only after the predicate has been found false, is the lost wakeup: the
+   side that changes state does so under that same mutex and posts afterwards, so
+   between testing the predicate and giving up the mutex nobody can post, and a
+   post that arrives after that belongs to the wait that is about to happen.  Do
+   it in the other order -- release, clear, wait -- and a post landing in that
+   gap is thrown away and the wait sleeps through its own wakeup.
+
+   A manual-reset event wakes everyone waiting, so notify_one() is notify_all():
+   waking more than one waiter is always allowed by the standard, and with one
+   waiter per handshake in atui it is also what happens.  What is not provided is
+   a condition_variable with its own mutex: the wait forms take the same
+   unique_lock< mutex > the standard does, and no spurious wakeup escapes the
+   predicate loop.
+*/
+#ifndef ATUI_OS2_COMPAT_CONDITION_VARIABLE
+#define ATUI_OS2_COMPAT_CONDITION_VARIABLE
+
+#include <chrono>
+#include <mutex>
+#include <os2.h>
+#include <stdlib.h>
+
+namespace std {
+
+class condition_variable {
+public:
+    condition_variable()
+        : handle_( 0 )
+    {
+        if( DosCreateEventSem( 0, &handle_, 0, FALSE ) != 0 )
+            abort();
+    }
+
+    ~condition_variable()
+    {
+        if( handle_ )
+            DosCloseEventSem( handle_ );
+    }
+
+    void notify_all() { DosPostEventSem( handle_ ); }
+    void notify_one() { DosPostEventSem( handle_ ); }
+
+    void wait( unique_lock< mutex > &lock )
+    {
+        waitMoment( lock, SEM_INDEFINITE_WAIT );
+    }
+
+    template< class P >
+    void wait( unique_lock< mutex > &lock, P pred )
+    {
+        while( !pred() )
+            waitMoment( lock, SEM_INDEFINITE_WAIT );
+    }
+
+    /* Without a predicate the return says what the kernel said: true when
+       something posted, false when the timeout went by. */
+    bool wait_for( unique_lock< mutex > &lock, const chrono::milliseconds &d )
+    {
+        return waitMoment( lock, timeoutOf( d ) );
+    }
+
+    template< class P >
+    bool wait_for( unique_lock< mutex > &lock, const chrono::milliseconds &d, P pred )
+    {
+        const chrono::time_point end = chrono::steady_clock::now() + d;
+        for( ;; )
+        {
+            if( pred() )
+                return true;
+
+            const long long left =
+                chrono::duration_cast< chrono::milliseconds >(
+                    end - chrono::steady_clock::now() ).count();
+            if( left <= 0 )
+                return pred();
+
+            if( !waitMoment( lock, (ULONG) left ) )
+                return pred();       /* timed out: one last look, then answer */
+        }
+    }
+
+private:
+    /* Returns false only for a timeout.  The caller's mutex is held on entry and
+       on exit; it is not held while the kernel waits. */
+    bool waitMoment( unique_lock< mutex > &lock, ULONG ms )
+    {
+        ULONG previous = 0;
+        DosResetEventSem( handle_, &previous );
+
+        lock.unlock();
+        const APIRET rc = DosWaitEventSem( handle_, ms );
+        lock.lock();
+
+        return rc == 0;
+    }
+
+    static ULONG timeoutOf( const chrono::milliseconds &d )
+    {
+        const long long ms = d.count();
+        if( ms <= 0 )
+            return SEM_IMMEDIATE_RETURN;
+        return (ULONG) ms;
+    }
+
+    HEV handle_;
+};
+
+} // namespace std
+
+#endif /* ATUI_OS2_COMPAT_CONDITION_VARIABLE */

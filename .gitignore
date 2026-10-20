@@ -1,10 +1,13 @@
 # build artifacts
 build/
+# the second configuration TESTING.md measures (-DATUI_HAVE_NETWORK=OFF)
+build-off/
 cmake/
 *.o
 *.a
 *.obj
 *.out
+*.map
 atui
 atui.exe
 .DS_Store
