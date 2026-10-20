@@ -73,7 +73,11 @@ set(ATUI_SOURCES
     "${ATUI_SRC_DIR}/tools/run_command_tool.cpp"
     # Provider settings singleton: no libcurl dependency, always built so the
     # Options > Providers dialog works regardless of the network transport.
+    # The endpoint splitter goes with it: the dialog has to be able to say "that
+    # is not a URL" about the line being typed, which is the same question the
+    # transport asks before opening a socket.
     "${ATUI_SRC_DIR}/net/provider.cpp"
+    "${ATUI_SRC_DIR}/net/url.cpp"
 )
 if(ATUI_HAVE_NETWORK)
     list(APPEND ATUI_SOURCES
@@ -104,6 +108,7 @@ if(ATUI_BUILD_TESTS)
         "${ATUI_TESTS_DIR}/selftest.cpp"
         "${ATUI_TESTS_DIR}/oai_mock_test.cpp"
         "${ATUI_TESTS_DIR}/http_test.cpp"
+        "${ATUI_TESTS_DIR}/url_test.cpp"
         "${ATUI_TESTS_DIR}/oai_live_test.cpp"
         "${ATUI_TESTS_DIR}/markdown_test.cpp"
     )

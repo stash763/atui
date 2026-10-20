@@ -47,6 +47,9 @@ void init_http_transport_tests();
 // Defined in tests/oai_live_test.cpp (network builds only; registers nothing
 // unless ATUI_LIVE_BASE_URL names a server).
 void init_live_tests();
+// Defined in tests/url_test.cpp (always built): the endpoint splitter the
+// transport and the Providers dialog both have to agree with.
+void init_url_tests();
 // Defined in tests/markdown_test.cpp (always built).
 void init_markdown_tests();
 
@@ -2878,6 +2881,7 @@ void init()
                    &test_settings_permissions );
 
     // Markdown + syntax highlighting (network-independent).
+    init_url_tests();
     init_markdown_tests();
 
 #ifdef ATUI_HAVE_NETWORK

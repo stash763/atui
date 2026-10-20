@@ -6,7 +6,7 @@ which needs a real terminal (pty) to exercise.
 ## Build & unit tests
 
     cmake --build build          # from repo root
-    ./build/atui --self-test     # unit + integration tests (122/122 network build, 81/81 without)
+    ./build/atui --self-test     # unit + integration tests (132/132 network build, 91/91 without)
     # ...plus 4 live-server tests when ATUI_LIVE_BASE_URL is set (see 'Live endpoint testing')
 
 Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
@@ -25,6 +25,22 @@ Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
   unset, the directory of `argv[0]` is used. `ATUI_UNDO`, `ATUI_UNDO_DIR`,
   `ATUI_UNDO_MAX_BYTES` and `ATUI_UNDO_MAX_FILE` configure the journal itself (see
   `PERMISSIONS.md` and "The undo journal" below).
+
+### The harness has a fixed table, and used to overflow silently
+
+`tests/runner.cpp` registers tests into a fixed array (a container would need an
+allocator in the C++98 build, and this file is compiled into the Watcom program
+too).  When the array filled at 128, `register_test()` returned without storing the
+test and nothing said so: ten tests were added, the summary stayed `128 passed`, and
+four markdown tests had quietly stopped existing.  It now holds 512 and refuses to
+overflow quietly -- a dropped registration prints how many were never registered and
+the run exits non-zero.  Control-checked: with the capacity set to 5, the run
+reports `127 test(s) were NEVER REGISTERED` and fails.
+
+A related trap while checking this: rewriting a source file within the same second
+as the previous build leaves `make` considering it current, so a rebuilt-looking
+binary is the old one.  `touch` the file when a change seems to have no effect,
+before concluding the change was wrong.
 
 ## Settings persistence (INI)
 
