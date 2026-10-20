@@ -1646,7 +1646,6 @@ mis-set window shows up as a dropped or doubled key.
   link that had.  Write `to` or escape it (`-^>`).  The `:link` mode had the same
   line twice and only survived because its link overwrote the file afterwards.
 
-
 ### Building on the target (Open Watcom, OS/2)
 
 The port is written here and compiled there, so the bridge is also a build loop:
@@ -1726,6 +1725,30 @@ three steps is load-bearing, and the reasons are the facts below.
   `probe_api.c` and `probe_stdin.c`: `stdio.h`/`string.h`/`errno.h`/`io.h`, then
   `<types.h>`, then the five `u_*` typedefs, then the socket headers, then
   `unistd.h` last.
+* **What those headers actually declare** is a second list, and it is not the one
+  the Windows or the modern BSD spelling suggests.  Each line was a compile error
+  before it was a bullet, from `tools/os2/probe_net.cpp`:
+  * `<sys/select.h>` does not declare `select()`.  It is the kernel's `selinfo`
+    header -- BSD licence text and a `struct selinfo`, nothing else.  `select()`,
+    `fd_set` and the `FD_*` macros come from `<sys/socket.h>` itself, which is why
+    `sizeof(fd_set)` was measurable long before a `select()` was.
+  * There is no `SOCKET`, no `INVALID_SOCKET` and no `closesocket`: a socket is an
+    `int`, its failure is `-1`, and it is closed with `close()` from `<unistd.h>`.
+  * `<sys/ioctl.h>` -- not `<ioctl.h>`, which does not exist -- declares
+    `int ioctl(int, unsigned long, ...)` and includes `<sys/ioctlos2.h>`, where
+    `FIONBIO` is.  `<fcntl.h>` is the C RTL's file-control header and has **no
+    `O_NONBLOCK`**, so `fcntl(s, F_SETFL, O_NONBLOCK)` is not a thing here: a
+    non-blocking socket is `ioctl(s, FIONBIO, &on)`.
+  * `<errno.h>` has no BSD socket error numbers at all.  `EAGAIN` is 18, which is
+    an OS/2 number and not the BSD one; `EWOULDBLOCK`, `EINPROGRESS` and
+    `EALREADY` are simply not there.  What the stack reports when a non-blocking
+    read would block therefore has to be read off the wire and named by atui,
+    because the header cannot name it -- `probe_net.exe` prints the numbers, and
+    distinguishing "not yet" from "the peer is finished" is exactly the pair that
+    decides whether a request ends or hangs.
+  * `struct timeval` wants `<sys/time.h>`: `tcpustd.h` only forward-declares it,
+    which surfaces as `'tv' has unknown size` where the code looks innocent.
+
 * **`__cplusplus` is `1`**, not `199711L`, and `__WATCOMC__` is 1290. Anything
   that feature-detects with `#if __cplusplus >= 201103L` correctly sees C++98,
   but a library testing `#if __cplusplus` as a proxy for "standard C++ at all"
@@ -2248,7 +2271,10 @@ repository library does and what `-os` partly tidies up.
 **`-os` links 666,753 bytes: 38% smaller**, and that image prints its version, draws
 the same screen and takes text at the prompt like the `-od` one.  `build.cmd size`
 then `build.cmd exe` asks for it; obj\at holds whatever was compiled last, so the
-comparison is `copy atui.exe atui_od.exe`, build again, `dir atui*.exe`.
+comparison is `copy atui.exe atui_od.exe`, build again, `dir atui*.exe`.  That pair
+is the configuration to ship and the number to quote -- 666,753 -- while `-od`, the
+default, is the one to port against, because an optimiser is not the thing to be
+arguing with while a source file still does not compile.
 
 ### What the screen looks like, and where it differs (streamed path)
 
