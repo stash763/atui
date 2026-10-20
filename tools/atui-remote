@@ -642,7 +642,20 @@ class Session:
         warn("the command processor never echoed the start marker")
         return None
 
-    def close(self):
+    def close(self, goodbye=True):
+        # `goodbye=False` disconnects without saying anything: `exit` typed at a
+        # busy command processor is not lost, it runs the moment the command in
+        # front of it finishes -- which is one way to stop a build that was still
+        # going, measured the hard way when a link never happened and the log
+        # stopped at the last compile.  Callers use it for a command they are no
+        # longer waiting for but have not interrupted.
+        if not goodbye:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+            self.log.close()
+            return
         # Say goodbye, and wait for the server to finish saying it back.  Without
         # the goodbye the server holds the session until TCP times out, and after a
         # handful of bridge runs in a row -- which is what a build session is --
@@ -1633,11 +1646,17 @@ def cmd_build(args):
 
     # The console is advisory -- the log is the verdict -- but the bracketed send
     # is what makes a command line dropped on the way to a command processor that
-    # had not finished coming up a retry instead of an hour of polling.  The cap is
-    # short on purpose: after it the log decides, and the id in the log says whether
-    # the log is this build's at all.
-    session.run_until(command, timeout=min(args.run_timeout, 300.0), sink=progress)
-    session.close()
+    # had not finished coming up a retry instead of an hour of polling.
+    #
+    # It waits for the whole command, at the full deadline, and that used to be a
+    # cap: this used to wait five minutes and then go and read the log.  The cap was
+    # a way of killing builds.  A slow link on a 30-year-old machine goes past five
+    # minutes, the session was then closed, closing said `exit`, and `exit` ran the
+    # moment the compiles finished -- so the batch died between its last compile and
+    # its link, leaving a log that looked merely unfinished.
+    finished = session.run_until( command, timeout=args.run_timeout,
+                                  sink=progress ) is not None
+    session.close( goodbye=finished )
 
     # Wait on the file rather than on the screen.  A link is a dozen silent
     # seconds, and the console says nothing during them; the log with its verdict

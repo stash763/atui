@@ -32,6 +32,13 @@ rem                           `link` plus tcpip32.lib, for the socket probes.
 rem                           Separate because an import library is a promise the
 rem                           loader has to keep, so it is not something to link
 rem                           into a program that never opens a socket.
+rem      build.cmd netprobe probe_http.cpp probe_http.exe
+rem                           A probe made of more than one file: compiles the
+rem                           transport sources (net/http.cpp, net/sock_os2.cpp and
+rem                           the core helper it needs) with the probe and links
+rem                           them with tcpip32.lib.  `netlink` asks whether a file
+rem                           compiles; this asks whether the transport works, and
+rem                           that is a question about several files at once.
 rem
 rem  Why a batch file and not a command line: this target's command processor
 rem  silently discards an input line longer than about 315 characters and says
@@ -145,6 +152,7 @@ if "%1"=="lib" goto lib
 if "%1"=="link" goto link
 if "%1"=="exe" goto exe
 if "%1"=="netlink" goto netlink
+if "%1"=="netprobe" goto netprobe
 if "%1"=="size" goto size
 if "%1"=="atui" goto atui
 
@@ -280,6 +288,35 @@ wlink @link.rsp >> %LOG% 2>&1
 if errorlevel 1 goto one_failed
 dir %3
 echo [netlink] OK
+goto summary
+
+:netprobe
+rem A probe of the transport, which is several sources.  The point is not that each
+rem file compiles on its own -- that is what `one` is for -- but that they compile
+rem together with Watcom, link against the stack, and reach a real server through
+rem the OS/2 spellings: soclose, sock_errno, FIONBIO, and a connect() whose return
+rem value means nothing.  %2 is the probe source, in the root; %3 the executable.
+echo [netprobe] %2 to %3
+if not exist obj\np mkdir obj\np
+if exist obj\np\*.obj del obj\np\*.obj
+for %%f in (src\net\http.cpp src\net\sock_os2.cpp src\core\strutil.cpp %2) do (echo [netprobe] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\np\ %%f >> %LOG% 2>&1 || set RC=1)
+rem Not `NEQ`: this command processor answers `SYS1079: NEQ was unexpected
+rem at this time`, and it is a whole-line failure -- the batch stops there, between
+rem the last compile and the link, which is a confusing place to be.  RC is only
+rem ever 0 or 1, so test for the 1.
+if "%RC%"=="1" goto one_failed
+if exist link.rsp del link.rsp
+echo system os2v2 > link.rsp
+echo name %3 >> link.rsp
+echo op m >> link.rsp
+echo option stack=256k >> link.rsp
+for %%f in (obj\np\*.obj) do echo file %%f >> link.rsp
+echo library tcpip32.lib >> link.rsp
+echo library os2386.lib >> link.rsp
+wlink @link.rsp >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+dir %3
+echo [netprobe] OK
 goto summary
 
 :size

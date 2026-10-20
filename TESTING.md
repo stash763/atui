@@ -512,8 +512,19 @@ not for:
 | file | what it is | compiled and run |
 | --- | --- | --- |
 | `sock_posix.cpp` | Linux, FreeBSD, macOS | yes (all the tests below) |
-| `sock_os2.cpp` | OS/2: `soclose`, `sock_errno`, `FIONBIO`, the include order | not yet (it is not in the Watcom build list yet) |
+| `sock_os2.cpp` | OS/2: `soclose`, `sock_errno`, `FIONBIO`, the include order | yes, on the target: compiles warning-free, and `tools/os2/probe_http.cpp` reaches the LAN endpoint with it (below) |
 | `sock_win.cpp` | Winsock2 | not yet (no Windows toolchain, and the file says so at the top) |
+
+**On the target** (`build.cmd netprobe probe_http.cpp probe_http.exe`, then running
+it — 88,644 bytes linked, both files compiling with no warnings): `GET /models`
+answered 200 with 699 bytes in one finish; the model list was parsed and the id
+`Ternary-Bonsai-2-27B-PQ2_0.gguf` asked for; `POST /v1/chat/completions` with
+`"stream":true` answered 200 and arrived as **18 pieces totalling 5,231 bytes of
+`data:` lines**, chunk-decoded by the same code the mock tests exercise, ending in
+one `onFinish(ok=true)`.  Repeated immediately: same again, which is the leak check
+that matters — a socket closed with the wrong function is not a closed socket, and
+the second connection would have been the one to complain.  Nothing about this path
+uses threads, curl, or the toolkit libraries.
 
 `tests/http_test.cpp` runs it against `tests/http_pipe.h`, a scripted responder
 on `127.0.0.1` that writes whatever it is told, in pieces, with a pause between
@@ -1659,6 +1670,19 @@ mis-set window shows up as a dropped or doubled key.
 
 ### Gotchas with the bridge itself
 
+- **`exit` typed at a busy command processor stops the job it was waiting for.**
+  The bridge used to cap how long it watched a build, then go and read the log;
+  closing the session said goodbye with an `exit`, the command processor honoured it
+  the moment the compiles finished, and the batch died between its last compile and
+  its link.  The symptom is a log that stops mid-build and a verdict that never
+  arrives, on a build that looked like it was merely slow.  `--run-timeout` is now
+  the deadline for the command itself, and a session whose command did not finish is
+  disconnected without saying anything (`close(goodbye=False)`).
+- **`if "%RC%" NEQ "0"` is not a condition here**: `SYS1079: NEQ was unexpected at
+  this time`, and the *whole line* fails, which means a batch stops in the middle of
+  itself.  `==` works, and `if errorlevel 1` works.  The `netprobe` mode hit this
+  between compiling four files and linking them, so the executable simply never
+  appeared, and nothing above the failing line suggested why.
 - `tui-test cells`/`text` are **0-based**; row 3 is the fourth row.
 - A character typed at the OS/2 prompt without Enter stays in the input line.
   The probe learned this the hard way: its echo test left a bare `q` behind and
