@@ -40,6 +40,13 @@ set(ATUI_SOURCES
     # The wrapping rule shared by the transcript, the approval box and thinking.
     "${ATUI_SRC_DIR}/tui/wrap.cpp"
     "${ATUI_SRC_DIR}/core/string.cpp"
+    # Text and map helpers for the standard library Watcom 1.9 ships: no
+    # std::string::compare, no to_string, no std::ostringstream, no std::getline,
+    # no const map::find.  See the headers for what each one replaces.
+    "${ATUI_SRC_DIR}/core/strutil.cpp"
+    "${ATUI_SRC_DIR}/core/lines.cpp"
+    # gmtime_r()/localtime_r() are POSIX; this is the one place that knows.
+    "${ATUI_SRC_DIR}/core/clock.cpp"
     "${ATUI_SRC_DIR}/core/ai.cpp"
     # Where atui is installed, and the undo journal that lives there. Network
     # independent: it is local file handling, and it has to work before any
