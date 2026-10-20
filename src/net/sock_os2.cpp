@@ -30,6 +30,8 @@
 // socket would still require TCP/IP at load time.
 #include "sock.h"
 
+#include "core/strutil.h"     // toString: Watcom has no std::to_string
+
 #ifdef __OS2__
 
 #include <stdio.h>
@@ -108,7 +110,7 @@ bool sockStackReady( std::string *reason )
         return true;
     if( reason )
         *reason = "TCP/IP is not running on this machine (sock_init returned "
-                  + std::string( itoa( rc ) ) + ")";
+                  + core::toString( rc ) + ")";
     return false;
 }
 
