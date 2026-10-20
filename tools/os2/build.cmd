@@ -351,3 +351,11 @@ rem compile, so the shell would report only the last file's status and call the
 rem build good.
 echo ATUI-BUILD-RC=%RC%
 echo ATUI-BUILD-RC=%RC% >> %LOG%
+rem Whose build this was.  The console on this box is one command processor with
+rem one input queue, and what is typed while it is busy waits there: a build sent
+rem an hour ago was seen to run under a later visit and report its rc as the later
+rem build's, complete with a log about files that had not been compiled.  So the
+rem host sends a nonce as the fourth argument, and a log that does not carry it is
+rem somebody else's build however plausible its verdict looks.
+echo ATUI-BUILD-ID=%4
+echo ATUI-BUILD-ID=%4 >> %LOG%

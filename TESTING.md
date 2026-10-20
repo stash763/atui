@@ -1616,20 +1616,38 @@ mis-set window shows up as a dropped or doubled key.
 - `--log-raw PREFIX` writes `PREFIX.out`/`PREFIX.in` byte-exact. Use it before
   reasoning about what the wire carried: a charset conversion is invisible in
   decoded text, and it was caught only by comparing hex.
-- **The server keeps session slots, and a busy bridge runs out of them.** When it
-  has, it accepts the TCP connection, negotiates, and then says nothing at all --
-  no banner, no login prompt, no echo -- which the bridge used to report as
-  "command produced no output" for a command that had never started.  Nothing in
-  `netstat` shows it, because the connections are gone: it is the server holding
-  sessions it has not reaped.  Three things follow.  End sessions with `exit` and
-  drain until quiet, which the bridge now does.  Ask several questions per
-  connection -- `--exec` is repeatable and the repeats share one session.  And
-  when the box has gone deaf, more connections are the wrong remedy: a retry opens
-  another slot, which is why `--tries` is three and why waiting minutes is what
-  actually works.
-- **A command line can be dropped on the way to the command processor**, and the
-  symptom is the same empty report.  So `--exec` brackets each command with two
-  `echo`s of a random nonce and waits for the pair: the first proves the processor
+- **One command processor, one typed-input queue -- and it survives a disconnect.**
+  This is the mechanism behind most of the flakiness in this session, and the
+  evidence is not a guess about internals: `probe_nb.exe` measured at 14,892 bytes
+  was 14,966 an hour later with nothing asked of it in between, because a build sent
+  long before was still waiting to run; and `build --batch-args "netlink
+  probe_close.cpp probe_close.exe"` came back `ATUI-BUILD-RC=0` with a log that said
+  `probe_nb.cpp: 237 lines` -- an earlier command, executed under a later one.  What
+  is typed while the box is busy is not lost.  It is *stored*, and the next session
+  that looks freshly logged in inherits it.  (Why some attempts saw nothing at all
+  -- no banner, no login prompt, no echo -- is not settled: a shared console that is
+  blocked elsewhere explains the silence about the commands, but not the silence
+  about the login.  Treat both symptoms the same way.)  So: the bridge asks the
+  console whether it is idle before adding to it (Ctrl-C, then listen; see
+  `quiesce`), and interrupts rather than abandoning a command it will not wait for.
+  Ask several questions per connection -- `--exec` is repeatable and the repeats
+  share one session -- end with `exit` drained to quiet, keep `--tries` small
+  because a retry adds input rather than clearing it, and when the box stops
+  answering, the remedy is minutes rather than another connection.
+- **Check that a build log names the file you sent.** A `rc=0` for the wrong source
+  file is the nastiest failure this channel produces, because it is a plausible
+  result.  `ftp size <the executable you expected>` is a second opinion that costs
+  one call: it answered `error 10` for the image the log swore it had created.  The
+  bridge now does better than tell a human to check: it sends a nonce as the batch's
+  fourth argument, `build.cmd` echoes it into the log as `ATUI-BUILD-ID=`, and a log
+  carrying a different id is refused with "the target is working through input sent
+  earlier".  (`%~4` does not work for that echo -- the tilde form is a Windows cmd
+  extension and this command processor expands it to nothing.  Plain `%4` carries
+  it.  The id arrived empty on the first try, which is how that was found.)
+- **A prompt is already on the screen when a session opens**, so waiting for the
+  prompt can report a command as finished before its output begins.  `--exec`
+  brackets each command with two `echo`s of a random nonce and waits for the pair:
+  the first proves the processor
   is awake and reading, the second says the command finished.  They are sent as
   separate lines, not joined with `&&`, because typed input is queued -- so the end
   marker runs whatever the command returned -- and because this command processor
@@ -1639,17 +1657,6 @@ mis-set window shows up as a dropped or doubled key.
 - `--exec "d: && cd \\atui && build.cmd ..."` does not run at all, while
   `--exec "d:\\atui\\build.cmd ..."` does.  The batch changes drive and directory
   itself, which is the reason it was written to do that.
-- **The box can run a command line twenty minutes after it was typed.** This is
-  the one that cost the most time, because it does not look like a broken channel:
-  it looks like a result.  A line typed while the session's login process was not
-  reading is held, and fed to a session later -- so `build --batch-args "netlink
-  probe_close.cpp probe_close.exe"` reported `ATUI-BUILD-RC=0` for a log that said
-  `probe_nb.cpp: 237 lines`, and a `probe_close.exe` that did not exist appeared to
-  have built.  Check that a build log names the file you sent before believing it,
-  and note `ftp size` on the expected output is a cheap second opinion: it reported
-  `error 10` for the executable that "had just been linked".  The bridge now sends
-  Ctrl-C and a CR before each command's start sentinel, which discards a pending
-  line at the cost of half a second.
 - **When the console goes quiet, stop poking it.** The symptoms arrive together --
   commands that never echo, old commands that do, `probe_*.exe` that produce nothing
   -- and each attempt adds input to whatever is queued.  FTP keeps working
@@ -1792,11 +1799,27 @@ three steps is load-bearing, and the reasons are the facts below.
   `sock_strerror`, `sock_init`, `shutdown`, `select` and `os2_select`, `send_file`,
   `inet_ntop` and `inet_pton`, `gethostbyname2`, and the resolver's `__res_*`.
   None of `soclose`/`sock_errno`/`sock_strerror`/`sock_init` is in Watcom's headers,
-  so atui declares them itself.  `tools/os2/probe_close.cpp` asks whether `soclose`
-  returns 0 where `close` returned -1, whether closed handles are reused (the leak
-  made visible), and what number `sock_errno` gives for a read that would block and
-  for a connection refused -- the comparison a state machine cannot be written
-  without, since errno is not maintained here.
+  so atui declares them itself.
+
+* **`soclose` and `sock_errno` answered, and they settle the transport**
+  (`tools/os2/probe_close.cpp`, the numbers are from the run):
+
+  | call | result |
+  | --- | --- |
+  | `sock_init()` | 0 |
+  | `close(fd)` on a socket, three times | **-1, every time** |
+  | `soclose(fd)`, three times | **0, every time** |
+  | `recv()` with nothing to read | -1, `sock_errno()` = **10035**, `sock_strerror` = "Operation would block" |
+  | `connect()` to a port with nothing listening | -1, `sock_errno()` = **10061**, "Connection refused" |
+
+  So: `soclose` is the close, `sock_errno` is the errno, and 10035 is the number a
+  non-blocking read returns "nothing yet" with -- the Winsock value, which is what
+  an IBM-derived stack uses.  10061 is worth naming in an error message, because
+  "the server refused" and "the server is thinking" look identical otherwise.
+  Handles are not reused immediately (six opened, closed, reopened: 11170 through
+  11181, ascending), which is nothing a client that holds one connection cares
+  about, but is the thing to know before writing a test that asserts a handle comes
+  back.
 
 * **`__cplusplus` is `1`**, not `199711L`, and `__WATCOMC__` is 1290. Anything that
   feature-detects with `#if __cplusplus >= 201103L` correctly sees C++98,

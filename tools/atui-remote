@@ -539,6 +539,56 @@ class Session:
                     return buf[:buf.index(needle)]
         return None
 
+    def only_noise(self, text):
+        """True if `text` is nothing but prompts, Ctrl-C marks and whitespace.
+
+        A console that answers Ctrl-C with another prompt is idle.  An earlier
+        version of quiesce read any output at all as "busy", and so reported a box
+        sitting quietly at a prompt as working on something -- which is the same
+        mistake as the one it was written to fix, in the other direction.
+        """
+        for line in text.splitlines():
+            line = line.replace("^C", "").replace("\x03", "").strip()
+            if not line or self.prompt_re.search(line):
+                continue
+            return False
+        return True
+
+    def quiesce(self, first=1.2, settle=4.0, rounds=5, sink=None):
+        """Get the console to a state it is safe to type at, and say whether it did.
+
+        The telnet server here hands every client the same command processor, so
+        typed input is one queue rather than one per connection.  Nothing shows
+        this more plainly than what it does to a second opinion: `probe_nb.exe`
+        measured at 14,892 bytes came back at 14,966 an hour later with nothing
+        asked of it in between, because a build sent an hour earlier had still
+        been waiting in the queue to run.  Lines typed while it is busy are not
+        lost, they are *stored*, and a session that looks freshly logged in is a
+        session that inherits them.
+
+        So ask first whether anything is going on: Ctrl-C, which abandons a running
+        command and any partial line, and then listen.  Prompts and nothing else
+        means the queue is drained.  Anything else -- compile chatter, the echo of
+        a command that was sent before this connection existed -- means something
+        was there, so keep waiting, longer each round, because what is running may
+        be a compile.  Five rounds is a generous visit; past that the honest answer
+        is "busy with something else", and typing more only deepens the queue.
+
+        Ctrl-C is rude and this is a shared machine: it is rudeness in the cause of
+        not running a build against input meant for an earlier command, which is
+        worse, and it is bounded.
+        """
+        wait = first
+        for _ in range(rounds):
+            self.send_text("\x03\r\n")
+            chunk = self.pump(wait)
+            if not chunk or self.only_noise(self.codecs.decode(chunk)):
+                return True
+            if sink:
+                sink(chunk)
+            wait = settle
+        return False
+
     def run_until(self, command, timeout=60.0, tries=4, sink=None):
         """One command, bracketed by echoes, and its output between them.
 
@@ -561,17 +611,13 @@ class Session:
         nonce = "%04x" % (int.from_bytes(os.urandom(2), "big"))
         start, finish = "ATUIRUN" + nonce, "ATUIDONE" + nonce
         for _ in range(tries):
-            # Abandon anything half-typed before asking anything else.  This box
-            # has been seen to accept a line while its login process was not
-            # reading, hold it, and feed it to a session twenty minutes later --
-            # so a fresh connection can find itself running yesterday's command,
-            # which is exactly what the log said had just been built.  Ctrl-C
-            # discards the pending line; the CR gives the discard a keystroke to
-            # belong to.  It costs a fraction of a second and removes a class of
-            # result that is otherwise indistinguishable from a wrong build.
-            self.send_text("\x03\r\n")
-            time.sleep(0.2)
-            self.pump(0.3)
+            # Empty the queue before adding to it: on a box still working off
+            # something sent earlier, this is the only way not to have yesterday's
+            # build reported as this one's result (see quiesce).
+            if not self.quiesce(sink=sink):
+                warn("the console is busy with something else, and this command "
+                     "would join a queue of input nobody is reading")
+                return None
             self.send_text("echo %s\r\n" % start)
             if self.pump_until(start, 6.0) is None:
                 continue                      # the line never reached anything
@@ -579,6 +625,11 @@ class Session:
             self.send_text("echo %s\r\n" % finish)
             body = self.pump_until(finish, timeout, sink)
             if body is None:
+                # Leave the queue as it was found: interrupt whatever is running
+                # rather than disconnecting and letting it run under someone else's
+                # session, with this command's remaining input behind it.
+                self.send_text("\x03\r\n")
+                self.pump(2.0)
                 warn("no end marker within %ds of %s: it may still be running"
                      % (timeout, command))
                 return None
@@ -1367,6 +1418,7 @@ def cmd_get(args):
 REMOTE_ROOT = "d:\\atui"
 MANIFEST_NAME = ".atui-sync.json"
 BUILD_RC_MARK = "ATUI-BUILD-RC="
+BUILD_ID_MARK = "ATUI-BUILD-ID="
 
 # What a build needs: the program, the era-compatibility headers, tvision, and
 # this directory's own makefile and batch file, which land in the build root
@@ -1549,7 +1601,14 @@ def cmd_build(args):
     # it would only report the last command's status anyway.  A driver that
     # carries on past failures has to grade itself, which is what ATUI-BUILD-RC
     # in the log is for; its absence means the batch never got to the end.
-    command = "d: && cd %s && %s %s" % (args.remote_root, args.batch, args.batch_args)
+    # A nonce as the fourth argument, echoed into the log by the batch.  It is
+    # what distinguishes this build's log from the one the box produced an hour
+    # ago for a command that was still sitting in its input queue: the verdict
+    # line alone cannot, because a stale build finishes with a real rc=0 and a
+    # log full of files that were never compiled.
+    nonce = "%04x" % (int.from_bytes(os.urandom(2), "big"))
+    command = "d: && cd %s && %s %s %s" % (args.remote_root, args.batch,
+                                           args.batch_args, nonce)
     if len(command) > 300:
         warn("build: command is %d characters; the target's command processor "
              "silently drops lines past about 315" % len(command))
@@ -1574,8 +1633,9 @@ def cmd_build(args):
 
     # The console is advisory -- the log is the verdict -- but the bracketed send
     # is what makes a command line dropped on the way to a command processor that
-    # had not finished coming up a retry instead of an hour of polling.  The cap
-    # is short on purpose: after it the log decides, and the log cannot be stale.
+    # had not finished coming up a retry instead of an hour of polling.  The cap is
+    # short on purpose: after it the log decides, and the id in the log says whether
+    # the log is this build's at all.
     session.run_until(command, timeout=min(args.run_timeout, 300.0), sink=progress)
     session.close()
 
@@ -1585,27 +1645,44 @@ def cmd_build(args):
     # failure either -- a log without the line is a build still running -- so the
     # question is asked again until the deadline.
     text = None
+    not_mine = None         # an id in the log that is not this build's
+    no_id = False           # a verdict with no id at all (an older build.cmd)
     deadline = time.time() + args.run_timeout
     while True:
         if _ftp_get(args, remote_log, args.log_to) is not None:
             with io.open(args.log_to, "r", encoding="utf-8", errors="replace") as f:
                 candidate = f.read()
+            ids = [i.strip() for i in
+                   re.findall(re.escape(BUILD_ID_MARK) + r"(\S*)", candidate)]
             if BUILD_RC_MARK in candidate:
-                text = candidate
-                break
+                if ids and ids[-1] != nonce:
+                    not_mine = ids[-1]      # somebody else's build: keep waiting
+                else:
+                    no_id = not ids
+                    text = candidate
+                    break
         if time.time() >= deadline:
             break
         time.sleep(args.log_poll)
 
     if text is None:
-        # Reaching here means the batch never wrote a verdict.  Before this waited
-        # on the file, the same silence was reported as the previous build's
-        # success -- twice, with a confident rc=0 and 172 lines about files that
-        # had not been compiled.
-        warn("build: no %s line came back from the target -- the batch did not "
-             "run, or did not finish (whatever did arrive is in %s)"
-             % (BUILD_RC_MARK, args.log_to))
+        if not_mine is not None:
+            # Definitive, and the nastiest failure this channel produces: the
+            # target ran a command sent long before this visit and reported its
+            # verdict as the answer to the one just sent, complete with a log about
+            # files that were never compiled.
+            warn("build: the log that came back belongs to build %s, not this one "
+                 "(%s) -- the target is working through input sent earlier, so let "
+                 "it go quiet and ask again (what did arrive is in %s)"
+                 % (not_mine, nonce, args.log_to))
+        else:
+            warn("build: no %s line came back from the target -- the batch did not "
+                 "run, or did not finish (whatever did arrive is in %s)"
+                 % (BUILD_RC_MARK, args.log_to))
         return 1
+    if no_id:
+        warn("build: the log carries no %s line, so this build cannot be told from "
+             "an earlier one -- sync build.cmd to the target" % BUILD_ID_MARK)
     lines = text.splitlines()
     if args.tail:
         lines = lines[-args.tail:]
