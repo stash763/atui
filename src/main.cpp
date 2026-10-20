@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "core/lines.h"      // readLine: Watcom has no std::getline
 #include "core/paths.h"
 #include "settings/settings.h"
 #include "tools/permissions.h"
@@ -198,7 +199,7 @@ int judgeCheck( int argc, char **argv )
         else if( useStdin )
         {
             std::string line;
-            if( !std::getline( std::cin, line ) ) break;
+            if( !atui::core::readLine( std::cin, line ) ) break;
             const std::size_t from = line.find_first_not_of( " \t\r\n" );
             if( from == std::string::npos ) continue;
             command = line.substr( from );
@@ -206,7 +207,7 @@ int judgeCheck( int argc, char **argv )
         else
         {
             std::string line;
-            if( !std::getline( file, line ) ) break;
+            if( !atui::core::readLine( file, line ) ) break;
             ++lineNumber;
             const int kind =
                 atui::tools::parsePermissionCase( line, expect, command );

@@ -4,7 +4,7 @@
 #define ATUI_NET_TOKEN_QUEUE_H
 
 #include <string>
-#include <queue>
+#include <vector>
 #include <mutex>
 #include <condition_variable>
 
@@ -39,6 +39,13 @@ struct Token {
 class TokenQueue
 {
 public:
+    // A constructor now, for the read index: `head_ = 0` written at the member is
+    // C++11 and Watcom is not.
+    TokenQueue()
+        : items_(), head_( 0 )
+    {
+    }
+
     void push( const Token &item );
 
     // Non-blocking pop. Returns true and fills out when an item is available.
@@ -46,7 +53,13 @@ public:
 
 private:
     std::mutex mtx_;
-    std::queue< Token > items_;
+    // A vector with an index into it rather than a std::queue: Watcom's <queue>
+    // is an empty file (measured: the header opens and declares nothing), and
+    // this queue only ever pushes at the back and takes from the front.  The
+    // index is what keeps a long answer from being copied -- items_ is emptied
+    // once everything in it has been read (see push()).
+    std::vector< Token > items_;
+    std::size_t head_;
 };
 
 } // namespace atui::net

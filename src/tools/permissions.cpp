@@ -7,8 +7,10 @@
 // more.
 #include "permissions.h"
 
+#include "core/clock.h"       // utcBreakdown: Watcom has no gmtime_r
 #include "core/journal.h"
 #include "core/paths.h"
+#include "core/strutil.h"
 
 #include <algorithm>
 #include <cctype>
@@ -21,7 +23,13 @@
 #include <string>
 #include <vector>
 
-#if !defined(_WIN32)
+#if defined(__OS2__)
+// Watcom on OS/2 has no <unistd.h> (measured: the compiler cannot open it).
+// getcwd( char *, int ) is in <direct.h>, and struct stat is where it always was.
+#include <direct.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#elif !defined(_WIN32)
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -51,17 +59,6 @@ std::string lowered( const std::string &s )
     for( std::size_t i = 0; i < o.size(); ++i )
         o[i] = (char) std::tolower( (unsigned char) o[i] );
     return o;
-}
-
-bool startsWith( const std::string &s, const char *p )
-{
-    return s.compare( 0, std::strlen( p ), p ) == 0;
-}
-
-bool endsWith( const std::string &s, const char *p )
-{
-    const std::size_t n = std::strlen( p );
-    return s.size() >= n && s.compare( s.size() - n, n, p ) == 0;
 }
 
 // The home directory, however this platform chose to spell it: POSIX exports
@@ -170,6 +167,11 @@ std::string resolvePath( const std::string &absolute )
 
 #if defined(_WIN32)
     return normalizePath( absolute );
+#elif defined(__OS2__)
+    // No realpath in Watcom's C library, and nothing to resolve with: FAT and
+    // HPFS have no symbolic links.  Normalising "." and ".." is the whole of what
+    // is true here, which is the same answer the Windows branch gives.
+    return normalizePath( absolute );
 #else
     char buf[ 4096 ];
     if( ::realpath( absolute.c_str(), buf ) ) return std::string( buf );
@@ -231,9 +233,9 @@ std::string absolutePath( const std::string &path )
     // command that reaches home is reaching out of the project whatever it looks
     // like. cmd folds the case of a variable name, so this does too.
     const char *h = homeDir();
-    if( p.compare( 0, 5, "$HOME" ) == 0 && h[0] )
+    if( core::startsWith( p, "$HOME" ) && h[0] )
         p = std::string( h ) + p.substr( 5 );
-    else if( p.compare( 0, 7, "${HOME}") == 0 && h[0] )
+    else if( core::startsWith( p, "${HOME}" ) && h[0] )
         p = std::string( h ) + p.substr( 7 );
     else if( p.size() > 2 && p[0] == '%' )
     {
@@ -806,7 +808,7 @@ bool unverifiedSurface( const std::string &command, std::string &why )
     for( std::size_t i = 0; i + 4 <= cmd.size(); ++i )
     {
         if( ( cmd[i] == '-' || cmd[i] == '/' ) && ( i == 0 || cmd[i - 1] == ' ' ) &&
-            cmd.compare( i + 1, 3, "enc" ) == 0 )
+            core::startsWith( cmd, i + 1, "enc" ) )
         {
             why = "it passes a command in encoded form";
             return true;
@@ -886,7 +888,7 @@ bool denyListed( const std::string &path, std::string &why )
         const std::string name = baseName( p );
         if( name.empty() ) continue;
 
-        if( name == ".env" || startsWith( name, ".env." ) )
+        if( name == ".env" || core::startsWith( name, ".env." ) )
         {
             why = "a dotenv file";
             return true;
@@ -904,7 +906,7 @@ bool denyListed( const std::string &path, std::string &why )
              i < sizeof kDeniedSuffixes / sizeof kDeniedSuffixes[0]; ++i )
         {
             if( name.size() > std::strlen( kDeniedSuffixes[i] ) &&
-                endsWith( name, kDeniedSuffixes[i] ) )
+                core::endsWith( name, kDeniedSuffixes[i] ) )
             {
                 why = std::string( "a " ) + kDeniedSuffixes[i] + " file";
                 return true;
@@ -913,7 +915,7 @@ bool denyListed( const std::string &path, std::string &why )
         for( std::size_t i = 0;
              i < sizeof kDeniedPrefixes / sizeof kDeniedPrefixes[0]; ++i )
         {
-            if( startsWith( name, kDeniedPrefixes[i] ) )
+            if( core::startsWith( name, kDeniedPrefixes[i] ) )
             {
                 why = name;
                 return true;
@@ -1332,11 +1334,8 @@ std::string logTimestamp()
     char buf[ 32 ];
     const std::time_t now = std::time( 0 );
     std::tm utc;
-#if !defined(_WIN32)
-    ::gmtime_r( &now, &utc );
-#else
-    utc = *::gmtime( &now );
-#endif
+    if( !atui::core::utcBreakdown( now, utc ) )
+        return "1970-01-01T00:00:00Z";
     std::strftime( buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &utc );
     return std::string( buf );
 }
@@ -1353,7 +1352,11 @@ void rotateIfNeeded( const std::string &path )
     if( st.st_size < kMaxLogBytes ) return;
     std::string bak = path + ".1";
     std::remove( bak.c_str() );
-    ::rename( path.c_str(), bak.c_str() );
+    // std::, not ::: Watcom declares rename() in namespace std and makes no
+    // global promise.  Removing the old generation first is not tidiness either --
+    // OS/2's rename refuses to replace a file that exists (measured), so on the
+    // DOS-derived platforms this order is the only one that works.
+    std::rename( path.c_str(), bak.c_str() );
 #endif
 }
 

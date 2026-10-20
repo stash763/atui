@@ -43,7 +43,7 @@ class OaiPermissionJudge : public atui::tools::PermissionJudge {
 public:
     void plan( const std::string &toolName,
                const std::string &argumentsJson,
-               atui::tools::EffectPlan &out ) override;
+               atui::tools::EffectPlan &out );
 };
 
 // The instance installed at startup (the TUI owns its lifetime, as with the

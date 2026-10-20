@@ -12,9 +12,16 @@
 #define ATUI_TOOLS_APPROVAL_H
 
 #include <condition_variable>
-#include <memory>
 #include <mutex>
 #include <string>
+
+#if defined( __WATCOMC__ )
+// Watcom's <memory> has std::auto_ptr and no shared_ptr; core/ref.h says why this
+// place needs shared ownership anyway and what the stand-in costs.
+#  include "core/ref.h"
+#else
+#  include <memory>
+#endif
 
 namespace atui {
 namespace tools {
@@ -72,7 +79,11 @@ private:
     bool allowSession_;
 };
 
+#if defined( __WATCOMC__ )
+typedef atui::core::Ref< Approval > ApprovalRef;
+#else
 typedef std::shared_ptr< Approval > ApprovalRef;
+#endif
 
 // Implemented by the front end (the TUI). `approve` is called on the worker
 // thread and must block until the user decides (typically it forwards the

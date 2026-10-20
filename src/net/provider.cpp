@@ -2,10 +2,11 @@
 // No libcurl dependency: safe to compile in non-network builds.
 #include "provider.h"
 
+#include "core/strutil.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
-#include <sstream>
 
 namespace atui {
 namespace net {
@@ -134,7 +135,7 @@ std::string uniqueProviderName( const std::string &base )
             if( sameName( v[i].name, want ) ) { taken = true; break; }
         }
         if( !taken ) return want;
-        std::ostringstream suffix;
+        core::Fmt suffix;
         suffix << '-' << n;
         want = stem + suffix.str();
     }

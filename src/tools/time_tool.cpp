@@ -1,16 +1,10 @@
 // Implementation of the get_time tool. See time_tool.h.
 #include "tools/time_tool.h"
 
+#include "core/clock.h"
+
 #include <cstdio>
 #include <ctime>
-
-// localtime_r is the re-entrant form; the tool runs on the request worker
-// thread, so prefer it where available.
-#if !defined(_WIN32)
-#  define ATUI_LOCALTIME( t, out ) localtime_r( ( t ), ( out ) )
-#else
-#  define ATUI_LOCALTIME( t, out ) ( *( out ) = *localtime( ( t ) ) )
-#endif
 
 namespace atui {
 namespace tools {
@@ -38,7 +32,7 @@ std::string TimeTool::execute( const std::string &argumentsJson )
 
     std::time_t now = std::time( 0 );
     std::tm tmv;
-    if( !ATUI_LOCALTIME( &now, &tmv ) )
+    if( !atui::core::localBreakdown( now, tmv ) )
         return "get_time: unable to read the current time";
 
     char buf[64];

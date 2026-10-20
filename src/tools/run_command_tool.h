@@ -42,19 +42,19 @@ bool commandTimeoutIsEnforced();
 
 class RunCommandTool : public Tool {
 public:
-    const char *name() const override;
-    const char *description() const override;
-    const char *parametersSchema() const override;
-    std::string execute( const std::string &argumentsJson ) override;
-    bool requiresApproval() const override { return true; }
+    const char *name() const;
+    const char *description() const;
+    const char *parametersSchema() const;
+    std::string execute( const std::string &argumentsJson );
+    bool requiresApproval() const { return true; }
     // The command line itself: containment decides the paths it names, and the
     // permission agent describes the rest.
     PermissionSubject permissionSubject(
-        const std::string &argumentsJson ) const override;
-    std::string approvalSummary( const std::string &argumentsJson ) const override;
+        const std::string &argumentsJson ) const;
+    std::string approvalSummary( const std::string &argumentsJson ) const;
     // The transcript record is the command itself, so it reads like a shell
     // history line ("$ make test") and multi-line commands stay readable.
-    std::string callPreview( const std::string &argumentsJson ) const override;
+    std::string callPreview( const std::string &argumentsJson ) const;
 };
 
 // Shared instance used by registerDefaults().

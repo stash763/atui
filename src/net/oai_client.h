@@ -38,21 +38,28 @@ struct OaiMessage {
 
 // The request parameters.
 struct OaiRequest {
+    // Defaults in the constructor: `= 0.7` on a member is C++11.
+    OaiRequest()
+        : temperature( 0.7 ), stream( true ), maxTokens( 0 ),
+          timeoutSeconds( 0 ), disableThinking( false )
+    {
+    }
+
     std::string model;
     std::vector<OaiMessage> messages;
-    double temperature = 0.7;
-    bool stream = true;
+    double temperature;
+    bool stream;
     // Pre-rendered OpenAI "tools" array JSON (see tools::ToolRegistry), or
     // empty to send no tools.
     std::string toolsJson;
     // Optional cap on generated tokens (0 = the server's default). Used by the
     // permission agent, whose answer is a handful of lines: a runaway generation
     // there is a delay in front of every tool call.
-    int maxTokens = 0;
+    int maxTokens;
     // Wall-clock budget in seconds for this request, overriding the user's
     // request timeout. A permission decision has to come back in about the time
     // it takes to notice; a long prompt must not be cut off while it thinks.
-    int timeoutSeconds = 0;
+    int timeoutSeconds;
     // Ask the server to answer without a chain of thought. Only the permission
     // agent sets it: a reasoning model spends the entire token budget on
     // `reasoning_content` before it writes a word of the answer, so a judge with
@@ -61,7 +68,7 @@ struct OaiRequest {
     //
     // All three spellings go out together because servers disagree about which
     // one they read; the ones that do not implement a field ignore it.
-    bool disableThinking = false;
+    bool disableThinking;
 };
 
 // Accumulated result of one streaming request.

@@ -2,10 +2,10 @@
 #include "tools/edit_file_tool.h"
 #include "core/journal.h"
 #include "core/paths.h"
+#include "core/strutil.h"
 #include "tools/json_args.h"
 
-#include <fstream>
-#include <sstream>
+#include <cstdio>
 #include <string>
 
 namespace atui {
@@ -15,11 +15,21 @@ namespace {
 
 bool readFile( const std::string &path, std::string &out )
 {
-    std::ifstream f( path.c_str(), std::ios::in | std::ios::binary );
+    // FILE*, in chunks.  The one-liner this replaces -- putting `f.rdbuf()` into
+    // a std::ostringstream -- needs a stream operator Watcom does not have, and a
+    // chunked read is what that does underneath anyway.  Reading in binary: an
+    // edit must see the file's own bytes, newlines included.
+    std::FILE *f = std::fopen( path.c_str(), "rb" );
     if( !f ) return false;
-    std::ostringstream ss;
-    ss << f.rdbuf();
-    out = ss.str();
+    out.clear();
+    char buf[ 4096 ];
+    for( ;; )
+    {
+        const std::size_t got = std::fread( buf, 1, sizeof buf, f );
+        out.append( buf, got );
+        if( got < sizeof buf ) break;
+    }
+    std::fclose( f );
     return true;
 }
 
@@ -199,7 +209,7 @@ std::string EditFileTool::execute( const std::string &argumentsJson )
         // entry pending and offered as an interrupted write - the safe
         // description of it. The model is told, because "edited" on its own
         // would be a half-truth.
-        std::ostringstream w;
+        core::Fmt w;
         w << "edit_file: edited '" << path
           << "' but could not record how to undo it: " << cerr;
         if( !all && found > 1 )
@@ -207,7 +217,7 @@ std::string EditFileTool::execute( const std::string &argumentsJson )
         return w.str() + ".";
     }
 
-    std::ostringstream r;
+    core::Fmt r;
     r << "edit_file: edited '" << path << "' (replaced " << replaced
       << " occurrence";
     if( replaced != 1 ) r << "s";

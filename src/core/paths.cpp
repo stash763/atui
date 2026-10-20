@@ -8,7 +8,17 @@
 #include <string>
 #include <vector>
 
-#if defined(_WIN32)
+#if defined(__OS2__)
+// Watcom on OS/2: no <unistd.h>, so the directory calls come from <direct.h>
+// (where, measured, both the plain and the _-prefixed spelling of each one is
+// declared) and access() plus its R_OK/W_OK/F_OK constants from <io.h>.  Its
+// mkdir takes no mode argument, which is what the Windows branch already wants.
+#include <direct.h>
+#include <io.h>
+#include <sys/stat.h>
+#define ATUI_MKDIR( p )      mkdir( p )
+#define ATUI_ACCESS( p, m )  access( ( p ), ( m ) )
+#elif defined(_WIN32)
 #include <direct.h>
 #include <io.h>
 #include <sys/stat.h>
@@ -167,9 +177,12 @@ bool isDirectory( const std::string &path )
     if( ::_stat( path.c_str(), &st ) != 0 ) return false;
     return ( st.st_mode & _S_IFDIR ) != 0;
 #else
+    // POSIX, and Watcom's <sys/stat.h>: both have struct stat and S_IFDIR.  The
+    // bit is tested rather than S_ISDIR() called, because the macro is a later
+    // convenience while the bit is the fact.
     struct stat st;
     if( ::stat( path.c_str(), &st ) != 0 ) return false;
-    return S_ISDIR( st.st_mode ) != 0;
+    return ( st.st_mode & S_IFDIR ) != 0;
 #endif
 }
 
@@ -209,13 +222,15 @@ std::string absolutePath( const std::string &path )
 {
     if( path.empty() ) return path;
     if( path[0] == '/' || path[0] == '\\' ) return path;
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__OS2__)
     if( path.size() > 1 && path[1] == ':' ) return path;   // "C:\dir\file"
 #endif
     char buf[ 512 ];
 #if defined(_WIN32)
     if( !_getcwd( buf, sizeof buf ) ) return path;
 #else
+    // OS/2 lands here too: Watcom's <direct.h> declares getcwd( char *, size_t ),
+    // the same shape POSIX uses.
     if( !::getcwd( buf, sizeof buf ) ) return path;
 #endif
     std::string cwd( buf );
@@ -255,6 +270,10 @@ bool canFlushToDisk()
 #elif defined(__unix__) || defined(__APPLE__)
     return true;                        // fsync()
 #else
+    // Including OS/2, where the call would be DosForceAsyncWt() rather than a C
+    // library one (Watcom's <io.h> has no commit(): measured).  Saying false is
+    // the truth about what flushToDisk does here, and the status line passes it
+    // on: writes are durable against atui's own exit, not against a power cut.
     return false;
 #endif
 }

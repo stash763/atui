@@ -177,9 +177,9 @@ std::string jsonEscape( const std::string &s )
 {
     std::string out;
     out.reserve( s.size() + 8 );
-    for( char c : s )
+    for( std::size_t i = 0; i < s.size(); ++i )
     {
-        switch( c )
+        switch( s[i] )
         {
             case '"':  out += "\\\"";   break;
             case '\\': out += "\\\\";   break;
@@ -188,7 +188,7 @@ std::string jsonEscape( const std::string &s )
             case '\t': out += "\\t";    break;
             case '\b': out += "\\b";    break;
             case '\f': out += "\\f";    break;
-            default:   out += c;        break;
+            default:   out += s[i];    break;
         }
     }
     return out;

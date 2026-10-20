@@ -87,7 +87,9 @@ void rememberPlan( const std::string &key, const EffectPlan &plan )
     if( !plan.parsed ) return;   // nothing worth reusing, and nothing to fail on
     std::lock_guard< std::mutex > lock( cacheMutex() );
     Cache &c = cache();
-    if( c.plans.count( key ) == 0 )
+    // find(), not count(): Watcom's map has no count() (measured).  This map is
+    // not const here, so the tree search is still available.
+    if( c.plans.find( key ) == c.plans.end() )
     {
         if( c.order.size() >= kMaxCachedPlans )
         {

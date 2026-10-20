@@ -1,7 +1,10 @@
 // Implementation of the undo journal. See journal.h.
 #include "journal.h"
 
+#include "core/lines.h"
+#include "core/clock.h"      // utcBreakdown: Watcom has no gmtime_r
 #include "core/paths.h"
+#include "core/strutil.h"
 
 #include <algorithm>
 #include <cctype>
@@ -11,12 +14,16 @@
 #include <ctime>
 #include <fstream>
 #include <mutex>
-#include <sstream>
 
 #if defined(_WIN32)
 #include <io.h>
 #include <sys/types.h>
 #define ATUI_PID() ((long)_getpid())
+#elif defined(__OS2__)
+// Watcom on OS/2 defines neither _WIN32 nor __unix__, and has no <unistd.h>
+// either (measured: the compiler cannot open it).  getpid is in <process.h>.
+#include <process.h>
+#define ATUI_PID() ((long)getpid())
 #else
 #include <unistd.h>
 #define ATUI_PID() ((long)::getpid())
@@ -38,7 +45,7 @@ namespace {
 // The copy buffer. Every file operation here is streamed through it, which is
 // what keeps journaling a 5 MB file and a 50 byte file identical in memory on a
 // machine where 64 KB is a large allocation.
-const std::size_t kChunk = 4096;
+const int kChunk = 4096;   // an int: it is also a stream read count
 
 // The entry name pattern. Eight-character-plus-three names because the journal
 // has to survive FAT: `U000123.PRE`, `U000123.INF`.
@@ -75,11 +82,8 @@ std::string stamp()
     char buf[ 32 ];
     const std::time_t now = std::time( 0 );
     std::tm utc;
-#if !defined(_WIN32)
-    ::gmtime_r( &now, &utc );
-#else
-    utc = *::gmtime( &now );
-#endif
+    if( !core::utcBreakdown( now, utc ) )
+        return "1970-01-01T00:00:00Z";   // no clock: a stamp that says so, not a lie
     std::strftime( buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &utc );
     return std::string( buf );
 }
@@ -87,13 +91,6 @@ std::string stamp()
 bool fileExists( const std::string &path )
 {
     return fileSize( path ) >= 0;
-}
-
-std::string longStr( long v )
-{
-    char buf[ 24 ];
-    std::snprintf( buf, sizeof buf, "%ld", v );
-    return std::string( buf );
 }
 
 // Values in a .INF are single-line and contain no quote games: paths with
@@ -135,17 +132,20 @@ bool copyFile( const std::string &src, const std::string &dst,
     bool ok = true;
     for( ;; )
     {
-        in.read( buf, (std::streamsize) sizeof buf );
-        const std::streamsize got = in.gcount();
+        // `long` and no casts: Watcom's streams read an int and gcount() returns
+        // one, POSIX reads a std::streamsize -- and kChunk fits both without a
+        // cast in either direction.
+        in.read( buf, kChunk );
+        const long got = in.gcount();
         if( got <= 0 ) break;
-        for( std::streamsize i = 0; i < got; ++i ) fnvByte( h, buf[i] );
+        for( long i = 0; i < got; ++i ) fnvByte( h, buf[i] );
         if( std::fwrite( buf, 1, (std::size_t) got, out ) != (std::size_t) got )
         {
             ok = false;
             break;
         }
-        total += (long) got;
-        if( got < (std::streamsize) sizeof buf ) break;
+        total += got;
+        if( got < kChunk ) break;
     }
     in.close();
 
@@ -175,11 +175,11 @@ std::string hashFile( const std::string &path )
     unsigned long long h = fnvInit();
     for( ;; )
     {
-        in.read( buf, (std::streamsize) sizeof buf );
-        const std::streamsize got = in.gcount();
+        in.read( buf, kChunk );
+        const long got = in.gcount();
         if( got <= 0 ) break;
-        for( std::streamsize i = 0; i < got; ++i ) fnvByte( h, buf[i] );
-        if( got < (std::streamsize) sizeof buf ) break;
+        for( long i = 0; i < got; ++i ) fnvByte( h, buf[i] );
+        if( got < kChunk ) break;
     }
     return hex( h );
 }
@@ -191,19 +191,19 @@ std::string hashFile( const std::string &path )
 // interrupted write.
 bool writeInf( const Entry &e, const std::string &state, std::string &error )
 {
-    std::ostringstream s;
+    Fmt s;
     s << "atui-undo v1\n"
       << "stamp=" << oneLine( e.stamp ) << "\n"
-      << "pid=" << longStr( e.pid ) << "\n"
+      << "pid=" << toString( e.pid ) << "\n"
       << "tool=" << oneLine( e.tool ) << "\n"
       << "op=" << oneLine( e.op ) << "\n"
       << "state=" << state << "\n"
       << "existed=" << ( e.existed ? 1 : 0 ) << "\n"
       << "target=" << oneLine( e.target ) << "\n"
       << "hash=" << e.hashBefore << "\n"
-      << "bytes=" << longStr( e.bytes ) << "\n"
+      << "bytes=" << toString( e.bytes ) << "\n"
       << "after=" << e.hashAfter << "\n"
-      << "afterbytes=" << longStr( e.bytesAfter ) << "\n";
+      << "afterbytes=" << toString( e.bytesAfter ) << "\n";
 
     std::FILE *f = std::fopen( e.metaPath.c_str(), "wb" );
     if( !f ) { error = "cannot write '" + e.metaPath + "'"; return false; }
@@ -238,9 +238,9 @@ bool readInf( const std::string &metaPath, Entry &out )
 
     std::string line;
     bool sawHeader = false;
-    while( std::getline( f, line ) )
+    while( readLine( f, line ) )
     {
-        if( line.compare( 0, 4, "atui" ) == 0 ) { sawHeader = true; continue; }
+        if( startsWith( line, "atui" ) ) { sawHeader = true; continue; }
         const std::string key   = line.substr( 0, line.find( '=' ) );
         const std::string value = valueOf( line );
         if( key == "stamp" )        out.stamp = value;
@@ -285,26 +285,10 @@ void listDir( const std::string &dir, std::vector< std::string > &out )
 #endif
 }
 
-bool endsWith( const std::string &s, const char *suffix )
-{
-    const std::size_t n = std::strlen( suffix );
-    if( s.size() < n ) return false;
-    for( std::size_t i = 0; i < n; ++i )
-        if( std::toupper( (unsigned char) s[s.size() - n + i] )
-            != std::toupper( (unsigned char) suffix[i] ) ) return false;
-    return true;
-}
-
-bool startsWith( const std::string &s, const char *prefix )
-{
-    const std::size_t n = std::strlen( prefix );
-    return s.size() >= n && s.compare( 0, n, prefix ) == 0;
-}
-
 // "U000123" from a file name, or "" if this is not one of ours.
 std::string idOf( const std::string &name, const char *ext )
 {
-    if( !endsWith( name, ext ) ) return std::string();
+    if( !endsWithIgnoreCase( name, ext ) ) return std::string();
     if( !startsWith( name, "U" ) ) return std::string();
     return name.substr( 0, name.size() - std::strlen( ext ) );
 }
@@ -533,7 +517,7 @@ std::string describe()
     for( std::size_t i = 0; i < list.size(); ++i )
         if( list[i].pending ) ++pend;
 
-    std::ostringstream s;
+    Fmt s;
     s << dir() << " - " << list.size() << " saved, "
       << humanBytes( totalBytes( list ) ) << " of " << humanBytes( maxBytes() );
     // Worth saying out of the others: it means a previous run was caught writing
@@ -553,8 +537,8 @@ bool canBackUp( const std::string &path, std::string &why )
     const long size = fileSize( abs );
     if( size > maxFileBytes() )
     {
-        why = longStr( size ) + " bytes, above the "
-              + longStr( maxFileBytes() ) + " byte undo limit";
+        why = toString( size ) + " bytes, above the "
+              + toString( maxFileBytes() ) + " byte undo limit";
         return false;
     }
     std::string err;
@@ -722,17 +706,17 @@ std::string compareTarget( const Entry &entry )
         return std::string();   // the write never took effect: nothing to recover
 
     if( !entry.hashAfter.empty() && h == entry.hashAfter )
-        return "holds what atui wrote (" + longStr( now ) + " bytes)";
+        return "holds what atui wrote (" + toString( now ) + " bytes)";
     if( !entry.hashAfter.empty() )
-        return "has been changed since atui wrote it (now " + longStr( now )
+        return "has been changed since atui wrote it (now " + toString( now )
                + " bytes)";
 
     // An interrupted write has no "after" hash, so the bytes on disk cannot be
     // placed: they may be the ones atui was writing or the ones somebody typed
     // afterwards. Saying so is the whole point - a recovery tool that guesses
     // loses files.
-    return "holds " + longStr( now ) + " bytes atui cannot account for (the "
-           "saved copy holds " + longStr( entry.bytes ) + ")";
+    return "holds " + toString( now ) + " bytes atui cannot account for (the "
+           "saved copy holds " + toString( entry.bytes ) + ")";
 }
 
 bool restorable( const Entry &entry )

@@ -6,9 +6,11 @@ namespace net {
 
 void dbg( const char *fmt, ... )
 {
+#ifdef ATUI_DEBUG_KEYS
+    // Both statics are inside the ifdef: with debugging off there is nothing
+    // here to open and nothing to lock, and an unused variable is a warning.
     static FILE *f = 0;
     static std::mutex m;
-#ifdef ATUI_DEBUG_KEYS
     if( !f )
         f = fopen( "/tmp/atui_net_dbg.txt", "a" );
     if( f )

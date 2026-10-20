@@ -9,10 +9,26 @@
 #if defined(_WIN32) || defined(__MSDOS__)
 #include <process.h>
 #include <stdlib.h>
-extern char **_environ;
+// extern "C": the C library's environment block is a C object, and a bare
+// `extern char **_environ;` in a C++ translation unit is a C++ one.
+extern "C" { extern char **_environ; }
 #define ATUI_ENV_BLOCK  _environ
 // Windows and DOS copy the string handed to _putenv, so a temporary std::string is
 // safe; removing a variable is the same call with an empty value.
+#define ATUI_ENV_SET( n, v )  _putenv( ( ( n ) + "=" + ( v ) ).c_str() )
+#define ATUI_ENV_UNSET( n )   _putenv( ( ( n ) + "=" ).c_str() )
+#elif defined(__OS2__)
+#include <process.h>
+#include <stdlib.h>
+// OS/2 asks for the POSIX spelling of the global: Watcom's <stdlib.h> declares
+// `extern char **environ` and has no _environ -- the link asked the library for
+// `__environ` and was told no (measured).  It is not redeclared here on purpose:
+// for a DLL runtime that name is a macro onto a function call, and both forms are
+// read as an expression, which is all ATUI_ENV_BLOCK is ever used for.
+//
+// Otherwise OS/2 belongs with its DOS relatives rather than with POSIX: Watcom's
+// C library has _putenv, which copies, and no setenv() or unsetenv() at all.
+#define ATUI_ENV_BLOCK  environ
 #define ATUI_ENV_SET( n, v )  _putenv( ( ( n ) + "=" + ( v ) ).c_str() )
 #define ATUI_ENV_UNSET( n )   _putenv( ( ( n ) + "=" ).c_str() )
 #else

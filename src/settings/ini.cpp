@@ -1,15 +1,22 @@
 // Implementation of the IniFile helper. See ini.h.
 #include "ini.h"
 
+#include "core/lines.h"
+#include "core/lookup.h"
+#include "core/strutil.h"
+
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
-#include <sstream>
 
 #if defined(_WIN32)
 #  include <direct.h>
 #  define ATUI_MKDIR(p) _mkdir( p )
+#elif defined(__OS2__)
+#  include <direct.h>
+// Watcom's mkdir takes no mode: <direct.h> declares `int mkdir( const char * )`.
+#  define ATUI_MKDIR(p) mkdir( p )
 #else
 #  include <sys/stat.h>
 #  include <sys/types.h>
@@ -82,11 +89,8 @@ bool IniFile::load()
 
     data_.clear();
     std::string line, section = "general";
-    while( std::getline( in, line ) )
+    while( core::readLine( in, line ) )
     {
-        if( !line.empty() && line[line.size() - 1] == '\r' )
-            line.erase( line.size() - 1 );
-
         std::string s = trim( line );
         if( s.empty() ) continue;
         if( s[0] == '#' || s[0] == ';' ) continue;
@@ -122,11 +126,14 @@ bool IniFile::save() const
     for( std::map<std::string, Section>::const_iterator si = data_.begin();
          si != data_.end(); ++si )
     {
-        out << "[" << si->first << "]\n";
+        // `.c_str()` on every std::string: Watcom's streams have no operator<<
+        // for std::string at all (measured: "left expression must be integral"),
+        // and a char pointer works on every compiler atui builds with.
+        out << "[" << si->first.c_str() << "]\n";
         for( Section::const_iterator ki = si->second.begin();
              ki != si->second.end(); ++ki )
         {
-            out << ki->first << " = " << ki->second << "\n";
+            out << ki->first.c_str() << " = " << ki->second.c_str() << "\n";
         }
         out << "\n";
     }
@@ -134,8 +141,10 @@ bool IniFile::save() const
     if( !out.good() ) return false;
     out.close();
 
-#if !defined(_WIN32)
-    // Restrictive perms: the file may contain secrets (api_key).
+#if !defined(_WIN32) && !defined(__OS2__) && !defined(__DOS__)
+    // Restrictive perms: the file may contain secrets (api_key).  OS/2 and DOS
+    // are skipped: their C library chmod knows only the read-only bit, which is
+    // not what this is asking for.
     chmod( path_.c_str(), 0600 );
 #endif
     return true;
@@ -143,10 +152,9 @@ bool IniFile::save() const
 
 bool IniFile::has( const char *section, const char *key ) const
 {
-    std::map<std::string, Section>::const_iterator si =
-        data_.find( lower( section ? section : "" ) );
-    if( si == data_.end() ) return false;
-    return si->second.find( lower( key ? key : "" ) ) != si->second.end();
+    const Section *s = core::findEntry( data_, lower( section ? section : "" ) );
+    if( 0 == s ) return false;
+    return core::hasEntry( *s, lower( key ? key : "" ) );
 }
 
 std::vector<std::string> IniFile::sectionsWith( const std::string &prefix ) const
@@ -156,7 +164,7 @@ std::vector<std::string> IniFile::sectionsWith( const std::string &prefix ) cons
     for( std::map<std::string, Section>::const_iterator it = data_.begin();
          it != data_.end(); ++it )
     {
-        if( it->first.compare( 0, p.size(), p ) == 0 && it->first.size() > p.size() )
+        if( core::startsWith( it->first, p.c_str() ) && it->first.size() > p.size() )
             out.push_back( it->first.substr( p.size() ) );
     }
     return out;
@@ -174,7 +182,7 @@ std::size_t IniFile::eraseSectionsWith( const std::string &prefix )
     for( std::map<std::string, Section>::iterator it = data_.begin();
          it != data_.end(); )
     {
-        if( it->first.compare( 0, p.size(), p ) == 0 )
+        if( core::startsWith( it->first, p.c_str() ) )
         {
             std::map<std::string, Section>::iterator gone = it++;
             data_.erase( gone );
@@ -188,12 +196,11 @@ std::size_t IniFile::eraseSectionsWith( const std::string &prefix )
 std::string IniFile::getString( const char *section, const char *key,
                                 const std::string &def ) const
 {
-    std::map<std::string, Section>::const_iterator si =
-        data_.find( lower( section ? section : "" ) );
-    if( si == data_.end() ) return def;
-    Section::const_iterator ki = si->second.find( lower( key ? key : "" ) );
-    if( ki == si->second.end() ) return def;
-    return ki->second;
+    const Section *s = core::findEntry( data_, lower( section ? section : "" ) );
+    if( 0 == s ) return def;
+    const std::string *v = core::findEntry( *s, lower( key ? key : "" ) );
+    if( 0 == v ) return def;
+    return *v;
 }
 
 int IniFile::getInt( const char *section, const char *key, int def ) const
@@ -243,21 +250,21 @@ long IniFile::getLong( const char *section, const char *key, long def ) const
 
 void IniFile::setLong( const char *section, const char *key, long value )
 {
-    std::ostringstream os;
+    core::Fmt os;
     os << value;
     setString( section, key, os.str() );
 }
 
 void IniFile::setInt( const char *section, const char *key, int value )
 {
-    std::ostringstream os;
+    core::Fmt os;
     os << value;
     setString( section, key, os.str() );
 }
 
 void IniFile::setDouble( const char *section, const char *key, double value )
 {
-    std::ostringstream os;
+    core::Fmt os;
     os.precision( 6 );
     os << value;
     setString( section, key, os.str() );

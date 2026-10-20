@@ -15,19 +15,19 @@ namespace tools {
 
 class EditFileTool : public Tool {
 public:
-    const char *name() const override;
-    const char *description() const override;
-    const char *parametersSchema() const override;
-    std::string execute( const std::string &argumentsJson ) override;
-    bool requiresApproval() const override { return true; }
+    const char *name() const;
+    const char *description() const;
+    const char *parametersSchema() const;
+    std::string execute( const std::string &argumentsJson );
+    bool requiresApproval() const { return true; }
     // One path, so containment decides this call exactly - which is why the
     // permission agent is never consulted about an edit.
     PermissionSubject permissionSubject(
-        const std::string &argumentsJson ) const override;
-    std::string approvalSummary( const std::string &argumentsJson ) const override;
+        const std::string &argumentsJson ) const;
+    std::string approvalSummary( const std::string &argumentsJson ) const;
     // Transcript record: which file, and the old → new text, escaped onto lines
     // so a multi-line replacement still reads as two lines.
-    std::string callPreview( const std::string &argumentsJson ) const override;
+    std::string callPreview( const std::string &argumentsJson ) const;
 };
 
 // Shared instance used by registerDefaults().

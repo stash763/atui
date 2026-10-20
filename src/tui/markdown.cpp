@@ -2,6 +2,9 @@
 #include "tui/markdown.h"
 #include "tui/syntax.h"
 
+#include "core/lookup.h"
+#include "core/strutil.h"
+
 #include <algorithm>
 #include <cctype>
 #include <map>
@@ -128,10 +131,23 @@ void inlineRuns( const std::string &s, size_t from, size_t to,
 {
     std::string buf;
     const unsigned char baseRole = combineRole( heading, bold, italic, strike );
-    auto flush = [&]( void )
+
+    // The text gathered so far, appended when a styled span interrupts it.  A
+    // function object rather than a lambda: Watcom has no lambdas, and calling
+    // an object with operator() keeps every `flush()` below exactly as it was.
+    struct Flush
     {
-        if( !buf.empty() ) { out.push_back( Span( buf, baseRole ) ); buf.clear(); }
+        std::string &buf;
+        std::vector<Span> &out;
+        const unsigned char role;
+        Flush( std::string &b, std::vector<Span> &o, unsigned char r )
+            : buf( b ), out( o ), role( r ) {}
+        void operator()( void )
+        {
+            if( !buf.empty() ) { out.push_back( Span( buf, role ) ); buf.clear(); }
+        }
     };
+    Flush flush( buf, out, baseRole );
 
     for( size_t i = from; i < to; )
     {
@@ -168,8 +184,8 @@ void inlineRuns( const std::string &s, size_t from, size_t to,
             {
                 std::string code = s.substr( j, p - j );
                 // strip one leading/trailing space (CommonMark)
-                if( code.size() >= 2 && code.front() == ' ' &&
-                    code.back() == ' ' )
+                if( code.size() >= 2 && code[0] == ' ' &&
+                    code[code.size() - 1] == ' ' )
                     code = code.substr( 1, code.size() - 2 );
                 flush();
                 out.push_back( Span( code, rCodeInline ) );
@@ -189,7 +205,10 @@ void inlineRuns( const std::string &s, size_t from, size_t to,
                 {
                     flush();
                     std::string alt = s.substr( i + 2, rb - ( i + 2 ) );
-                    out.push_back( Span( alt.empty() ? "image" : alt, rLink ) );
+                    // Both arms std::string: Watcom will not compose a
+                    // conditional out of a literal and a std::string.
+                    out.push_back( Span( alt.empty() ? std::string( "image" ) : alt,
+                                         rLink ) );
                     i = rp + 1;
                     continue;
                 }
@@ -204,9 +223,9 @@ void inlineRuns( const std::string &s, size_t from, size_t to,
             std::string inner = ( gt == std::string::npos )
                 ? std::string() : s.substr( i + 1, gt - i - 1 );
             if( gt != std::string::npos &&
-                ( inner.compare( 0, 7, "http://" )  == 0 ||
-                  inner.compare( 0, 8, "https://" ) == 0 ||
-                  inner.compare( 0, 7, "mailto:" )  == 0 ) )
+                ( core::startsWith( inner, "http://" )  ||
+                  core::startsWith( inner, "https://" ) ||
+                  core::startsWith( inner, "mailto:" ) ) )
             {
                 flush();
                 out.push_back( Span( inner, rLink ) );
@@ -243,7 +262,8 @@ void inlineRuns( const std::string &s, size_t from, size_t to,
                     if( rp != std::string::npos )
                     {
                         flush();
-                        out.push_back( Span( label.empty() ? "(link)" : label,
+                        out.push_back( Span( label.empty()
+                                                 ? std::string( "(link)" ) : label,
                                              rLink ) );
                         i = rp + 1;
                         continue;
@@ -257,8 +277,9 @@ void inlineRuns( const std::string &s, size_t from, size_t to,
                     {
                         std::string ref = s.substr( rb + 2, rb2 - rb - 2 );
                         if( ref.empty() ) ref = label;
-                        LinkMap::const_iterator it = links.find( lower( ref ) );
-                        if( it != links.end() )
+                        // hasEntry, not find(): links is const, and Watcom's map
+                        // cannot be searched through a const map.
+                        if( core::hasEntry( links, lower( ref ) ) )
                         {
                             flush();
                             out.push_back( Span( label, rLink ) );
@@ -268,8 +289,7 @@ void inlineRuns( const std::string &s, size_t from, size_t to,
                     }
                 }
                 // collapsed [ref]
-                LinkMap::const_iterator it = links.find( lower( label ) );
-                if( it != links.end() )
+                if( core::hasEntry( links, lower( label ) ) )
                 {
                     flush();
                     out.push_back( Span( label, rLink ) );
@@ -356,7 +376,7 @@ public:
     Layout( const Ctx &ctx, const std::string &fp, const std::string &cp,
             unsigned char fpRole, unsigned char cpRole, std::vector<Line> &out )
         : ctx_( ctx ), fp_( fp ), cp_( cp ), fpRole_( fpRole ), cpRole_( cpRole ),
-          out_( out ), cw_( 0 ), first_( true )
+          out_( out ), avail_( 1 ), cw_( 0 ), first_( true )
     {
         startLine();
     }
@@ -473,7 +493,9 @@ private:
     unsigned char fpRole_, cpRole_;
     std::vector<Line> &out_;
     std::vector<Span> line_;
-    int avail_ = 1;
+    // Initialised by the constructor, not here: a default member initializer is
+    // C++11 and Watcom is not.
+    int avail_;
     int cw_;
     bool first_;
 };
@@ -639,8 +661,11 @@ enum Align { ALeft, ACenter, ARight };
 std::vector<Align> parseAligns( const std::string &line )
 {
     std::vector<Align> a;
-    for( std::string c : splitRow( line ) )
+    // A named vector and an index: a range-for is C++11.
+    const std::vector<std::string> cells = splitRow( line );
+    for( size_t i = 0; i < cells.size(); ++i )
     {
+        const std::string &c = cells[i];
         bool l = !c.empty() && c[0] == ':';
         bool r = !c.empty() && c[c.size() - 1] == ':';
         a.push_back( l && r ? ACenter : r ? ARight : ALeft );
@@ -713,55 +738,37 @@ void emitQuote( const std::vector<std::string> &lines, size_t &i, size_t to,
     renderBlocks( inner, 0, inner.size(), ctx, pfx, out );
 }
 
-void emitTable( const std::vector<std::string> &lines, size_t &i, size_t to,
-                const Ctx &ctx, const std::string &prefix,
-                std::vector<Line> &out )
+// Display width of one table cell: the text its inline spans come to, with the
+// markers gone.  A function rather than a lambda -- Watcom has none -- so it
+// takes the context it reads instead of capturing it.
+int cellWidth( const Ctx &ctx, const std::string &c )
 {
-    std::vector<std::string> header = splitRow( lines[i] );
-    std::vector<Align> align = parseAligns( lines[i + 1] );
-    size_t rows0 = i + 2;
-    std::vector<std::vector<std::string> > rows;
-    size_t k = rows0;
-    while( k < to && !isBlank( lines[k] ) &&
-            lines[k].find( '|' ) != std::string::npos )
-    {
-        rows.push_back( splitRow( lines[k] ) );
-        ++k;
-    }
-    size_t ncol = header.size();
-    if( align.size() < ncol ) align.resize( ncol, ALeft );
+    std::vector<Span> sp;
+    inlineRuns( c, 0, c.size(), false, false, false, false, ctx.links, sp );
+    int w = 0;
+    for( size_t z = 0; z < sp.size(); ++z ) w += (int) sp[z].text.size();
+    return w;
+}
 
-    // width per column = max display width of its cells (inline-stripped)
-    std::vector<int> colw( ncol, 0 );
-    auto cellWidth = [&]( const std::string &c )
-    {
-        std::vector<Span> sp;
-        inlineRuns( c, 0, c.size(), false, false, false, false, ctx.links, sp );
-        int w = 0;
-        for( size_t z = 0; z < sp.size(); ++z ) w += (int) sp[z].text.size();
-        return w;
-    };
-    for( size_t c = 0; c < ncol; ++c ) colw[c] = cellWidth( header[c] );
-    for( size_t r = 0; r < rows.size(); ++r )
-        for( size_t c = 0; c < ncol && c < rows[r].size(); ++c )
-            colw[c] = std::max( colw[c], cellWidth( rows[r][c] ) );
+// One row of the table, padded out to the column widths.  Again a function
+// object instead of a lambda: it holds references to the same values the lambda
+// would have captured, and `emitRow( cells, head )` below is unchanged.
+struct RowEmitter
+{
+    const Ctx &ctx;
+    const std::string &prefix;
+    std::vector<Line> &out;
+    const std::vector<int> &colw;
+    const std::vector<Align> &align;
+    const size_t ncol;
 
-    // guard total width so columns stay single-line
-    int total = 0;
-    for( size_t c = 0; c < ncol; ++c ) total += colw[c] + 3;
-    if( total > ctx.width && ncol > 0 )
+    RowEmitter( const Ctx &c, const std::string &p, std::vector<Line> &o,
+                const std::vector<int> &w, const std::vector<Align> &a, size_t n )
+        : ctx( c ), prefix( p ), out( o ), colw( w ), align( a ), ncol( n )
     {
-        int over = total - ctx.width;
-        for( int pass = 0; pass < 100 && over > 0; ++pass )
-        {
-            bool red = false;
-            for( size_t c = 0; c < ncol && over > 0; ++c )
-                if( colw[c] > 3 ) { --colw[c]; --over; red = true; }
-            if( !red ) break;
-        }
     }
 
-    auto emitRow = [&]( const std::vector<std::string> &cells, bool head )
+    void operator()( const std::vector<std::string> &cells, bool head ) const
     {
         Layout lay( ctx, prefix, prefix, rNormal, rNormal, out );
         for( size_t c = 0; c < ncol; ++c )
@@ -786,7 +793,50 @@ void emitTable( const std::vector<std::string> &lines, size_t &i, size_t to,
             lay.addRaw( " |", rMarker );
         }
         lay.finish();
-    };
+    }
+};
+
+void emitTable( const std::vector<std::string> &lines, size_t &i, size_t to,
+                const Ctx &ctx, const std::string &prefix,
+                std::vector<Line> &out )
+{
+    std::vector<std::string> header = splitRow( lines[i] );
+    std::vector<Align> align = parseAligns( lines[i + 1] );
+    size_t rows0 = i + 2;
+    std::vector<std::vector<std::string> > rows;
+    size_t k = rows0;
+    while( k < to && !isBlank( lines[k] ) &&
+            lines[k].find( '|' ) != std::string::npos )
+    {
+        rows.push_back( splitRow( lines[k] ) );
+        ++k;
+    }
+    size_t ncol = header.size();
+    if( align.size() < ncol ) align.resize( ncol, ALeft );
+
+    // width per column = max display width of its cells (inline-stripped)
+    std::vector<int> colw( ncol, 0 );
+    for( size_t c = 0; c < ncol; ++c ) colw[c] = cellWidth( ctx, header[c] );
+    for( size_t r = 0; r < rows.size(); ++r )
+        for( size_t c = 0; c < ncol && c < rows[r].size(); ++c )
+            colw[c] = std::max( colw[c], cellWidth( ctx, rows[r][c] ) );
+
+    // guard total width so columns stay single-line
+    int total = 0;
+    for( size_t c = 0; c < ncol; ++c ) total += colw[c] + 3;
+    if( total > ctx.width && ncol > 0 )
+    {
+        int over = total - ctx.width;
+        for( int pass = 0; pass < 100 && over > 0; ++pass )
+        {
+            bool red = false;
+            for( size_t c = 0; c < ncol && over > 0; ++c )
+                if( colw[c] > 3 ) { --colw[c]; --over; red = true; }
+            if( !red ) break;
+        }
+    }
+
+    const RowEmitter emitRow( ctx, prefix, out, colw, align, ncol );
 
     emitRow( header, true );
     // separator
@@ -926,17 +976,35 @@ void renderBlocks( const std::vector<std::string> &lines, size_t from, size_t to
     bool hasPara = false;
     bool atHard = false;
 
-    auto flushPara = [&]( void )
+    // The paragraph gathered so far, rendered when something else begins.  A
+    // function object rather than a lambda -- Watcom has none -- holding
+    // references to the same values, which it clears in place.
+    struct ParaFlush
     {
-        if( !hasPara ) return;
-        Layout lay( ctx, prefix, prefix,
-                    ( !prefix.empty() ? rQuote : rNormal ), rNormal, out );
-        lay.spans( para );
-        lay.finish();
-        para.clear();
-        hasPara = false;
-        atHard = false;
+        std::vector<Span> &para;
+        bool &hasPara;
+        bool &atHard;
+        const Ctx &ctx;
+        const std::string &prefix;
+        std::vector<Line> &out;
+        ParaFlush( std::vector<Span> &p, bool &h, bool &ah,
+                   const Ctx &c, const std::string &pf, std::vector<Line> &o )
+            : para( p ), hasPara( h ), atHard( ah ), ctx( c ), prefix( pf ), out( o )
+        {
+        }
+        void operator()( void )
+        {
+            if( !hasPara ) return;
+            Layout lay( ctx, prefix, prefix,
+                        ( !prefix.empty() ? rQuote : rNormal ), rNormal, out );
+            lay.spans( para );
+            lay.finish();
+            para.clear();
+            hasPara = false;
+            atHard = false;
+        }
     };
+    ParaFlush flushPara( para, hasPara, atHard, ctx, prefix, out );
 
     size_t i = from;
     while( i < to )

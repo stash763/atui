@@ -21,7 +21,7 @@ String::String( const String &o )
 {
     if( o.size_ > 0 ) {
         ensure( o.size_ );
-        memcpy( data_, o.data_, o.size_ );
+        std::memcpy( data_, o.data_, o.size_ );
     }
     size_ = o.size_;
 }
@@ -39,7 +39,7 @@ String &String::operator=( const String &o )
         cap_ = 0;
         if( o.size_ > 0 ) {
             ensure( o.size_ );
-            memcpy( data_, o.data_, o.size_ );
+            std::memcpy( data_, o.data_, o.size_ );
         }
         size_ = o.size_;
     }
@@ -78,7 +78,7 @@ void String::append( const char *s )
     int n = ( int )std::strlen( s );
     ensure( size_ + n + 1 );
     if( data_ && n > 0 )
-        memcpy( data_ + size_, s, n );
+        std::memcpy( data_ + size_, s, n );
     size_ += n;
     if( data_ && size_ > 0 )
         data_[ size_ ] = 0;
@@ -90,7 +90,7 @@ void String::append( const String &s )
         return;
     ensure( size_ + s.size_ + 1 );
     if( data_ && s.data_ && s.size_ > 0 )
-        memcpy( data_ + size_, s.data_, s.size_ );
+        std::memcpy( data_ + size_, s.data_, s.size_ );
     size_ += s.size_;
     if( data_ && size_ > 0 )
         data_[ size_ ] = 0;
@@ -133,7 +133,7 @@ int String::indexOf( const char *needle, int from ) const
 
     int i = ( from > 0 ) ? from : 0;
     while( i + n <= size_ ) {
-        if( memcmp( data_ + i, needle, n ) == 0 )
+        if( std::memcmp( data_ + i, needle, n ) == 0 )
             return i;
         ++i;
     }
@@ -159,7 +159,7 @@ String String::substr( int begin, int end ) const
 
     r.ensure( n );
     if( data_ && r.data_ && n > 0 )
-        memcpy( r.data_, data_ + begin, n );
+        std::memcpy( r.data_, data_ + begin, n );
     r.size_ = n;
     r.data_[ n ] = 0;
     return r;
@@ -192,7 +192,7 @@ bool String::equals( const char *o ) const
     int n = ( int )std::strlen( o );
     if( size_ != n )
         return false;
-    return ( n == 0 ) || ( data_ && memcmp( data_, o, n ) == 0 );
+    return ( n == 0 ) || ( data_ && std::memcmp( data_, o, n ) == 0 );
 }
 
 void String::ensure( int n )
@@ -208,7 +208,7 @@ void String::ensure( int n )
         return;
 
     if( data_ && size_ > 0 )
-        memcpy( nd, data_, size_ );
+        std::memcpy( nd, data_, size_ );
     delete data_;
 
     data_ = nd;

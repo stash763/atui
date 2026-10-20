@@ -7,27 +7,26 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
-#include <sstream>
 #include <string>
 
-#if !defined(_WIN32)
-#include <sys/wait.h>
-#define ATUI_POPEN( cmd, mode )  popen( ( cmd ), ( mode ) )
-#define ATUI_PCLOSE( p )         pclose( ( p ) )
-#else
-#define ATUI_POPEN( cmd, mode )  _popen( ( cmd ), ( mode ) )
-#define ATUI_PCLOSE( p )         _pclose( ( p ) )
-#endif
+#include "core/strutil.h"
 
 // The fork/exec path - the one with a deadline and a process group - is used where
 // fork() and poll() exist. MS-DOS has neither, and `cmd /c` gives no way to stop
 // what it started, so those platforms keep the plain pipe and the limit that comes
 // with it (documented in PERMISSIONS.md, because it is a difference a person can
-// notice).
+// notice).  OS/2 is in that second group for the same reason: Watcom has no fork,
+// and its C library spells the pipe functions _popen/_pclose (measured: <stdio.h>
+// declares _popen; an unsuffixed popen is not there).
 #if defined(__unix__) || defined(__APPLE__)
 #define ATUI_SPAWN_WITH_DEADLINE 1
+#include <sys/wait.h>
+#define ATUI_POPEN( cmd, mode )  popen( ( cmd ), ( mode ) )
+#define ATUI_PCLOSE( p )         pclose( ( p ) )
 #else
 #define ATUI_SPAWN_WITH_DEADLINE 0
+#define ATUI_POPEN( cmd, mode )  _popen( ( cmd ), ( mode ) )
+#define ATUI_PCLOSE( p )         _pclose( ( p ) )
 #endif
 
 #if ATUI_SPAWN_WITH_DEADLINE
@@ -252,7 +251,7 @@ ChildResult runCaptured( const std::string &shellCmd,
                          long /*timeoutSeconds*/ )
 {
     ChildResult r;
-    FILE *pipe = 0;
+    std::FILE *pipe = 0;   // std::: Watcom's <cstdio> keeps FILE out of the global namespace
     {
         atui::core::HiddenCredentials hideCredentials( passList );
         pipe = ATUI_POPEN( shellCmd.c_str(), "r" );
@@ -356,8 +355,9 @@ std::string RunCommandTool::execute( const std::string &argumentsJson )
     // Merge stderr into stdout so the model sees errors too. The shell runs the
     // string; on POSIX we redirect the shell's stderr onto its stdout (the pipe)
     // up front so even commands that themselves do `1>&2` are captured; cmd.exe
-    // has no `exec`, so append `2>&1` there.
-#if !defined(_WIN32)
+    // has no `exec`, so append `2>&1` there -- which is also why OS/2 is on this
+    // side of the test: its shell is a command processor, not a POSIX shell.
+#if defined(__unix__) || defined(__APPLE__)
     const std::string shellCmd = "exec 2>&1; " + command;
 #else
     const std::string shellCmd = command + " 2>&1";
@@ -369,7 +369,7 @@ std::string RunCommandTool::execute( const std::string &argumentsJson )
     if( !result.started )
         return "run_command: failed to start '" + oneLineClip( command, 80 ) + "'";
 
-    std::ostringstream r;
+    core::Fmt r;
     if( result.timedOut )
     {
         r << "timed out after " << timeoutSeconds

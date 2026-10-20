@@ -55,6 +55,7 @@
 #include "app.h"
 #include "core/ai.h"
 #include "core/journal.h"
+#include "core/strutil.h"      // Fmt and toString: Watcom has no std::ostringstream
 #include "tui/theme.h"
 #include "tui/md_style.h"
 #include "tui/markdown.h"
@@ -117,8 +118,11 @@ namespace {
     atui::net::TokenQueue g_queue_;
     atui::net::OaiChatModel *g_oai_;
     bool g_streamActive_ = false;
-#endif
+    // Inside the ifdef, not after it: every use is streaming, and a file-static
+    // that the harness build never mentions is a warning on Watcom (which puts
+    // the blame on <vector>, several files away).
     bool g_replyFinished_ = false;
+#endif
 
     // Debug event log (only when built with ATUI_DEBUG_KEYS).
 #ifdef ATUI_DEBUG_KEYS
@@ -665,7 +669,7 @@ private:
                 {
                     std::string hint = bl.expanded
                         ? "  (click to collapse)"
-                        : "  .. " + std::to_string(
+                        : "  .. " + atui::core::toString(
                               (unsigned long) (rl.size() - shown) )
                           + " more lines (click to expand)";
                     lines_.push_back( plainLine( hint, rHead, (int) b, true ) );
@@ -684,7 +688,7 @@ private:
             {
                 std::string head = bl.expanded ? "[-] thinking ("
                                                : "[+] thinking (";
-                head += std::to_string( (unsigned long) bl.text.size() );
+                head += atui::core::toString( (unsigned long) bl.text.size() );
                 head += bl.expanded ? " chars)  click/Ctrl-T to collapse"
                                     : " chars)  click/Ctrl-T to expand";
                 std::vector<std::string> hw = wrapText_( head, width );
@@ -1509,7 +1513,7 @@ static void setInput_( TInputLine *line, const std::string &text )
 {
     std::string rec( line->maxLen, '\0' );
     size_t n = text.size() < (size_t) line->maxLen ? text.size() : (size_t) line->maxLen;
-    memcpy( &rec[0], text.data(), n );
+    std::memcpy( &rec[0], text.data(), n );
     line->setData( &rec[0] );
 }
 
@@ -1518,7 +1522,7 @@ static void setInput_( TInputLine *line, const std::string &text )
 static char *dupStr_( const std::string &s )
 {
     char *p = new char[ s.size() + 1 ];
-    memcpy( p, s.data(), s.size() );
+    std::memcpy( p, s.data(), s.size() );
     p[ s.size() ] = '\0';
     return p;
 }
@@ -1550,6 +1554,12 @@ static std::string menuText_( const std::string &text, size_t maxLen = 52 )
 class MenuBuilder
 {
 public:
+    // In the constructor, not at the members: `= 0` on a member is C++11.
+    MenuBuilder()
+        : head_( 0 ), link_( &head_ )
+    {
+    }
+
     void add( TMenuItem *item ) { *link_ = item; link_ = &item->next; }
     void sep()                  { add( &newLine() ); }
     TMenu *finish()
@@ -1561,8 +1571,8 @@ public:
     }
 
 private:
-    TMenuItem  *head_ = 0;
-    TMenuItem **link_ = &head_;
+    TMenuItem  *head_;
+    TMenuItem **link_;
 };
 
 // "model  (provider)" per provider, the active one marked with '*'. A provider
@@ -1580,9 +1590,14 @@ TMenu *buildSwitchModelMenu_()
         const std::string label =
             std::string( i == active ? "* " : "  " ) + menuText_( model ) +
             "  (" + menuText_( all[i].name, 20 ) + ")";
+        // TKey( ... ) spelled out: kbNoKey is a constant whose value is 0, and in
+        // C++98 that makes it a null pointer constant as well, which would leave
+        // the TMenu* overload of this constructor looking like an equally good
+        // answer.  (C++11 narrowed what counts, so newer compilers do not see the
+        // second choice at all.)
         mb.add( new TMenuItem( label.c_str(),
                                (ushort) ( CmdSwitchModelBase + (int) i ),
-                               kbNoKey ) );
+                               TKey( kbNoKey ) ) );
     }
     return mb.finish();
 }
@@ -1687,16 +1702,18 @@ class ProvidersDialog : public TDialog
 {
 public:
 
-    int            editing = 0;         // provider the fields describe
-    TInputLine    *name  = 0;
-    TInputLine    *url   = 0;
-    TInputLine    *key   = 0;
-    TInputLine    *model = 0;
-    TInputLine    *temp  = 0;
-    TCheckBoxes   *resend = 0;
-    TListBox      *providerList = 0;
-    TListBox      *modelList = 0;
-    TStaticText   *status = 0;
+    // Zeroed in the constructor: `= 0` on a member is C++11.  The fields a
+    // dialog does not build stay null, and the code below tests for that.
+    int            editing;         // provider the fields describe
+    TInputLine    *name;
+    TInputLine    *url;
+    TInputLine    *key;
+    TInputLine    *model;
+    TInputLine    *temp;
+    TCheckBoxes   *resend;
+    TListBox      *providerList;
+    TListBox      *modelList;
+    TStaticText   *status;
     TRect          statusRect;
 
     ProvidersDialog();
@@ -1771,7 +1788,9 @@ static std::size_t editingIndex_( const ProvidersDialog *d )
 
 ProvidersDialog::ProvidersDialog()
     : TWindowInit( &TDialog::initFrame ),
-      TDialog( TRect( 0, 0, 72, 25 ), "Options - Providers" )
+      TDialog( TRect( 0, 0, 72, 25 ), "Options - Providers" ),
+      editing( 0 ), name( 0 ), url( 0 ), key( 0 ), model( 0 ), temp( 0 ),
+      resend( 0 ), providerList( 0 ), modelList( 0 ), status( 0 )
 {
     options |= ofCentered;
 
@@ -1867,7 +1886,7 @@ void ProvidersDialog::loadFields()
     setInput_( key, p.apiKey );
     setInput_( model, p.model );
     char tbuf[ 16 ];
-    snprintf( tbuf, sizeof tbuf, "%.2f", p.temperature );
+    std::snprintf( tbuf, sizeof tbuf, "%.2f", p.temperature );
     setInput_( temp, tbuf );
     ushort rinit = p.thinkingResend ? 1 : 0;
     resend->setData( &rinit );
@@ -1939,9 +1958,11 @@ void ProvidersDialog::refreshModels()
     std::string u( url->data );
     std::string k( key->data );
     // Trim trailing whitespace/newline that can slip into the input buffer.
-    while( !u.empty() && ( u.back() == ' ' || u.back() == '\r' ||
-                           u.back() == '\n' ) )
-        u.pop_back();
+    // Index and erase, not back()/pop_back(): Watcom's std::string has neither
+    // (measured; its member list stops at push_back).
+    while( !u.empty() && ( u[u.size() - 1] == ' ' || u[u.size() - 1] == '\r' ||
+                           u[u.size() - 1] == '\n' ) )
+        u.erase( u.size() - 1 );
 
     std::vector<std::string> ids;
     std::string err;
@@ -1974,9 +1995,11 @@ void ProvidersDialog::refreshModels()
         setInput_( model, p.model );
         loadModelList();
     }
-    char msg[ 48 ];
-    snprintf( msg, sizeof msg, "%zu model(s) loaded.", ids.size() );
-    setStatus( msg );
+    // Built as text rather than with snprintf's %zu: that length modifier is a
+    // C99-ism and Watcom's printf does not have it (it would print a count of
+    // zero, which is a convincing wrong answer).
+    setStatus( atui::core::toString( (unsigned long) ids.size() ) +
+               " model(s) loaded." );
 }
 
 void ProvidersDialog::handleEvent( TEvent& event )
@@ -2140,12 +2163,13 @@ void TApp::showTheme()
 class SettingsDialog : public TDialog
 {
 public:
-    TInputLine    *wheel        = 0;
-    TInputLine    *timeout      = 0;
-    TRadioButtons *modes        = 0;
-    TInputLine    *judgeModel   = 0;
-    TInputLine    *judgeSeconds = 0;
-    TInputLine    *cmdTimeout   = 0;
+    // Zeroed in the constructor: `= 0` on a member is C++11.
+    TInputLine    *wheel;
+    TInputLine    *timeout;
+    TRadioButtons *modes;
+    TInputLine    *judgeModel;
+    TInputLine    *judgeSeconds;
+    TInputLine    *cmdTimeout;
 
     SettingsDialog();
 
@@ -2161,7 +2185,9 @@ public:
 
 SettingsDialog::SettingsDialog()
     : TWindowInit( &TDialog::initFrame ),
-      TDialog( TRect( 0, 0, 66, 25 ), "Options - Settings" )
+      TDialog( TRect( 0, 0, 66, 25 ), "Options - Settings" ),
+      wheel( 0 ), timeout( 0 ), modes( 0 ), judgeModel( 0 ), judgeSeconds( 0 ),
+      cmdTimeout( 0 )
 {
     options |= ofCentered;
 
@@ -2180,7 +2206,7 @@ SettingsDialog::SettingsDialog()
     wheel = new TInputLine( TRect( fieldLeft, 2,
                                    fieldLeft + kDigits + 2, 3 ), kDigits + 1 );
     insert( wheel );
-    snprintf( range, sizeof range, "%d to %d",
+    std::snprintf( range, sizeof range, "%d to %d",
               atui::settings::kMinWheelLines, atui::settings::kMaxWheelLines );
     insert( new TStaticText( TRect( noteLeft, 2, size.x - 3, 3 ), range ) );
 
@@ -2189,7 +2215,7 @@ SettingsDialog::SettingsDialog()
     timeout = new TInputLine( TRect( fieldLeft, 4,
                                      fieldLeft + kDigits + 2, 5 ), kDigits + 1 );
     insert( timeout );
-    snprintf( range, sizeof range, "%d to %d",
+    std::snprintf( range, sizeof range, "%d to %d",
               atui::net::kMinRequestMinutes, atui::net::kMaxRequestMinutes );
     insert( new TStaticText( TRect( noteLeft, 4, size.x - 3, 5 ), range ) );
 
@@ -2223,7 +2249,7 @@ SettingsDialog::SettingsDialog()
     judgeSeconds = new TInputLine( TRect( fieldLeft, 12,
                                           fieldLeft + 4, 13 ), 3 );
     insert( judgeSeconds );
-    snprintf( range, sizeof range, "%d to %d",
+    std::snprintf( range, sizeof range, "%d to %d",
               atui::tools::kMinJudgeSeconds, atui::tools::kMaxJudgeSeconds );
     insert( new TStaticText( TRect( fieldLeft + 6, 12, size.x - 3, 13 ),
                              range ) );
@@ -2238,15 +2264,15 @@ SettingsDialog::SettingsDialog()
     cmdTimeout = new TInputLine( TRect( fieldLeft, 13,
                                         fieldLeft + kDigits + 2, 14 ), kDigits + 1 );
     insert( cmdTimeout );
-    snprintf( range, sizeof range, "%ld to %ld, 0 = none",
+    std::snprintf( range, sizeof range, "%ld to %ld, 0 = none",
               atui::tools::kMinCommandTimeout, atui::tools::kMaxCommandTimeout );
     insert( new TStaticText( TRect( noteLeft, 13, size.x - 3, 14 ), range ) );
 
-    setInput_( wheel, std::to_string( atui::settings::wheelLines() ) );
-    setInput_( timeout, std::to_string( atui::net::requestMinutes() ) );
+    setInput_( wheel, atui::core::toString( atui::settings::wheelLines() ) );
+    setInput_( timeout, atui::core::toString( atui::net::requestMinutes() ) );
     setInput_( judgeModel, atui::tools::judgeModelOverride() );
-    setInput_( judgeSeconds, std::to_string( atui::tools::judgeSeconds() ) );
-    setInput_( cmdTimeout, std::to_string( atui::tools::commandTimeoutSeconds() ) );
+    setInput_( judgeSeconds, atui::core::toString( atui::tools::judgeSeconds() ) );
+    setInput_( cmdTimeout, atui::core::toString( atui::tools::commandTimeoutSeconds() ) );
 
     // TStaticText wraps at the width it was given and then clips to the height it
     // was given, silently both times - so a paragraph is measured in rows of the
@@ -2365,7 +2391,7 @@ static std::string undoClock_( const std::string &stamp )
 static std::string undoPath_( const std::string &target )
 {
     const std::string root = atui::tools::projectRoot();
-    if( !root.empty() && target.compare( 0, root.size(), root ) == 0 )
+    if( !root.empty() && atui::core::startsWith( target, root.c_str() ) )
     {
         std::string rest = target.substr( root.size() );
         if( rest.size() > 1 && ( rest[0] == '/' || rest[0] == '\\' ) )
@@ -2378,7 +2404,7 @@ static std::string undoPath_( const std::string &target )
 
 static std::string undoRowLabel_( const atui::core::journal::Entry &e, int ordinal )
 {
-    std::ostringstream s;
+    atui::core::Fmt s;
     s << ( ordinal + 1 ) << ". " << undoPath_( e.target )
       << "   " << undoClock_( e.stamp )
       << "  " << atui::core::journal::humanBytes( e.bytes );
@@ -2492,7 +2518,7 @@ RestoreResult restoreEntry_( const atui::core::journal::Entry &entry,
             atui::tools::PermissionSubject( atui::tools::psPath, entry.target ) );
         if( p.outcome != atui::tools::poRun && p.rung != atui::tools::prNoUndoNet )
         {
-            std::ostringstream q;
+            atui::core::Fmt q;
             q << "Restore '" << entry.target << "'?\n\n"
               << "It held these bytes on " << entry.stamp << ", and atui's rules "
               << "would not overwrite the file without asking a person:\n\n  "
@@ -2519,9 +2545,10 @@ RestoreResult restoreEntry_( const atui::core::journal::Entry &entry,
 class UndoDialog : public TDialog
 {
 public:
-    TListBox      *list = 0;
-    TStaticText   *header = 0;
-    TStaticText   *status = 0;
+    // Zeroed in the constructor: `= 0` on a member is C++11.
+    TListBox      *list;
+    TStaticText   *header;
+    TStaticText   *status;
     TRect          headerRect;
     TRect          statusRect;
     std::vector<atui::core::journal::Entry> items;
@@ -2536,7 +2563,8 @@ public:
 
 UndoDialog::UndoDialog()
     : TWindowInit( &TDialog::initFrame ),
-      TDialog( TRect( 0, 0, 74, kUndoRows + 10 ), "Undo a file change" )
+      TDialog( TRect( 0, 0, 74, kUndoRows + 10 ), "Undo a file change" ),
+      list( 0 ), header( 0 ), status( 0 )
 {
     options |= ofCentered;
 
@@ -2592,7 +2620,7 @@ void UndoDialog::loadList()
         coll->insert( dupStr_( undoRowLabel_( items[i], (int) i ) ) );
     list->newList( coll );
 
-    std::ostringstream h;
+    atui::core::Fmt h;
     if( !atui::core::journal::enabled() )
         h << "The undo journal is switched off ([undo] enabled), so atui holds "
              "no copies of anything.";
@@ -2657,7 +2685,7 @@ void UndoDialog::act( bool discardIt )
     {
         // Discarding is the one action here that cannot be undone: it destroys
         // the only copy of what the file used to hold.
-        std::ostringstream q;
+        atui::core::Fmt q;
         q << "Throw away the saved copy of\n\n  " << undoPath_( entry.target )
           << "\n\nfrom " << entry.stamp << "? Nothing else holds what was in that "
           "file before atui changed it.";
@@ -2759,7 +2787,7 @@ void maybeRecoverInterruptedWrites_()
         {
             if( g_transcript_ )
             {
-                std::ostringstream s;
+                atui::core::Fmt s;
                 s << ( real.size() - i )
                   << " more interrupted write(s) are in the undo journal ("
                   << atui::core::journal::dir() << "); File > Undo lists them.";
@@ -2770,7 +2798,7 @@ void maybeRecoverInterruptedWrites_()
         ++asked;
 
         const atui::core::journal::Entry &e = real[i];
-        std::ostringstream body;
+        atui::core::Fmt body;
         body << "atui stopped while it was writing\n\n  " << e.target << "\n\n"
              << "That file " << atui::core::journal::compareTarget( e )
              << ". The copy from before the write is still saved, at\n\n  "

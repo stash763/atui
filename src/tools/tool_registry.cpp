@@ -17,16 +17,16 @@ std::string esc( const std::string &s )
 {
     std::string out;
     out.reserve( s.size() + 8 );
-    for( char c : s )
+    for( std::size_t i = 0; i < s.size(); ++i )
     {
-        switch( c )
+        switch( s[i] )
         {
             case '"':  out += "\\\""; break;
             case '\\': out += "\\\\"; break;
             case '\n': out += "\\n";  break;
             case '\r': out += "\\r";  break;
             case '\t': out += "\\t";  break;
-            default:   out += c;      break;
+            default:   out += s[i];   break;
         }
     }
     return out;
@@ -87,15 +87,26 @@ std::string ToolRegistry::renderToolsJson() const
     return s;
 }
 
+namespace {
+
+// A mutex at file scope rather than std::call_once, which Watcom does not have:
+// an object of static storage duration is built before anything can call this
+// function, so there is no second question about who initialises it first.
+std::mutex g_registerMx;
+bool g_registered = false;
+
+} // anonymous namespace
+
 void registerDefaults()
 {
-    static std::once_flag flag;
-    std::call_once( flag, []() {
-        ToolRegistry &r = ToolRegistry::instance();
-        r.add( &g_timeTool );
-        r.add( &g_editFileTool );     // file-system write: gated by approval
-        r.add( &g_runCommandTool );   // shell exec: gated by approval
-    } );
+    std::lock_guard< std::mutex > lock( g_registerMx );
+    if( g_registered ) return;
+    g_registered = true;
+
+    ToolRegistry &r = ToolRegistry::instance();
+    r.add( &g_timeTool );
+    r.add( &g_editFileTool );     // file-system write: gated by approval
+    r.add( &g_runCommandTool );   // shell exec: gated by approval
 }
 
 } // namespace atui::tools

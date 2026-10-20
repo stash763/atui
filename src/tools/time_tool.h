@@ -11,10 +11,10 @@ namespace tools {
 
 class TimeTool : public Tool {
 public:
-    const char *name() const override;
-    const char *description() const override;
-    const char *parametersSchema() const override;
-    std::string execute( const std::string &argumentsJson ) override;
+    const char *name() const;
+    const char *description() const;
+    const char *parametersSchema() const;
+    std::string execute( const std::string &argumentsJson );
 };
 
 // Shared instance used by registerDefaults().

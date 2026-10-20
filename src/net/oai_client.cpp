@@ -2,6 +2,8 @@
 #include "oai_client.h"
 #include "json_extract.h"
 #include "provider.h"
+
+#include "core/strutil.h"      // toString, startsWith: Watcom has neither
 #ifdef ATUI_DEBUG_KEYS
 #include "dbg.h"
 #endif
@@ -57,14 +59,14 @@ std::string buildBody( const OaiRequest &req )
     body += "\",\"stream\":";
     body += ( req.stream ? "true" : "false" );
     body += ",\"temperature\":";
-    body += std::to_string( req.temperature );
+    body += core::toString( req.temperature );
     // Only sent when the caller asked for a cap: servers disagree about the
     // default and some reject a field they do not implement, so an ordinary chat
     // request stays exactly as it was.
     if( req.maxTokens > 0 )
     {
         body += ",\"max_tokens\":";
-        body += std::to_string( req.maxTokens );
+        body += core::toString( req.maxTokens );
     }
     // Servers disagree about how to say "skip the chain of thought", so all three
     // spellings go out and the ones that are not understood are ignored.
@@ -166,7 +168,7 @@ size_t writeData( char *ptr, size_t size, size_t nmemb, void *op )
             break; // no complete line yet
 
         std::string line = sp->buf.substr( 0, nl );
-        if( !line.empty() && line.back() == '\r' )
+        if( !line.empty() && line[line.size() - 1] == '\r' )   // no back() on Watcom
             line.pop_back();
 
         // Consume this line (keep the trailing incomplete one).
@@ -174,7 +176,7 @@ size_t writeData( char *ptr, size_t size, size_t nmemb, void *op )
 
         // Only "data:" lines carry payload; SSE spec concatenates data: values
         // in an event, but the OpenAI API sends one JSON object per line.
-        if( line.size() >= 5 && line.compare( 0, 4, "data" ) == 0 &&
+        if( line.size() >= 5 && core::startsWith( line, "data" ) &&
             line[4] == ':' )
         {
             size_t start = 5;
@@ -284,7 +286,7 @@ bool OaiClient::request( const std::string &baseUrl,
     sp.out = out;
     sp.done = false;
 
-    struct curl_slist *headers = nullptr;
+    struct curl_slist *headers = 0;
     headers = curl_slist_append( headers, "Content-Type: application/json" );
     if( !apiKey.empty() )
     {
@@ -385,7 +387,7 @@ bool fetchModels( const std::string &baseUrl,
     if( !url.empty() && url.back() != '/' ) url += "/";
     url += "models";
 
-    struct curl_slist *headers = nullptr;
+    struct curl_slist *headers = 0;
     if( !apiKey.empty() )
     {
         std::string auth = std::string( "Authorization: Bearer " ) + apiKey;
@@ -419,7 +421,7 @@ bool fetchModels( const std::string &baseUrl,
     }
     if( code < 200 || code >= 300 )
     {
-        err = "server returned HTTP " + std::to_string( code );
+        err = "server returned HTTP " + core::toString( code );
         return false;
     }
     models = modelIds( body );

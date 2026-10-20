@@ -1,6 +1,8 @@
 // Definitions for the lightweight syntax highlighter (see syntax.h).
 #include "tui/syntax.h"
 
+#include "core/strutil.h"
+
 #include <cctype>
 #include <cstring>
 
@@ -32,12 +34,6 @@ bool contains( const char *const *list, size_t n, const std::string &w )
         if( w == list[i] )
             return true;
     return false;
-}
-
-bool startsWith( const std::string &s, size_t i, const char *p )
-{
-    size_t n = std::strlen( p );
-    return s.compare( i, n, p ) == 0;
 }
 
 // Find an unescaped occurrence of `ch` at or after `from`; npos if absent.
@@ -301,7 +297,7 @@ void highlightLine( Lang lang, const std::string &code,
         }
 
         // line comment
-        if( lc && startsWith( code, i, lc ) )
+        if( lc && core::startsWith( code, i, lc ) )
         {
             flush.code();
             out.push_back( Span( code.substr( i ), rComment ) );
@@ -310,7 +306,7 @@ void highlightLine( Lang lang, const std::string &code,
         }
 
         // block comment open
-        if( hasBlockComment( lang ) && startsWith( code, i, "/*" ) )
+        if( hasBlockComment( lang ) && core::startsWith( code, i, "/*" ) )
         {
             flush.code();
             size_t e = code.find( "*/", i + 2 );
@@ -328,7 +324,7 @@ void highlightLine( Lang lang, const std::string &code,
 
         // python triple-quoted string
         if( lang == LangPython &&
-            ( startsWith( code, i, "\"\"\"" ) || startsWith( code, i, "'''" ) ) )
+            ( core::startsWith( code, i, "\"\"\"" ) || core::startsWith( code, i, "'''" ) ) )
         {
             std::string d = code.substr( i, 3 );
             flush.code();
