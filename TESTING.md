@@ -265,11 +265,18 @@ tools are registered by default:
 - `edit_file` (`src/tools/edit_file_tool.cpp`) — replaces an exact substring of
   an existing file: `{path, old_text, new_text, all?}` (first match unless
   `all=true`). Reports how many occurrences were replaced (and how many remain).
+  The file has to exist: creating files is not this tool's job, and the model can
+  reach `touch`/`>` through `run_command`, which is gated the same way -- so there
+  is one place where writing outside the rules would have to be stopped.
   **Requires approval.**
 - `run_command` (`src/tools/run_command_tool.cpp`) — runs a shell command
   through `/bin/sh` (POSIX) / `cmd` (Windows), merging stderr into stdout and
   returning combined output (capped at 200 KB) plus the exit code:
   `{command}`. **Requires approval.**
+- Both read their arguments with `src/tools/json_args.cpp`, a flat-object reader
+  (string and bool members). Nested objects and arrays are skipped rather than
+  parsed, which is what lets a value contain braces, quotes and newlines without a
+  JSON parser behind a tool call that never needs one.
 
 ### Confirmation prompt for sensitive tools
 
