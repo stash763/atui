@@ -2165,10 +2165,15 @@ Three traps, each of which produced a wrong conclusion before it was seen:
 * **A source file uploaded seconds ago can be compiled stale.** A `sync` followed
   immediately by a build sometimes compiles the previous contents, and the compile
   error names a line that no longer exists. Wait, or rebuild with `--no-sync`.
-* **An unrefreshed `build.log` means the batch never ran** -- `build.cmd` deletes
-  it on its first lines. `build` reports whatever log comes back, so a stale one
-  reads as success (this happened with `rc=0` and 19 lines, twice, for a build that
-  did not start). Check the log names the file it claims to have built.
+* **An unrefreshed `build.log` means the batch never ran**, and `build` used to
+  report whatever log came back -- so a stale one read as success. Measured four
+  times, each with a confident `rc=0`: once with 19 lines, twice with the 172 lines
+  of a build from ten minutes earlier, once for an `exe` link that had not started.
+  Fixed on both sides: `build.cmd` deletes its log as its first act, and
+  `tools/atui-remote build` deletes it over FTP *before* sending the command and
+  then waits for the file to come back carrying `ATUI-BUILD-RC`. Waiting on the
+  file rather than on the console is also what a link needs, because `wlink` is
+  silent for a dozen seconds and the console says nothing in them.
 * **Nothing may be submitted to the session while a program holds the console.**
   A running tvrun reads the submitted command line as keystrokes: the build command
   never ran, and the trace filled with `d`, `:`, `\`, `a`, `t`, `u`, `i`. Keys
@@ -2193,23 +2198,44 @@ draws on the streamed path. `--help` is not a top-level flag -- it belongs to
 `--judge-check` -- so `atui.exe --help` starts the interface, which is what the same
 command line does on every other platform.
 
-**Size, unstripped with a map: 1,079,405 bytes** (map 253,481). With the reference
-points above -- hello world 23,022, `tvhello` 254,697, `tvrun` 259,929 -- atui is
-roughly 820 KB over a tvision program that does nothing, before `wstrip`. That is
-the number to bring down next, and it is measured rather than assumed for the first
-time.
+**Size.** `-od`, the default here, links 1,079,405 bytes with a map (the map is
+253,481). `wstrip` takes exactly nothing off it, which is not surprising: nothing was
+compiled with `-g`, so there is no symbolic information in the image to remove.  The
+map's symbol table says where the 904 KB of text is:
+
+    obj\at\app.obj                236,800      atui's own objects      649,957   71.9%
+    obj\tvision.lib               185,083      tvision (the fork)      185,083   20.5%
+    obj\at\main.obj               110,981      clib3r + plbx3r (C/RTL)  64,020    7.1%
+    obj\at\ini.obj                 52,584
+    obj\at\journal.obj             38,566
+
+Two things follow. The library is not the problem: the classic layer costs 185 KB,
+which agrees with the 235 KB `tvrun` measured over a hello world. And `main.obj` is
+111 KB for a 300-line file -- that is std::string, std::vector and std::map code
+re-emitted into every translation unit that asks for it, which is what a pre-template
+repository library does and what `-os` partly tidies up.
+
+**`-os` links 666,753 bytes: 38% smaller**, and that image prints its version, draws
+the same screen and takes text at the prompt like the `-od` one.  `build.cmd size`
+then `build.cmd exe` asks for it; obj\at holds whatever was compiled last, so the
+comparison is `copy atui.exe atui_od.exe`, build again, `dir atui*.exe`.
 
 ### What the screen looks like, and where it differs (streamed path)
 
-Reference: `build-off/atui`, the same configuration, in `tui-test` at 80x25,
-compared row by row with `atui.exe` in the same tool at the same size.
+Reference: `build-off/atui`, the same configuration, in `tui-test` at 80x25, compared
+row by row with `atui.exe` in the same tool at the same size, both with the same text
+typed at the prompt.  The diff of the two 25-row screens is three lines: the two
+scrollbar arrows and the provider's name in the status line, which is my atui.ini
+against the box's absence of one.  Everything else -- menu bar, transcript, the
+scrollbar's 19 rows of `▓` in the last column, the separator, the prompt showing what
+was typed, the status line's layout -- is the same on both.
 
-* Same: menu bar, transcript text, the scrollbar trough as 19 rows of `▓` in the
-  last column, the separator above the prompt, the status line's layout.
-* The status line reads `default | llama  perm: in-project ok, asks about commands`
-  because the box has no atui.ini to read, and the no-network build does not offer
-  the agent's `a model checks the rest`. Expected, and the second half of the
-  sentence is the requirement about not advertising agent mode holding.
+* The provider's name differs for a reason worth keeping: `default | llama  perm:
+  in-project ok, asks about commands` on the box, against `prism | Bonsai 27b  perm:
+  in-project ok, a model checks the rest` here, because the box has no atui.ini and
+  the no-network build does not offer the agent's judgement.  The second half of that
+  sentence is the requirement about a harness build never advertising agent mode,
+  holding on the target.
 * **The scrollbar's arrows arrive as spaces.** The stream sends `[0;30;42m ` where
   Linux draws `▲` and `▼`: the classic layer asks for CP437 `0x1E`/`0x1F`, which are
   control codes to a VT terminal, and the driver substitutes a space for what it

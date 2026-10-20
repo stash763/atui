@@ -1185,6 +1185,22 @@ def _ftp_get(args, remote, local):
         return None
 
 
+def _ftp_delete(args, remote):
+    """Remove a file from the target.  Already-gone counts as success: this is
+    called to make a stale file impossible, so the wanted state is the one where
+    there is nothing to delete."""
+    try:
+        ftp = _ftp(args)
+        try:
+            ftp.delete("DELE " + remote.replace("\\", "/"))
+        finally:
+            ftp.quit()
+        return True
+    except ftplib.all_errors:
+        # 550 file not found is the common answer, and it is not a failure.
+        return False
+
+
 def cmd_put(args):
     with open(args.file, "rb") as f:
         data = f.read()
@@ -1422,14 +1438,42 @@ def cmd_build(args):
             sys.stderr.write(text if text.endswith("\n") else text + "\n")
             sys.stderr.flush()
 
+    # The log is the verdict, so the previous build's log goes first.  The batch
+    # deletes it too, but only once it has started, and the failure this guards
+    # against is the command being reported as finished before it started.
+    remote_log = args.remote_root + "\\" + args.log
+    _ftp_delete(args, remote_log)
+
     session.run(command, timeout=args.run_timeout, idle=args.idle, sink=progress)
     session.close()
 
-    if _ftp_get(args, args.remote_root + "\\" + args.log, args.log_to) is None:
-        warn("build: no log came back from the target")
+    # Wait on the file rather than on the screen.  A link is a dozen silent
+    # seconds, and the console says nothing during them; the log with its verdict
+    # line is the only event here that means anything.  Reading it early is not a
+    # failure either -- a log without the line is a build still running -- so the
+    # question is asked again until the deadline.
+    text = None
+    deadline = time.time() + args.run_timeout
+    while True:
+        if _ftp_get(args, remote_log, args.log_to) is not None:
+            with io.open(args.log_to, "r", encoding="utf-8", errors="replace") as f:
+                candidate = f.read()
+            if BUILD_RC_MARK in candidate:
+                text = candidate
+                break
+        if time.time() >= deadline:
+            break
+        time.sleep(args.log_poll)
+
+    if text is None:
+        # Reaching here means the batch never wrote a verdict.  Before this waited
+        # on the file, the same silence was reported as the previous build's
+        # success -- twice, with a confident rc=0 and 172 lines about files that
+        # had not been compiled.
+        warn("build: no %s line came back from the target -- the batch did not "
+             "run, or did not finish (whatever did arrive is in %s)"
+             % (BUILD_RC_MARK, args.log_to))
         return 1
-    with io.open(args.log_to, "r", encoding="utf-8", errors="replace") as f:
-        text = f.read()
     lines = text.splitlines()
     if args.tail:
         lines = lines[-args.tail:]
@@ -1545,6 +1589,8 @@ def build_parser():
     b.add_argument("--tail", type=int, default=0, help="show only the last N lines")
     b.add_argument("--no-sync", action="store_true", help="build what is already there")
     b.add_argument("--run-timeout", type=float, default=3600.0)
+    b.add_argument("--log-poll", type=float, default=5.0,
+                   help="seconds between looks for the target's log while it builds")
     b.add_argument("--idle", type=float, default=30.0,
                    help="a build is over after this many quiet seconds; must "
                         "exceed the time one source file takes")

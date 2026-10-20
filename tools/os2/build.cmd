@@ -25,6 +25,8 @@ rem                           compiled, against obj\tvision.lib.  Run after it:
 rem                           this mode links what is there rather than
 rem                           compiling anything, which keeps the two questions
 rem                           -- does it compile, does it link -- apart.
+rem      build.cmd size      `atui` again with -os instead of -od, for the size
+rem                           measurement; the :size section says how to ask it.
 rem
 rem  Why a batch file and not a command line: this target's command processor
 rem  silently discards an input line longer than about 315 characters and says
@@ -137,6 +139,7 @@ if "%1"=="one" goto one
 if "%1"=="lib" goto lib
 if "%1"=="link" goto link
 if "%1"=="exe" goto exe
+if "%1"=="size" goto size
 if "%1"=="atui" goto atui
 
 echo ================== tvision library ==================
@@ -247,6 +250,22 @@ if errorlevel 1 goto one_failed
 dir %3
 echo [link] OK
 goto summary
+
+:size
+rem The same sources as `atui`, compiled -os (optimize for size) rather than -od.
+rem This is a measurement mode, not a shipping configuration: -od is the honest
+rem default while a port is being written, and the map file says the program is
+rem 904 KB of code with it, so the question -- what does the compiler give back
+rem when asked for size -- is worth answering with two executables rather than an
+rem opinion.  Ask it like this, and `dir atui*.exe` is the answer:
+rem
+rem     build.cmd exe                    and then:  copy atui.exe atui_od.exe
+rem     build.cmd size
+rem     build.cmd exe
+rem
+echo ================== atui, -os ==================
+set WPP=%WPP% -os
+goto atui
 
 :exe
 rem atui itself, linked.  Run after `build.cmd atui`, which is what puts the
