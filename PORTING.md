@@ -15,7 +15,7 @@ give up.
 |---|---|---|
 | Linux, FreeBSD | pthreads | pumped, not threaded |
 | Windows | Win32 threads (`_beginthreadex`), CRT threaded runtime | pumped, not threaded |
-| OS/2 | threads exist (`DosCreateThread`; Watcom has a threaded runtime and `-mt`) | pumped: atui's compat headers carry no `<thread>`/`<atomic>`, and the build is single-threaded |
+| OS/2 | **measured working**: `_beginthread` and `DosCreateThread` both create running threads under Watcom with `-bm`, and so do the C heap, `printf` and TCP/IP from a child (see `TESTING.md`) | pumped today; a thread is a build-configuration decision (`-bm`) rather than a language one |
 | DOS | no preemptive threads | one stack, several tasks, cooperatively -- which is what the pump is |
 
 So: **no platform atui targets forbids threads, and two of them have nothing else to
@@ -26,14 +26,16 @@ The language level is C++98 in `src/`, which also means no C++11 *library*. Open
 Watcom ships none of `<mutex>`, `<condition_variable>`, `<chrono>`, `<thread>` or
 `<atomic>` -- the includes fail with E059 -- so `compat/os2/include/` supplies what
 the program needs over the kernel's own primitives: `mutex` is OS/2 mutex semaphores,
-`condition_variable` and `chrono` are there too.
+`condition_variable` is an OS/2 event semaphore built to avoid the lost wakeup, and
+`chrono` is there too.
 
-`<thread>` and `<atomic>` are deliberately **not** supplied. That, and not anything
-about OS/2, is the reason atui runs single-threaded on that target: a threaded OS/2
-host means writing those two over `DosCreateThread` (or building against Watcom's
-`-mt` runtime), and until something needs it, a shim that pretends a thread exists is
-a worse trade than no thread. The rest of this file is written so that adding them is
-an addition rather than a restructuring.
+`<thread>` and `<atomic>` are **not** supplied, and that is a gap in atui's compat
+layer rather than a limit of the platform: threads themselves were measured working on
+the target (`_beginthread` and `DosCreateThread` with `-bm`, heap and `printf` and
+TCP/IP all fine from a child -- the table is in `TESTING.md`). Threading the OS/2 port
+means writing those two headers over `DosCreateThread` and deciding what `-bm` does to
+the objects every mode links, and the shape below is what makes that an addition
+instead of a restructuring.
 
 `tools/gate98.py` is what keeps the language level honest; the compat directory is
 what keeps the library level honest.

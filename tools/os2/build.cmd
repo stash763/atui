@@ -154,6 +154,7 @@ if "%1"=="exe" goto exe
 if "%1"=="netlink" goto netlink
 if "%1"=="netprobe" goto netprobe
 if "%1"=="netall" goto netall
+if "%1"=="thread" goto thread
 if "%1"=="size" goto size
 if "%1"=="atui" goto atui
 
@@ -395,6 +396,35 @@ rem this platform does not have) and token_queue.cpp (the worker-thread handoff 
 rem state machines replace).  The ATUI_HAVE_NETWORK define is what the CMake build
 rem sets for the same sources, so the conditional code being compiled is the code the
 rem other platforms ship.
+rem ---------------------------------------------------------------------------
+rem thread: the thread-capability probe.  %2 the probe source in the root, %3 the
+rem executable.  Compiled -bm (multithreaded C runtime): without it two threads
+rem share one heap and the probe's heap test is really a corruption test whose
+rem symptoms show up later somewhere else.  `-mt` does not exist here -- measured,
+rem E068 "invalid option" with N746 naming the switch, which is why the first run
+rem of this mode looked like a source error rather than a missing option.
+:thread
+echo [thread] %2 to %3
+if not exist obj\th mkdir obj\th
+if exist obj\th\*.obj del obj\th\*.obj
+echo ---- thread ---- >> %LOG%
+%WPP% -bm -fo=obj\th\ %2 >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+if exist link.rsp del link.rsp
+echo system os2v2 > link.rsp
+echo name %3 >> link.rsp
+echo op m >> link.rsp
+echo option stack=256k >> link.rsp
+for %%f in (obj\th\*.obj) do echo file %%f >> link.rsp
+echo library tcpip32.lib >> link.rsp
+echo library os2386.lib >> link.rsp
+wlink @link.rsp >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+dir %3
+echo [thread] OK
+goto summary
+
+
 :netall
 echo [netall] compiling the network layer
 if not exist obj\na mkdir obj\na

@@ -2762,3 +2762,34 @@ The approval dialog is **not** covered here, because making it appear depends on
 model asking for a tool the policy declines to settle, and a smoke test that depends
 on a model behaving a certain way is not a smoke test.  `tests/chat_turn_test.cpp`
 covers that handshake at the state-machine level.
+
+### Threads on the OS/2 target: `-bm`, and what a child thread may touch
+
+    tools/atui-remote build --batch-args "thread probe_thread.cpp pthead.exe"
+    # then: pthead.exe
+
+Measured on the P4 box with Open Watcom 1.9, `wpp386 -bt=os2 -bm`:
+
+| Question | Answer |
+|---|---|
+| Does the compiler have `-mt`? | **No** — E068 "invalid option", with N746 naming the switch. The switch is **`-bm`**. |
+| Does `_beginthread` create threads? | Yes: `_beginthread -> 2 and 3`, both ran. |
+| Is `DosCreateThread` usable instead? | Yes: `rc=0 tid=2`, child ran. Signature from the toolkit's `h/bsedos.h`: `typedef VOID APIENTRY FNTHREAD(ULONG); ... DosCreateThread(PTID, PFNTHREAD, ULONG param, ULONG flag, ULONG cbStack)` — the child takes a `ULONG` and returns `VOID`; the fourth argument is a flag, not a priority. |
+| Does the C heap survive `malloc`/`free` in a child? | Yes with `-bm` (`child heap byte=97`). |
+| Does `printf` work from a child? | Yes. |
+| **Does TCP/IP work from a secondary thread?** | **Yes**: `sock_init=0`, `socket=4359` (a real descriptor), `connect=-10061` — refused, which is the stack answering. This is the one that decides whether an HTTP request can be pumped on a worker thread. |
+| Is `__MT__` set by `-bm`? | **No.** It is not the macro to test for "can this build thread" — the W869 warning ("`_beginthread` requires build target to be multi-threaded") is what `-bm` silences, and `__MT__` stays undefined anyway. |
+
+Two smaller things the probe ran into, both in the link or the header: `socket()` and
+`connect()` are declared by `<sys/socket.h>` (repeating them is E617 "cannot overload
+extern C functions"), and `connect()` wants a `struct sockaddr *`, not a `const void *`
+(E473). `soclose` is declared by atui's own `sock_os2.cpp` and links from there, but
+compiled `-bm` from the probe the reference came out `soclose_` and `tcpip32.lib` has
+no such export — the probe leaves its descriptor open instead, which costs nothing in a
+program that exits next.
+
+So the plan in `PORTING.md` — run a turn on a thread where the platform has them — is
+available on OS/2 too, and the thing to be careful about is not thread creation but
+what the two threads touch at the same time (see "What a threaded host has to guard").
+`-bm` is a build-configuration change, and it changes the C runtime every object is
+linked against, so it belongs to a build mode decision rather than to one file.
