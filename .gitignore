@@ -27,3 +27,6 @@ __pycache__/
 
 # CI
 .ci/
+
+# logs fetched from the target (build evidence, not sources)
+build-*.log

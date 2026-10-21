@@ -2701,3 +2701,40 @@ trying to write to magiblot's repository.
 - `tvision/` — TVision submodule; app palette in
   `tvision/include/tvision/app.h` (`cpAppColor`, entries 1-135)
 - `tvision/examples/tvdemo/` — reference patterns for palette handling
+
+### Compiling the whole network layer under Watcom (`netall`)
+
+    tools/atui-remote build --batch-args "netall - -"   # the two dummies put the
+    # nonce in %4, which is what :summary echoes; a log without it is somebody
+    # else's build however plausible its verdict looks
+
+`build.cmd netall` compiles every `src/net`, `src/core` and `src/tools` source with
+`-DATUI_HAVE_NETWORK` and links nothing — the cheap question ("does this survive
+wpp386, and with what warnings") asked before the TUI is rewired to use the code. The
+three sources that cannot be built here are left out of the list in `netall.rsp`:
+`oai_client.cpp` and `oai_chat_model.cpp` (libcurl, which this platform does not have)
+and `token_queue.cpp` (the worker-thread handoff the state machines replace).
+
+Measured 2026-10-20, on the P4 box: **31 files, 1,289,025 bytes of objects, `no
+warnings, no errors` for every one of them** — including the new `sse.cpp`,
+`url.cpp`, `oai_body.cpp`, `chat_request.cpp`, `chat_turn.cpp`, `http_simple.cpp`,
+`models.cpp` and `permission_judge.cpp`. The three `sock_*.cpp` files are all in the
+list on purpose: each is empty unless its own platform macro is set, so the mode checks
+the guards too. `dbg.cpp` compiling at all is a result — it included `<mutex>`
+unconditionally until that moved inside `ATUI_DEBUG_KEYS`, and Open Watcom does not ship
+one, so this mode is what would have caught it at a distance of a week.
+
+Two facts about this box's command processor came out of writing the mode, and both are
+in `tools/os2/probe_for.cmd`:
+
+*   `for %%f in (src\net\*.cpp)` matches files fine — eleven of them listed.
+*   **`call :label` does not run the subroutine.** The body never executed, and
+    `set RC=7` inside it never happened, so the first version of `netall` — a wildcard
+    loop calling a subroutine to skip the exceptions — compiled **zero** files and
+    printed `[netall] OK`. That is the failure mode worth writing down: a build driver
+    that reports success for work that never happened. The mode is now one `wpp386`
+    invocation over `netall.rsp` (a missing or bad name there is an error from the
+    compiler, not a silent skip), and it echoes the object count from `dir obj\na`
+    because that line is the evidence. `call :label` is used nowhere else in
+    `build.cmd`, checked rather than hoped.
+

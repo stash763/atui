@@ -153,6 +153,7 @@ if "%1"=="link" goto link
 if "%1"=="exe" goto exe
 if "%1"=="netlink" goto netlink
 if "%1"=="netprobe" goto netprobe
+if "%1"=="netall" goto netall
 if "%1"=="size" goto size
 if "%1"=="atui" goto atui
 
@@ -377,6 +378,58 @@ goto summary
 set RC=1
 echo [one] FAILED
 goto summary
+
+rem ---------------------------------------------------------------------------
+rem netall: compile the network layer and everything it reaches, with no program
+rem at the end.  This is not a link test and not a run test -- `netprobe` did those,
+rem against a real server -- it is the cheap question asked early: do the rest of the
+rem sources (the SSE framing, the endpoint splitter, the chat request, the chat turn,
+rem the blocking face, the permission agent) survive wpp386 at all, and with what
+rem warnings.  Worth asking before the TUI is rewired to use them, because the answer
+rem so far has been that a file which compiles under gcc's C++98 mode does not
+rem necessarily compile here, and the failures are cheap in isolation and expensive
+rem in a link of 200 objects.
+rem
+rem Three files are skipped: oai_client.cpp and oai_chat_model.cpp (libcurl, which
+rem this platform does not have) and token_queue.cpp (the worker-thread handoff the
+rem state machines replace).  The ATUI_HAVE_NETWORK define is what the CMake build
+rem sets for the same sources, so the conditional code being compiled is the code the
+rem other platforms ship.
+:netall
+echo [netall] compiling the network layer
+if not exist obj\na mkdir obj\na
+if exist obj\na\*.obj del obj\na\*.obj
+echo ---- netall ---- >> %LOG%
+rem One invocation over a response file of names (netall.rsp, synced to the root).
+rem Not a `for` loop over a wildcard with a `call :label` subroutine to skip the
+rem exceptions: this command processor matches wildcards fine (probe_for.cmd shows
+rem `for %%f in (src\net\*.cpp)` listing eleven files) but does NOT run a `call
+rem :label` subroutine -- the body never executed, `set RC=7` inside it never
+rem happened, and the loop above quietly compiled zero files while netall reported
+rem OK.  A success that means "nothing happened" is the worst thing a build driver
+rem can do, so the exclusions live in the list instead of in skip logic, and the
+rem object count is echoed because it is the evidence that files went in.
+rem
+rem netall.rsp is every net/core/tools source except the three that cannot be built
+rem here -- oai_client.cpp and oai_chat_model.cpp (libcurl, which this platform does
+rem not have) and token_queue.cpp (the worker-thread handoff the state machines
+rem replace) -- plus main.cpp, which is not wanted until the TUI is rewired.  The
+rem The three sock_*.cpp files are all listed on purpose: each is empty unless its
+rem own platform macro is set, so compiling all three is also a check that those
+rem guards hold.  Keep the list in step with CMakeLists.txt.
+%WPP% -DATUI_HAVE_NETWORK -fo=obj\na\ @netall.rsp >> %LOG% 2>&1
+if errorlevel 1 set RC=1
+echo [netall] objects out:
+dir obj\na\*.obj | find "file(s)"
+dir obj\na\*.obj | find "file(s)" >> %LOG%
+if "%RC%"=="1" goto netall_failed
+echo [netall] OK
+goto summary
+:netall_failed
+echo [netall] FAILED
+goto summary
+
+
 
 :summary
 echo ================== summary ==================
