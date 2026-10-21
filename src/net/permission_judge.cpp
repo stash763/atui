@@ -1,6 +1,8 @@
 // Implementation of the OpenAI-backed permission agent. See permission_judge.h.
 #include "permission_judge.h"
 
+#include "chat_request.h"
+#include "http_simple.h"      // pumpUntilDone
 #include "oai_client.h"
 #include "provider.h"
 #include "tools/permissions.h"
@@ -224,20 +226,24 @@ bool buildJudgeRequest( const std::string &toolName,
                           argumentsJson.substr( 0, kMaxArgumentBytes ) + "\n" +
                       "Describe this call.";
 
-    OaiRequest req;
-    req.model          = model;
-    req.temperature    = 0.0;
+    // Fills the caller's request -- and this is the line that a refactor that
+    // changed `OaiRequest req` in here into a local variable got wrong: building a
+    // request and returning it through the parameter are the same thing only if the
+    // parameter is the one being written to.
+    out = OaiRequest();
+    out.model          = model;
+    out.temperature    = 0.0;
     // Streamed, because that is the one shape every server here answers: a
     // non-streaming reply is a single JSON body and this client reads SSE lines.
     // The answer is accumulated rather than shown, so streaming costs nothing.
-    req.stream         = true;
-    req.maxTokens      = 300;
-    req.timeoutSeconds = atui::tools::judgeSeconds();
+    out.stream         = true;
+    out.maxTokens      = 300;
+    out.timeoutSeconds = atui::tools::judgeSeconds();
     // Without this, a reasoning model uses the whole budget on thinking and
     // answers with nothing - see OaiRequest::disableThinking.
-    req.disableThinking = true;
-    req.messages.push_back( OaiMessage( "system", kSystemPrompt ) );
-    req.messages.push_back( OaiMessage( "user", ask ) );
+    out.disableThinking = true;
+    out.messages.push_back( OaiMessage( "system", kSystemPrompt ) );
+    out.messages.push_back( OaiMessage( "user", ask ) );
     return true;
 }
 
@@ -271,19 +277,36 @@ void OaiPermissionJudge::plan( const std::string &toolName,
     if( !buildJudgeRequest( toolName, argumentsJson, req ) )
         return;
 
-    OaiResponse resp;
-    OaiClient client;
+    // Asked over the same transport the chat uses, and pumped to completion here:
+    // this is `--judge-check` and the blocking permission path, callers with no
+    // event loop to hand back to.  The chat turn asks the same question through its
+    // own state machine instead, and both go through `buildJudgeRequest` and
+    // `parseJudgeReply`, which is why they cannot drift apart.
+    const int budget = req.timeoutSeconds > 0 ? req.timeoutSeconds : 5;
+    ChatRequest request;
     std::string err;
-    if( !client.request( provider.baseUrl, provider.apiKey, req, 0, 0, &resp,
-                         &err ) )
+    if( !request.begin( provider.baseUrl, provider.apiKey, req, 0, 10, budget,
+                        &err ) )
     {
-        // No answer - a timeout, an unreachable server, a model that does not
-        // exist. Left empty on purpose: the caller reports that the agent could
-        // not describe the call, and the user is asked.
+        // No answer - a bad address, an unreachable server, a refused request.
+        // Left empty on purpose: the caller reports that the agent could not
+        // describe the call, and the user is asked.
         judgeDebug( toolName, "", err );
         return;
     }
 
+    // A little past the agent's own budget: the deadline in the transport is the
+    // one that gives up on a silent server, and this is only here so that a caller
+    // cannot be held forever by a request that neither answers nor fails.
+    pumpUntilDone( request, budget + 5 );
+    if( request.busy() )
+    {
+        request.abort( "the agent took too long" );
+        judgeDebug( toolName, "", "no answer within the budget" );
+        return;
+    }
+
+    const OaiResponse &resp = request.response();
     judgeDebug( toolName, resp.content, "" );
     parseJudgeReply( toolName, resp.content, resp.reasoning, out );
 }

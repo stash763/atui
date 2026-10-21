@@ -6,7 +6,7 @@ which needs a real terminal (pty) to exercise.
 ## Build & unit tests
 
     cmake --build build          # from repo root
-    ./build/atui --self-test     # unit + integration tests (155/155 network build, 91/91 without)
+    ./build/atui --self-test     # unit + integration tests (160/160 network build, 91/91 without)
     # ...plus 4 live-server tests when ATUI_LIVE_BASE_URL is set (see 'Live endpoint testing')
 
 Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
@@ -606,6 +606,33 @@ Control-checked, each by breaking the code it guards: ignoring the session allow
 fails the exactness test; running a declined call fails the decline test and the
 exactness test; treating an unreadable judgement as permission fails the judgement
 test.  Restored after each.
+
+**The blocking face of the same transport.**  Three callers are not inside the TUI and
+cannot step a state machine: the Providers dialog's model list, `--judge-check`, and
+the blocking permission path.  `src/net/http_simple.{h,cpp}` gives them
+`pumpUntilDone(machine, seconds)` and `httpGet(base, path, key, seconds, body, err)` —
+the same `HttpStream`, pumped by whoever is waiting, with the same framing, deadlines
+and "the server said 401: ..." reporting.  `src/net/models.cpp` (the model list) and
+`OaiPermissionJudge::plan()` are now built on it, which leaves `oai_client.cpp` as the
+only file in the program that calls curl — used only by the worker-thread chat model
+that this is replacing.
+
+`tests/judge_transport_test.cpp` is the first test of the permission agent's *own
+network call* (five: the question on the wire, reasoning as a fallback, a 500, prose,
+and refusing to ask at all when no agent model is named).  It paid for itself
+immediately: splitting `plan()` into `buildJudgeRequest()` + `parseJudgeReply()` left
+`buildJudgeRequest` filling a **local** `OaiRequest` and returning `true` without
+touching its parameter, so every judgement went out as
+
+```
+{"model":"","stream":true,"temperature":0.700000,"messages":[]}
+```
+
+— no model, no question.  It failed closed, so nothing unsafe happened, and the policy
+asked the user every time, which is exactly how a judge that never worked looks from
+the outside.  The test caught it by reading the body: the tool name, the command, the
+agent's model id and the words "Describe this call." have to be in what goes out.
+Before it, nothing in the suite exercised that call at all.
 
 `tests/http_test.cpp` runs it against `tests/http_pipe.h`, a scripted responder
 on `127.0.0.1` that writes whatever it is told, in pieces, with a pause between
