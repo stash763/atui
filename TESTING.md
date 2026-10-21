@@ -2944,6 +2944,11 @@ What is known, each part measured:
   refused connection -- `the server refused the connection` -- and exits normally;
 * the same source, same code path, on the host under AddressSanitizer and UBSan with an
   empty `HOME` and a refused endpoint: no report, clean exit.
+* `atui.exe --version` on the target prints and exits cleanly, so process teardown in
+  general is sound: what crashes is teardown of the objects the `--judge-check` path
+  creates (the provider store, the judge, the permission engine).  That also means the
+  crash costs an exit status and nothing else -- the answer is printed before it -- which
+  is why it is worth filing rather than chasing tonight.
 
 That points above the transport and at process teardown -- the statics in the judge,
 the provider store and the permission engine, and `setPermissionJudge()` holding a
