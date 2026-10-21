@@ -22,11 +22,21 @@ So: **no platform atui targets forbids threads, and two of them have nothing els
 use instead of a pump.** The design has to allow a threaded host and must not require
 one. That is the constraint the rest of this file is about.
 
-The language level is C++98 in `src/`, which also means no C++11 *library*: no
-`<thread>`, no `<mutex>`, no `<atomic>`. `tools/gate98.py` is what keeps that honest,
-and a stray `#include <mutex>` in a file that must compile under Open Watcom is the
-kind of thing it does not catch until the port build tries it -- `src/net/dbg.cpp`
-carried one, guarded by nothing, until it was moved inside `ATUI_DEBUG_KEYS`.
+The language level is C++98 in `src/`, which also means no C++11 *library*. Open
+Watcom ships none of `<mutex>`, `<condition_variable>`, `<chrono>`, `<thread>` or
+`<atomic>` -- the includes fail with E059 -- so `compat/os2/include/` supplies what
+the program needs over the kernel's own primitives: `mutex` is OS/2 mutex semaphores,
+`condition_variable` and `chrono` are there too.
+
+`<thread>` and `<atomic>` are deliberately **not** supplied. That, and not anything
+about OS/2, is the reason atui runs single-threaded on that target: a threaded OS/2
+host means writing those two over `DosCreateThread` (or building against Watcom's
+`-mt` runtime), and until something needs it, a shim that pretends a thread exists is
+a worse trade than no thread. The rest of this file is written so that adding them is
+an addition rather than a restructuring.
+
+`tools/gate98.py` is what keeps the language level honest; the compat directory is
+what keeps the library level honest.
 
 ## The rule: work is a state machine, and who runs it is not part of it
 

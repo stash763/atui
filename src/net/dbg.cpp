@@ -1,9 +1,12 @@
 #include "dbg.h"
 
-// Guarded, and not at file scope in the usual way: `<mutex>` is a C++11 header that
-// Open Watcom does not ship, so a debug-off build -- which is the shipping build, and
-// the one the Watcom target compiles -- must not look at it at all.  A debug build is
-// a host-build thing, and on those hosts `<mutex>` exists.
+// Guarded because a build without debug keys has nothing to lock, and taking a
+// semaphore per log line in the build that ships is not something to do by accident.
+// (`<mutex>` does reach Open Watcom -- compat/os2/include supplies it over OS/2 mutex
+// semaphores, which is why approval.cpp compiles there; what that directory does not
+// supply is <thread>, see PORTING.md.  But a debug log is a host-build feature, and
+// the fewer C++11 headers a C++98 translation unit pulls in the fewer there are to
+// reason about.)
 #ifdef ATUI_DEBUG_KEYS
 #include <mutex>
 #endif

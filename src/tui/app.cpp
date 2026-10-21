@@ -67,12 +67,9 @@
 #include "tools/run_command_tool.h"      // the command timeout field reads it
 
 #ifdef ATUI_HAVE_NETWORK
-#include "net/oai_chat_model.h"
-#include "net/oai_client.h"
+#include "net/chat_turn.h"
 #include "net/permission_judge.h"
-#include "net/token_queue.h"
 #include "tools/approval.h"
-#include <mutex>
 #endif
 
 #include <vector>
@@ -115,13 +112,17 @@ namespace {
 
     // M2 streaming state (only used when ATUI_HAVE_NETWORK).
 #ifdef ATUI_HAVE_NETWORK
-    atui::net::TokenQueue g_queue_;
-    atui::net::OaiChatModel *g_oai_;
-    bool g_streamActive_ = false;
-    // Inside the ifdef, not after it: every use is streaming, and a file-static
-    // that the harness build never mentions is a warning on Watcom (which puts
-    // the blame on <vector>, several files away).
-    bool g_replyFinished_ = false;
+    // One chat turn: the model, the tools and the asking, as a state machine
+    // stepped from the timer in TApp::handleEvent.  There used to be a queue here
+    // and a worker thread behind it, and the mutex that guarded the approval
+    // handshake; a turn is stepped by this stack now, so the transcript calls
+    // arrive in the order the model made them without any of that.
+    atui::net::ChatTurn *g_turn_ = 0;
+    // Set while the machine is being stepped.  The approval dialog runs a nested
+    // event loop, and so does any dialog the user opens while a turn streams, and
+    // the 50ms timer keeps firing in both cases: without this the machine would be
+    // stepped from inside its own step().
+    bool g_inStep_ = false;
 #endif
 
     // Debug event log (only when built with ATUI_DEBUG_KEYS).
@@ -148,7 +149,7 @@ void appendReply_( const char *text );
 void processMessage_();
 void focusInput_();
 void relayoutPanels_();
-void pollSink_();
+void pumpChat_();
 TMenu *buildSwitchModelMenu_();
 void refreshSwitchModelMenu_();
 void updateProviderStatus_();
@@ -159,16 +160,17 @@ void showUndoDialog_();
 void maybeRecoverInterruptedWrites_();
 
 #ifdef ATUI_HAVE_NETWORK
-// --- tool approval (worker thread -> UI) -------------------------------------
+// --- tool approval (the turn asks, this thread answers) ----------------------
 //
-// A tool that requires approval (edit_file / run_command) blocks the request
-// worker inside TuiApprover::approve() until this UI thread shows a Yes/No
-// dialog. The worker publishes the pending request here; pollSink_() picks it
-// up on its periodic timer, shows the modal box, and records the decision.
-
-std::mutex                 g_apMx;               // guards g_pendingApproval
-atui::tools::ApprovalRef   g_pendingApproval;    // worker sets, UI clears
-bool                       g_approvalShowing = false;  // re-entrancy guard
+// A tool the policy could not clear is put to the user: the turn calls
+// onApprovalNeeded from inside step(), the sink parks the question here, and the
+// next pump shows the modal box and calls answerApproval().  Nothing blocks and
+// nothing is handed between threads, so the only rule is that the dialog is shown
+// outside step() -- see pumpChat_.
+//
+// No question and no answer means no: a turn that is cancelled while a question is
+// open simply never runs the tool, which is the safe direction for the mistake.
+atui::tools::ApprovalRef   g_pendingApproval;
 
 // What the user made of a confirmation request. The third answer is not "allow
 // this kind of thing": it is this call, tool and arguments included, for the
@@ -273,22 +275,6 @@ int showApprovalDialog_( const atui::tools::ApprovalRef &req )
     return apNo;
 }
 
-// Approver installed process-wide. approve() runs on the worker thread.
-class TuiApprover : public atui::tools::Approver
-{
-public:
-    virtual bool approve( const atui::tools::ApprovalRef &req )
-    {
-        {
-            std::lock_guard< std::mutex > lock( g_apMx );
-            g_pendingApproval = req;
-        }
-        // Refuse rather than hang forever if the UI can't show the prompt.
-        return req->waitFor( 600000 );   // 10 minutes
-    }
-};
-
-TuiApprover g_approver;
 #endif // ATUI_HAVE_NETWORK
 
 // The chat transcript. Replaces the plain TTerminal so we can render the
@@ -1010,9 +996,6 @@ public:
                       &TApp::initDeskTop )
     {
         g_stub_ = new atui::core::ChatModelStub();
-#ifdef ATUI_HAVE_NETWORK
-        g_oai_ = 0;
-#endif
 #ifdef ATUI_DEBUG_KEYS
         g_keylog = std::ofstream( "/tmp/atui_keylog.txt" );
         if( !g_keylog ) g_keylog << "keylog open failed\n";
@@ -1024,8 +1007,8 @@ public:
         delete g_stub_;
         g_stub_ = 0;
 #ifdef ATUI_HAVE_NETWORK
-        delete g_oai_;
-        g_oai_ = 0;
+        delete g_turn_;
+        g_turn_ = 0;
 #endif
     }
 
@@ -1063,7 +1046,7 @@ public:
             // First thing: if the last run died with a file half written, that is
             // more urgent than anything the model is about to say. Runs once.
             maybeRecoverInterruptedWrites_();
-            pollSink_();
+            pumpChat_();
             relayoutPanels_();
             clearEvent( event );
             return;
@@ -1269,8 +1252,6 @@ TDeskTop *initDeskTop_( TRect r )
     // Periodic poll of the AI token queue (worker thread -> event loop).
     if( TProgram::application != 0 )
         TProgram::application->setTimer( 50, 50 );
-    // Install the tool-confirmation approver (edit_file / run_command).
-    atui::tools::setApprover( &g_approver );
     // And the permission agent: a second, cheap model that describes a command
     // the policy cannot settle by itself. It is only ever asked for a
     // description - tools/permissions.cpp decides - and with the mode set to
@@ -1378,61 +1359,77 @@ void appendReply_( const char *text )
     g_transcript_->finishReply();
 }
 
-void pollSink_()
-{
-    if( g_transcript_ == 0 ) return;
-
 #ifdef ATUI_HAVE_NETWORK
-    if( !g_streamActive_ || g_oai_ == 0 ) return;
-
-    bool gotToken = false;
-    atui::net::Token tok;
-    while( g_queue_.pop( tok ) )
+// Where a turn's news goes: straight into the transcript, from inside step().  The
+// order the methods are called in is the order the model made the calls, which is
+// what a queue plus a worker used to have to get right across two stacks.
+class AppSink : public atui::net::ChatTurn::Sink
+{
+public:
+    virtual void onText( const std::string &text, bool thinking )
     {
-        switch( tok.kind )
-        {
-            case atui::net::tkThinking:   g_transcript_->appendThinking( tok.text );    break;
-            case atui::net::tkStatus:     g_transcript_->appendStatus( tok.text );      break;
-            case atui::net::tkTool:       g_transcript_->appendTool( tok.text );        break;
-            case atui::net::tkToolNote:   g_transcript_->appendToolNote( tok.text );    break;
-            case atui::net::tkToolResult: g_transcript_->appendToolResult( tok.text );  break;
-            case atui::net::tkContent:    g_transcript_->appendAnswer( tok.text );      break;
-        }
-        gotToken = true;
+        if( !g_transcript_ ) return;
+        if( thinking ) g_transcript_->appendThinking( text );
+        else           g_transcript_->appendAnswer( text );
     }
-
-    // If the worker is blocked waiting for approval on a sensitive tool, show
-    // the prompt now. g_approvalShowing prevents re-entrant dialogs while the
-    // modal box pumps its own event loop (the 50ms timer keeps firing).
-    if( !g_approvalShowing )
+    virtual void onStatus( const std::string &text )
     {
-        atui::tools::ApprovalRef req;
-        {
-            std::lock_guard< std::mutex > lock( g_apMx );
-            req = g_pendingApproval;
-        }
-        if( req && !req->answered() )
-        {
-            g_approvalShowing = true;
-            const int answer = showApprovalDialog_( req );
-            req->answer( answer != apNo, answer == apSession );
-            {
-                std::lock_guard< std::mutex > lock( g_apMx );
-                if( g_pendingApproval == req )
-                    g_pendingApproval.reset();
-            }
-            g_approvalShowing = false;
-        }
+        if( g_transcript_ ) g_transcript_->appendStatus( text );
     }
-
-    bool done = g_oai_->isDone();
-    if( !gotToken && done && !g_replyFinished_ )
+    virtual void onToolCall( const std::string &preview )
     {
-        g_transcript_->finishReply();
-        g_replyFinished_ = true;
-        g_streamActive_ = false;
+        if( g_transcript_ ) g_transcript_->appendTool( preview );
     }
-#endif
+    virtual void onToolNote( const std::string &note )
+    {
+        if( g_transcript_ ) g_transcript_->appendToolNote( note );
+    }
+    virtual void onToolResult( const std::string &result )
+    {
+        if( g_transcript_ ) g_transcript_->appendToolResult( result );
+    }
+    // Only parked here.  The dialog is modal and runs its own event loop, and
+    // showing it from inside step() would let a timer tick step the machine while
+    // it is in the middle of handing over the question; pumpChat_ shows it once the
+    // step has returned.
+    virtual void onApprovalNeeded( const atui::tools::ApprovalRef &question )
+    {
+        g_pendingApproval = question;
+    }
+    virtual void onTurnFinished( bool /*ok*/ )
+    {
+        // Closes the reply block whatever the outcome; the reason a turn ended was
+        // already said with onStatus, which is where a failure belongs.
+        if( g_transcript_ ) g_transcript_->finishReply();
+    }
+};
+
+AppSink g_sink_;
+#endif // ATUI_HAVE_NETWORK
+
+void pumpChat_()
+{
+#ifdef ATUI_HAVE_NETWORK
+    if( g_transcript_ == 0 || g_turn_ == 0 || g_inStep_ ) return;
+
+    g_inStep_ = true;
+    // A few non-blocking steps per tick rather than one that waits: an answer
+    // arrives in pieces over seconds and the 50ms timer is what paces the redraw,
+    // so the pump takes whatever is readable now and gives the keyboard back.
+    // Stepping with a long wait would hold a keystroke for the length of that wait.
+    for( int i = 0; i < 4 && g_turn_->busy(); ++i )
+        g_turn_->step( 0 );
+    g_inStep_ = false;
+
+    if( g_pendingApproval )
+    {
+        const atui::tools::ApprovalRef question = g_pendingApproval;
+        g_pendingApproval.reset();
+        const int answer = showApprovalDialog_( question );
+        if( g_turn_ )
+            g_turn_->answerApproval( answer != apNo, answer == apSession );
+    }
+#endif // ATUI_HAVE_NETWORK
 }
 
 void processMessage_()
@@ -1444,21 +1441,19 @@ void processMessage_()
     if( msg.size() <= 0 ) return;
 
 #ifdef ATUI_HAVE_NETWORK
-    if( !g_oai_ )
-        g_oai_ = new atui::net::OaiChatModel();
+    if( !g_turn_ )
+        g_turn_ = new atui::net::ChatTurn();
 
-    bool started = g_oai_->ask( std::string( msg.c_str(), msg.size() ),
-                                std::string( g_history_.c_str(), g_history_.size() ),
-                                &g_queue_ );
-    if( !started )
+    // The turn carries the conversation itself now (only rounds the model actually
+    // answered are in it), so the transcript text is no longer fed back as history.
+    if( !g_turn_->start( std::string( msg.c_str(), msg.size() ), &g_sink_ ) )
     {
-        // Busy: the previous reply is still streaming. Preserve the input text.
+        // Busy: a turn is already running.  Refusing beats interleaving two
+        // conversations, and the text stays in the prompt for the next try.
         g_transcript_->appendStatus( "(busy, try again)" );
         return;
     }
 
-    g_streamActive_ = true;
-    g_replyFinished_ = false;
     appendUser_( msg.c_str() );
 #else
     String reply = g_stub_->ask( msg, g_history_ );

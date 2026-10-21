@@ -14,9 +14,9 @@
 // willing to wait, a DOS program doing several things on one stack from a timer hook,
 // or a worker thread on the platforms that have threads -- so there is one code path
 // and one set of tests, and they mean the same thing on every target.  The other
-// reason is mundane: this build carries no thread runtime in its compat headers.
-// Nothing below assumes the calling thread, and nothing forbids one (see
-// PORTING.md).
+// reason is mundane: the OS/2 build has no <thread> -- compat/os2/include gives it a
+// working <mutex> and deliberately not a thread to need one for.  Nothing below
+// assumes the calling thread, and nothing forbids one (see PORTING.md).
 //
 // Nothing here blocks, with one exception and it is deliberate: a tool that runs a
 // command runs it in the step that was told to, because waiting for a child process

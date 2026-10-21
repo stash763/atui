@@ -2738,3 +2738,27 @@ in `tools/os2/probe_for.cmd`:
     because that line is the evidence. `call :label` is used nowhere else in
     `build.cmd`, checked rather than hoped.
 
+### The chat path end to end: `tools/tui_smoke.py`
+
+Nothing else in the suite draws a screen, and the interactive path is the one place
+where "the state machine steps correctly in a unit test" and "the user sees an answer"
+are different claims.  So:
+
+    ATUI_BASE_URL=http://host:port/v1 ATUI_MODEL=name python3 tools/tui_smoke.py
+
+It starts atui on a pty at 80x25, types a message a character at a time, presses
+Enter, and looks for the answer in the bytes the screen drew.  The question is
+"What is 4021 plus 4021?" and the marker `8042`, deliberately: the message itself is
+echoed to the transcript the moment it is sent, so a marker inside it ("reply with
+exactly: PTY-OK") would be answered by its own echo and pass without a model.
+
+Measured, first run after the chat path moved from the worker-thread queue onto
+`ChatTurn` stepped from the timer: user line drawn, `[+] thinking (…)` block drawn,
+answer containing 8042 drawn — exit 0 in about 13 seconds.  The three things the
+script comments explain (a pty starts 0x0 wide; one-burst typing loses spaces and the
+Enter; the marker must not be in the message) each looked like a bug in atui first.
+
+The approval dialog is **not** covered here, because making it appear depends on the
+model asking for a tool the policy declines to settle, and a smoke test that depends
+on a model behaving a certain way is not a smoke test.  `tests/chat_turn_test.cpp`
+covers that handshake at the state-machine level.
