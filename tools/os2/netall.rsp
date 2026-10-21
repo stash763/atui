@@ -21,6 +21,11 @@ src/core/lines.cpp
 src/core/paths.cpp
 src/core/string.cpp
 src/core/strutil.cpp
+src/core/thread.cpp
+src/core/thread_posix.cpp
+src/core/thread_os2.cpp
+src/core/thread_win.cpp
+src/core/thread_none.cpp
 src/tools/approval.cpp
 src/tools/edit_file_tool.cpp
 src/tools/json_args.cpp

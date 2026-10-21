@@ -61,6 +61,10 @@ void init_live_tests();
 void init_url_tests();
 // Defined in tests/markdown_test.cpp (always built).
 void init_markdown_tests();
+// Defined in tests/thread_test.cpp (always built): the thread seam -- work moves to
+// another stack where the platform has one, and the refusal is honest where it does
+// not, which is the DOS case and today's Watcom case.
+void init_thread_tests();
 
 namespace {
 
@@ -2881,6 +2885,9 @@ void init()
     // The permission agent's own network call (tests/judge_transport_test.cpp).
     init_permission_judge_tests();
 #endif
+    // The thread seam, outside the network ifdef: a core object, tested in both
+    // configurations so the no-threads answer is covered too.
+    init_thread_tests();
     register_test( "tool: get_time", &test_time_tool );
     register_test( "tool: registry render", &test_tool_registry );
     register_test( "tool: json args strings", &test_json_args_strings );

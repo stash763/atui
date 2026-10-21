@@ -172,11 +172,14 @@ distinction matters, because the thing this restructure spent a week deleting wa
 
 ### The order to do it in
 
-1. `core/thread.{h,cpp}`: one `start`/`join` over pthreads (Linux, FreeBSD),
-   `_beginthreadex` (Windows) and `_beginthread` (OS/2, `-bm`), and a no-thread build
-   for DOS. No C++11 `<thread>`, and no `<atomic>` either: sharing is a mutex and a
-   queue, never a lock-free trick, because the mutex atui has on OS/2 is a kernel
-   semaphore and that is enough.
+1. ~~`core/thread.{h,cpp}`~~ **done**: `core/thread.h` with `thread_posix.cpp`,
+   `thread_os2.cpp` (`_beginthread` plus an event semaphore for the join, `-bm`),
+   `thread_win.cpp` (compiles; not yet run on Windows, and the file says so) and
+   `thread_none.cpp`, which is what makes "no threads" a configuration that works
+   rather than a link error. No `<atomic>` anywhere: sharing is a mutex and a queue,
+   because the mutex atui has on OS/2 is a kernel semaphore and that is enough. Tested
+   in three configurations on the host, including one built specifically to have no
+   threads, and compile-checked on the target (`TESTING.md`, "The thread seam").
 2. `core/task_runner.{h,cpp}`: given a machine, run it to completion on a thread --
    `while (m.busy()) m.step(50);` -- or, where there is no thread, register it with
    the cooperative scheduler that the app timer steps. Either way the sink is the

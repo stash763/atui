@@ -17,6 +17,10 @@ option(ATUI_HAVE_NETWORK "Use libcurl for the network transport" OFF)
 
 option(ATUI_BUILD_TESTS "Build the self-test suite" ON)
 option(ATUI_DEBUG_KEYS "Log key events to /tmp/atui_keylog.txt" OFF)
+# Builds the no-thread configuration on a host that has threads, so the fallback every
+# platform without them depends on (DOS above all) is exercised by the test suite
+# rather than assumed.  See core/thread.h.
+option(ATUI_NO_THREADS "Build without thread support, to test the fallback" OFF)
 
 # tvision is a git submodule.
 add_subdirectory(tvision)
@@ -78,6 +82,15 @@ set(ATUI_SOURCES
     # transport asks before opening a socket.
     "${ATUI_SRC_DIR}/net/provider.cpp"
     "${ATUI_SRC_DIR}/net/url.cpp"
+    # The thread seam (core/thread.h): one interface, one file per platform, each
+    # empty on the platforms it is not for.  Built whether or not this build has
+    # threads: thread_none.cpp is what makes "no threads" a working answer instead of
+    # a link error, and the tests assert the refusal as well as the real thing.
+    "${ATUI_SRC_DIR}/core/thread.cpp"
+    "${ATUI_SRC_DIR}/core/thread_posix.cpp"
+    "${ATUI_SRC_DIR}/core/thread_os2.cpp"
+    "${ATUI_SRC_DIR}/core/thread_win.cpp"
+    "${ATUI_SRC_DIR}/core/thread_none.cpp"
 )
 if(ATUI_HAVE_NETWORK)
     list(APPEND ATUI_SOURCES
@@ -118,6 +131,7 @@ if(ATUI_BUILD_TESTS)
         "${ATUI_TESTS_DIR}/chat_turn_test.cpp"
         "${ATUI_TESTS_DIR}/judge_transport_test.cpp"
         "${ATUI_TESTS_DIR}/url_test.cpp"
+        "${ATUI_TESTS_DIR}/thread_test.cpp"
         "${ATUI_TESTS_DIR}/oai_live_test.cpp"
         "${ATUI_TESTS_DIR}/markdown_test.cpp"
     )
@@ -143,6 +157,19 @@ target_link_libraries(atui
         tvision
 )
 
+# Threads, where the platform has them: core/thread_posix.cpp needs pthreads and
+# nothing else here does.  Found rather than hardcoded, because the flag differs by
+# platform (it is nothing at all on macOS, where pthreads is in libSystem), and
+# because the OS/2 build is not made with CMake: there the answer is `-bm`, with
+# ATUI_HAVE_OS2_THREADS defined to say so, since a compiler macro cannot tell a
+# single-threaded C runtime from a multithreaded one (core/thread.h).
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "OS2")
+    find_package(Threads)
+    if(Threads_FOUND)
+        target_link_libraries(atui PRIVATE Threads::Threads)
+    endif()
+endif()
+
 if(ATUI_HAVE_NETWORK)
     find_package(CURL REQUIRED)
     target_link_libraries(atui
@@ -161,6 +188,10 @@ endif()
 
 # Version string, consumed via the ATUI_VERSION macro, and the source root so a
 # self-test can read the permission corpus that ships with the tree.
+if(ATUI_NO_THREADS)
+    add_compile_definitions(ATUI_NO_THREADS=1)
+endif()
+
 add_compile_definitions(ATUI_VERSION="${PROJECT_VERSION}")
 add_compile_definitions(ATUI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 # Where the binary ends up, used when argv[0] is a bare name found on PATH: it is

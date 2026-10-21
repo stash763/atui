@@ -2793,3 +2793,50 @@ available on OS/2 too, and the thing to be careful about is not thread creation 
 what the two threads touch at the same time (see "What a threaded host has to guard").
 `-bm` is a build-configuration change, and it changes the C runtime every object is
 linked against, so it belongs to a build mode decision rather than to one file.
+
+## The thread seam: three configurations, and breaking it to check the tests
+
+`src/core/thread.h` is the seam between atui and a second stack: a `Task` with one
+method, a `Thread` that runs it and joins it, and `threadsAvailable()` for the platforms
+that have neither.  One interface, one file per platform, each empty on the others (the
+`net/sock_*.cpp` arrangement):
+
+| File | Used by | Notes |
+|---|---|---|
+| `thread_posix.cpp` | Linux, FreeBSD, macOS | `pthread_create`/`pthread_join` |
+| `thread_os2.cpp` | OS/2 (Watcom) | `_beginthread` plus an event semaphore for the join, because `_beginthread` reports no handle to wait on. `-bm` required, and `ATUI_HAVE_OS2_THREADS` says the build chose it |
+| `thread_win.cpp` | Windows | `_beginthreadex`/`WaitForSingleObject`; **compiles, not yet run on a Windows machine** |
+| `thread_none.cpp` | DOS, and `-DATUI_NO_THREADS=ON` | Refuses, with a reason. It exists so "no threads" is a working configuration rather than a link error |
+
+Three build configurations, all tested on the host:
+
+    cmake --build build                     # 164 passed   (threads on)
+    cmake -B build-nothreads -DATUI_NO_THREADS=ON -DATUI_HAVE_NETWORK=ON
+    cmake --build build-nothreads           # 164 passed   (threads off, same suite)
+    (cd build-off && cmake --build .)       #  94 passed   (no network, threads off)
+
+The second one is the reason `ATUI_NO_THREADS` exists: DOS is the platform where the
+fallback is the normal path, and without a switch it would be the least-tested code in
+the layer.  The thread tests assert the refusal (`start()` false, a reason, the task
+untouched) instead of skipping, so the no-thread build still tests something.
+
+Measured on the target, `build.cmd thread probe_thread.cpp pthead.exe`:
+
+    probe_thread.cpp:     158 lines, no warnings, no errors
+    src\core\thread.cpp:   92 lines, no warnings, no errors
+    src\core\thread_os2.cpp: 107 lines, no warnings, no errors   (with -bm -DATUI_HAVE_OS2_THREADS)
+    src\core\thread_none.cpp: 39 lines, no warnings, no errors
+
+Compiled there, so the OS/2 implementation is Watcom's language and API.  **Not yet
+linked or run into a threaded atui**: that needs `-bm` on the `atui` mode itself, which
+changes the C runtime every object links against and is deliberately not a change to
+make while other things are moving.
+
+Two controls, because a thread test that cannot fail is worse than none:
+
+*   the second-`start()` refusal in `Thread::start()` disabled →
+    `thread: refuses a second start while running` fails with `rc=-3`;
+*   `runFor()` made to skip the task → `thread: runs a task and join waits for it`
+    fails with `rc=-3` and the second-start test with `rc=-2`.
+
+Both restored, 164/164 again.

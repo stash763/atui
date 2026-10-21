@@ -410,6 +410,13 @@ if exist obj\th\*.obj del obj\th\*.obj
 echo ---- thread ---- >> %LOG%
 %WPP% -bm -fo=obj\th\ %2 >> %LOG% 2>&1
 if errorlevel 1 goto one_failed
+rem The library's own OS/2 threading implementation, compiled the way a threaded build
+-- compiles it: -bm for the runtime and ATUI_HAVE_OS2_THREADS to say so, because the
+-- compiler's macros cannot tell the two C runtimes apart (core/thread.h).  Compile
+-- only: this says the code is Watcom's language and API, not that the program runs,
+-- and the probe above is what measures the running.
+for %%f in (src\core\thread.cpp src\core\thread_os2.cpp src\core\thread_none.cpp) do (echo [thread] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -bm -DATUI_HAVE_OS2_THREADS -fo=obj\th\ %%f >> %LOG% 2>&1 || set RC=1)
+if "%RC%"=="1" goto one_failed
 if exist link.rsp del link.rsp
 echo system os2v2 > link.rsp
 echo name %3 >> link.rsp
