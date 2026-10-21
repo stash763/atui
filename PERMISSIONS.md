@@ -221,8 +221,8 @@ Details that turned out to matter:
 
 | Key | Env | Values | Default |
 |---|---|---|---|
-| `mode`          | `ATUI_PERMISSIONS`        | `ask_all`, `exact`, `agent` | `agent` |
-| `network`       | `ATUI_PERMISSION_NETWORK` | `agent`, `ask`, `allow` | `agent` |
+| `mode`          | `ATUI_PERMISSIONS`        | `ask_all`, `exact`, `agent` | `agent`, or `exact` in a build with no transport |
+| `network`       | `ATUI_PERMISSION_NETWORK` | `agent`, `ask`, `allow` | `agent`, or `ask` without a transport |
 | `judge_model`   | `ATUI_JUDGE_MODEL`        | a model id, empty = the active model | |
 | `judge_seconds` | `ATUI_JUDGE_SECONDS`      | 1-1440 | 5 |
 | `log`           | `ATUI_PERMISSION_LOG`     | bool | true |
@@ -232,9 +232,20 @@ Details that turned out to matter:
 - `exact` - containment only: in-tree `edit_file` runs, out-of-tree paths ask,
   and a command that needs understanding asks because nothing is there to
   understand it.
-- `agent` - facts plus judgement. The shipped default, and safe by construction
-  rather than by judgement: `decide()` only reaches "run" by falling through every
-  veto, and a session with no model to ask degrades to `exact` for commands.
+- `agent` - facts plus judgement. The shipped default where a model can be reached,
+  and safe by construction rather than by judgement: `decide()` only reaches "run" by
+  falling through every veto, and a session with no model to ask degrades to `exact`
+  for commands.
+
+It is the default only where it can be honoured. The permission agent is a second
+model call, so a build compiled without a transport does not have `agent`:
+`tools::agentModeAvailable()` says so once, and the default, the parsing of the name
+in this file and in the environment, and the Settings dialog all read it from there.
+An `ATUI_PERMISSIONS=agent` or a `mode = agent` left in a config file by a network
+build is refused the way a misspelling is, which keeps the safe default and puts
+nothing on screen that the program cannot do. atui needs a server -- there is no
+offline mode -- so the build without one is a test harness, and the settings it ships
+should not describe a decider it does not have.
 
 `network` covers the case the facts cannot see at all, since a command's network
 use is only ever a model's claim: `ask` asks about any network use the agent
@@ -345,8 +356,10 @@ directories differ, the policy is describing a file that no write ever went to.
   or `perm: in-project ok, asks about commands` (agent in a build or session
   with no model - files are still contained, commands still ask). Live, no
   restart.
-- Settings (File > Options > Settings) has the three modes as a radio group plus
-  the judging model and its timeout.
+- Settings (File > Options > Settings) has the modes as a radio group -- three with
+  a transport, two without -- plus the judging model and its timeout, which are only
+  there in a build that can reach one. Absent fields change nothing when the dialog is
+  accepted, so a build without a transport cannot clear what a build with one set.
 - The approval dialog says *why it is asking* in the reason the policy produced
   ("reaches outside the project", "it publishes to somewhere else (git push)"),
   not just what it is. Yes / **cmYes**, Remember / **cmOK**, No / **cmNo**, with
