@@ -2840,6 +2840,31 @@ int test_settings_permissions()
 
 } // namespace
 
+// The OS/2 half of the env-trimming fix, asserted where it can be seen: a value with
+// spaces on the end has to arrive without them, or the endpoint gets a path with a
+// space in it and the server's only comment is a status code.  (The values here are
+// set rather than inherited, so this test does not care how it was started.)
+int test_provider_env_values_arrive_trimmed()
+{
+    setenv( "ATUI_BASE_URL", "  http://example.test:9/v1  ", 1 );
+    setenv( "ATUI_MODEL", "  a model  ", 1 );
+    const atui::net::ProviderSettings s = atui::net::defaultProviderSettings();
+    unsetenv( "ATUI_BASE_URL" );
+    unsetenv( "ATUI_MODEL" );
+
+    if( s.baseUrl != "http://example.test:9/v1" ) return -1;
+    if( s.model != "a model" ) return -2;
+
+    // The comma-separated model list, too: it is where a space is most likely and
+    // least visible, since the separator already makes people write spacing.
+    setenv( "ATUI_MODELS", "one, two ,three", 1 );
+    const atui::net::ProviderSettings t = atui::net::defaultProviderSettings();
+    unsetenv( "ATUI_MODELS" );
+    if( t.models.size() < 3 ) return -3;
+    if( t.models[ 1 ] != "two" ) return -4;
+    return 0;
+}
+
 void init()
 {
     register_test( "string: empty", &test_string_empty );
@@ -2895,6 +2920,9 @@ void init()
     // The thread seam, outside the network ifdef: a core object, tested in both
     // configurations so the no-threads answer is covered too.
     init_thread_tests();
+
+    register_test( "provider: env values arrive trimmed",
+                   &test_provider_env_values_arrive_trimmed );
     register_test( "tool: get_time", &test_time_tool );
     register_test( "tool: registry render", &test_tool_registry );
     register_test( "tool: json args strings", &test_json_args_strings );

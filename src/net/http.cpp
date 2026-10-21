@@ -4,6 +4,7 @@
 
 #include "core/strutil.h"      // toString: Watcom has no std::to_string
 
+#include <stdio.h>             // fprintf, for the request dump below
 #include <stdlib.h>            // strtol
 #include <string.h>            // strlen
 
@@ -11,6 +12,59 @@ namespace atui {
 namespace net {
 
 namespace {
+
+// ATUI_HTTP_DEBUG=1 writes the request that is about to go out to stderr.
+//
+// The reason this exists is a specific kind of dead end: a server answers 400 to a
+// request that the same source produces correctly on another platform, and every
+// answer from the source file ("the body is built here, it must be this") is a guess
+// about bytes nobody has looked at.  This looks at them, on the machine that sent
+// them, which for a program whose whole network path is hand-rolled is worth having
+// permanently and not just for the one bug.
+//
+// The Authorization line is replaced with a note. This output is written to a console
+// and into whatever log a person redirects, and a bearer token in a scrollback is a
+// token that has been shown to someone.
+void dumpRequest( const std::string &req )
+{
+    const char *on = std::getenv( "ATUI_HTTP_DEBUG" );
+    if ( !on || !*on || *on == '0' )
+        return;
+
+    const std::size_t kShow = 1500;      // headers plus the beginning of the body
+    std::string shown;
+    std::size_t from = 0;
+    while ( from < req.size() )
+    {
+        const std::size_t eol = req.find( "\r\n", from );
+        const std::size_t lineEnd = ( eol == std::string::npos ) ? req.size() : eol;
+        const std::string line = req.substr( from, lineEnd - from );
+
+        // strncmp rather than string::compare( pos, len, lit ): that overload is not
+        // in Watcom's <string>, which answered E715 "member 'compare' has not been
+        // declared" -- a reminder that the standard library this target has is older
+        // than the language the code is written in.
+        if ( std::strncmp( line.c_str(), "Authorization: ", 15 ) == 0 )
+            shown += "Authorization: [set, hidden]\r\n";
+        else
+            shown += line + "\r\n";
+
+        from = ( eol == std::string::npos ) ? req.size() : eol + 2;
+        // The rest, once the headers are done, is the body: print it flat, cut short.
+        if ( line.empty() )
+        {
+            const std::size_t rest = req.size() - from;
+            const std::size_t take = rest > kShow ? kShow : rest;
+            shown.append( req, from, take );
+            if ( rest > take )
+                shown += "...";
+            break;
+        }
+    }
+
+    std::fprintf( stderr, "[http request]\n%s\n[/http request]\n", shown.c_str() );
+    std::fflush( stderr );
+}
 
 // A read this size, so a streamed answer arrives in reasonable pieces without one
 // huge allocation on a machine with a megabyte to spare.
@@ -242,6 +296,7 @@ bool HttpStream::start( const std::string &method,
     request_ += "Connection: close\r\n";
     request_ += "\r\n";
     request_ += body;
+    dumpRequest( request_ );
 
     std::string why;
     sock_ = sockConnectStart( host, port, &why );

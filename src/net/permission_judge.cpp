@@ -307,6 +307,19 @@ void OaiPermissionJudge::plan( const std::string &toolName,
     }
 
     const OaiResponse &resp = request.response();
+
+    // The request ended, and "ended" is not "succeeded".  Reading the error is the
+    // difference between a debug line that says why and one that says "(empty)", which
+    // is what this command was reduced to while the reason went only to a sink; the
+    // answer to the caller is still the same empty one, because a call that failed is
+    // not a verdict and the user has to be asked either way.
+    if( !request.ok() )
+    {
+        judgeDebug( toolName, resp.content,
+                    request.error().empty() ? "the request failed" : request.error() );
+        return;
+    }
+
     judgeDebug( toolName, resp.content, "" );
     parseJudgeReply( toolName, resp.content, resp.reasoning, out );
 }

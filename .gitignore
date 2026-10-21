@@ -30,3 +30,5 @@ __pycache__/
 
 # logs fetched from the target (build evidence, not sources)
 build-*.log
+build-asan/
+build-nothreads/

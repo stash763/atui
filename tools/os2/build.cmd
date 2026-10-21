@@ -27,6 +27,13 @@ rem                           compiling anything, which keeps the two questions
 rem                           -- does it compile, does it link -- apart.
 rem      build.cmd size      `atui` again with -os instead of -od, for the size
 rem                           measurement; the :size section says how to ask it.
+rem      build.cmd atunon    `atui` with ATUI_HAVE_NETWORK absent: the
+rem                           configuration for a machine with no TCP/IP stack, and
+rem                           the one that proves the agent-mode code stayed inside
+rem                           its ifdef.  Compile only -- `exe` links the network
+rem                           build, and the two of them share obj\at, so run this
+rem                           last if you want the object directory to hold what the
+rem                           program was built from.
 rem      build.cmd netlink probe_net.cpp probe_net.exe
 rem                           `link` plus tcpip32.lib, for the socket probes.
 rem                           Separate because an import library is a promise the
@@ -157,6 +164,7 @@ if "%1"=="netall" goto netall
 if "%1"=="thread" goto thread
 if "%1"=="size" goto size
 if "%1"=="atui" goto atui
+if "%1"=="atunon" goto atunon
 
 echo ================== tvision library ==================
 rem Only source/tvision, and not geninc.cpp.  This is what the Borland build in
@@ -190,23 +198,55 @@ if "%1"=="tvision" goto lib
 
 :atui
 echo ================== atui ==================
+rem The shipping configuration on this platform: agent mode, on atui's own HTTP
+rem transport over tcpip32.lib.  This is what -DATUI_HAVE_NETWORK=ON means in
+rem CMake, and the define goes on EVERY source, not just the transport's -- the
+rem TUI, the settings and the tools all read it, because a build that cannot ask a
+rem model must not offer, default to or display agent mode.  Passing it to one file
+rem and not the others is how the two halves of one program could disagree about
+rem whether the network exists.
+set NET=-DATUI_HAVE_NETWORK
+goto atui_common
+
+rem The same sources with the define absent: the configuration a machine with no
+rem TCP/IP stack gets, and the one the requirements keep as a test harness.  It has
+rem to keep compiling, because "it also builds without the network" is the check
+rem that the agent-mode code did not leak out of its ifdef.  Compile only: it is not
+rem linked, and `exe` links the obj\at that the network build put there.
+rem
+rem NET is given a token rather than left empty on purpose.  An undefined variable
+rem does not expand the same way on every command processor, and this file has
+rem already been fooled once by a build that reported OK after compiling nothing;
+rem nothing reads ATUI_NONET, and what it buys is that no line here depends on how
+rem an unset name happens to expand.
+:atunon
+echo ================== atui, no network ==================
+set NET=-DATUI_NONET
+:atui_common
 rem Compiled from scratch every time, and the objects cleared first: `exe` links
 rem whatever obj\at holds, so an object left behind by a file that is no longer
 rem part of the tree would go into the program instead of being missed.
 if not exist obj\at mkdir obj\at
 del obj\at\*.obj >> %LOG% 2>&1
-for %%f in (src\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
-for %%f in (src\core\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
-rem The curl-backed transport is not part of this build: there is no libcurl
-rem for Open Watcom.  That mirrors -DATUI_HAVE_NETWORK=OFF in CMake, which is
-rem the configuration the requirements describe as a test harness -- so this
-rem build must not advertise agent mode either, which is what that option
-rem already arranges.  The socket transport that replaces it (Watcom has BSD
-rem sockets and tcpip32.lib) is port work still to do.
-for %%f in (src\net\provider.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
-for %%f in (src\settings\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
-for %%f in (src\tools\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
-for %%f in (src\tui\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
+for %%f in (src\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% %NET% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
+for %%f in (src\core\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% %NET% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
+rem The transport: atui's own HTTP over BSD sockets.  Listed in atui_net.rsp rather
+rem than by wildcard because three files in that directory cannot be built here --
+rem oai_client.cpp and oai_chat_model.cpp want libcurl, which Open Watcom does not
+rem have, and token_queue.cpp is the hand-off the state machines replace.  Wildcards
+rem work on this command processor; `call :label` subroutines do not, so the
+rem exclusions live in the list where a person can read them (see netall).
+echo [at] atui_net.rsp
+echo ---- atui_net.rsp ---- >> %LOG%
+%WPP% %NET% -fo=obj\at\ @atui_net.rsp >> %LOG% 2>&1
+if errorlevel 1 set RC=1
+for %%f in (src\settings\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% %NET% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
+for %%f in (src\tools\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% %NET% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
+for %%f in (src\tui\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% %NET% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
+if "%RC%"=="1" goto one_failed
+echo [at] objects out:
+dir obj\at\*.obj | find "file(s)"
+dir obj\at\*.obj | find "file(s)" >> %LOG%
 
 :lib
 rem The archive a program links against.  wlib's usage lists no response file,
@@ -356,6 +396,13 @@ echo option stack=256k >> link.rsp
 for %%f in (obj\at\*.obj) do echo file %%f >> link.rsp
 echo library obj\tvision.lib >> link.rsp
 echo library os2386.lib >> link.rsp
+rem tcpip32.lib, because `atui` is a network build: the socket calls resolve to
+rem sock_os2.cpp's declarations and this import library.  Linking it records the
+rem stack's entry points in the image, so the program needs TCP/IP present at load
+rem time even if it never opens a socket -- which is the right trade for a program
+rem whose only mode is asking a model something over the LAN, and the reason the
+rem no-network configuration above is compile-checked rather than linked here.
+echo library tcpip32.lib >> link.rsp
 wlink @link.rsp >> %LOG% 2>&1
 if errorlevel 1 goto one_failed
 dir atui.exe
@@ -476,6 +523,16 @@ rem The verdict the host build loop reads.  Written by the batch rather than
 rem inferred from the shell, because this driver carries on past a failing
 rem compile, so the shell would report only the last file's status and call the
 rem build good.
+rem
+rem And the verdict cannot come from an exit code either, which is not theory: a
+rem build whose response-file compile printed `src\net\http.cpp: 666 lines, included
+rem 8935, no warnings, 1 error` still reported ATUI-BUILD-RC=0, because the error
+rem level after a compile of several files belongs to whoever touched it last.  A
+rem driver that says OK about a file that did not compile is worse than one that
+rem stops, so the log is asked directly: `Error!` is the marker both wpp386 and
+rem wlink put on every error line they write, and a log containing it is a failed
+rem build whatever the driver believes.
+find "Error!" %LOG% >nul && set RC=1
 echo ATUI-BUILD-RC=%RC%
 echo ATUI-BUILD-RC=%RC% >> %LOG%
 rem Whose build this was.  The console on this box is one command processor with

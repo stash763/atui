@@ -56,7 +56,13 @@ public:
         virtual void onFinished( bool ok, const std::string &error ) = 0;
     };
 
-    ChatRequest() : sink_( 0 ), reported_( false ), status_( 0 ) {}
+    ChatRequest()
+        : sink_( 0 )
+        , reported_( false )
+        , ok_( false )
+        , status_( 0 )
+    {
+    }
 
     // Sends the request and starts reading the answer.  `baseUrl` is a provider's
     // base URL in the form the settings store it (`http://host:8080/v1`), and
@@ -82,6 +88,22 @@ public:
     // complete once the sink has been told it is finished.
     const OaiResponse &response() const { return out_; }
 
+    // What the request decided, for a caller with no sink.
+    //
+    // A sink is how a stepped request reports as it goes, and every caller of
+    // `net::pumpUntilDone` -- the permission agent, the model list, `httpGet` -- is a
+    // caller that asks afterwards instead.  Until now asking was not possible: the end
+    // of a request was handed to a sink that did not exist and the reason went with it,
+    // so `--judge-check` reported "the agent could not describe the command" with an
+    // empty reply and no way to find out whether the server refused, timed out, or
+    // closed the connection.  Measured, that is exactly what it looked like.
+    //
+    // `hasResult()` is false while the request is still running and true once it has
+    // ended by any route -- including `abort()`, which reports too.
+    bool hasResult() const { return reported_; }
+    bool ok() const { return reported_ && ok_; }
+    const std::string &error() const { return error_; }
+
 private:
     // HttpStream::Sink
     virtual void onStatus( int code );
@@ -93,7 +115,8 @@ private:
     // DeltaSink
     virtual void onDelta( const std::string &text, bool thinking );
 
-    // Reports the end exactly once, whatever path got here.
+    // Reports the end exactly once, whatever path got here, and remembers it for the
+    // accessors above.
     void finish( bool ok, const std::string &error );
     // A non-2xx answer's text, in the error message: short, and with the middle of
     // a long JSON body cut rather than wrapped.
@@ -104,7 +127,9 @@ private:
     OaiResponse out_;
     std::string errorBody_;     // what came back when the status said no
     Sink *sink_;
-    bool reported_;
+    bool reported_;             // the end has been reported, once
+    bool ok_;                   // ... and what it said: succeeded, or not
+    std::string error_;         // and the reason, for a caller with no sink
     int status_;
 };
 

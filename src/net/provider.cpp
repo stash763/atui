@@ -13,12 +13,6 @@ namespace net {
 
 namespace {
 
-const char *envOr( const char *name, const char *fallback )
-{
-    const char *v = std::getenv( name );
-    return ( v && v[0] ) ? v : fallback;
-}
-
 bool truthy( const char *v )
 {
     return v && ( v[0] == '1' || v[0] == 'y' ||
@@ -64,6 +58,24 @@ Store& store()
 }
 
 } // anonymous namespace
+
+// An environment value is read trimmed, and that is a portability fix rather than
+// tidiness.  Measured on the OS/2 target: its command processor keeps the space in
+// `set X=value & next`, so setting the endpoint that way produced a base URL ending
+// in a space and the request went out as
+//
+//     POST /v1 /chat/completions HTTP/1.1
+//
+// which the server answered with a 400 and no body at all -- the single most
+// misleading failure this port has had, because every layer above was reporting the
+// server's verdict correctly.  Whitespace around a URL, a model name or a key is
+// never part of it; a shell that adds one silently should not be able to break the
+// network path.
+std::string envOr( const char *name, const char *fallback )
+{
+    const char *v = std::getenv( name );
+    return trim( ( v && v[0] ) ? std::string( v ) : std::string( fallback ) );
+}
 
 ProviderSettings defaultProviderSettings()
 {

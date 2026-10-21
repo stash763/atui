@@ -2898,3 +2898,82 @@ the way out.
 
 Gate state with this change: 167 passed (network, threads), 167 (network, `ATUI_NO_THREADS`),
 94 (neither), `gate98.py` at its one known diagnostic, `watcom-gaps.py` unchanged at 28.
+
+## atui on OS/2 with the network: built, linked, and talking to a model
+
+`build.cmd atui` is now the network configuration: every source sees
+`-DATUI_HAVE_NETWORK` (the transport, the TUI, the settings and the tools all read it,
+because a build that cannot ask a model must not offer agent mode either), the transport
+comes from `tools/os2/atui_net.rsp` (every `src\net\*.cpp` except the three that cannot
+be built here), and `exe` links `tcpip32.lib`.  `build.cmd atunon` compiles the same
+sources without the define -- the configuration that proves the agent-mode code stayed
+inside its ifdef.
+
+Measured on the target, 2026-10-21:
+
+    build.cmd atui    45 objects, rc=0, no errors (tvision's own W446/W728 as before)
+    build.cmd exe     atui.exe 1,389,065 bytes at -od
+    atui.exe --judge-check "list the files in the project directory"
+        mode: agent   agent: Ternary-Bonsai-2-27B-PQ2_0.gguf
+        run  list the files in the project directory   rung 13
+             Lists files in the project directory (2971ms)
+
+So the permission agent, the deterministic policy and the hand-rolled HTTP transport work
+on eComStation against a live llama.cpp endpoint. `phttp.exe` (`build.cmd netprobe
+probe_http.cpp phttp.exe`) still reports GET 200, a streamed POST 200, 18 pieces, chunked
+framing parsed.
+
+**Threads are not on in this build yet.** `-bm` changes the C runtime every object links
+against -- including tvision's 177 -- so it is a separate step; without it
+`threadsAvailable()` is false and the turn is stepped from the timer, which is the
+cooperative path and is correct, just not concurrent.
+
+### Open defect: `--judge-check` dies on exit with exception 0005
+
+Every `--judge-check` run on the target prints its answer correctly and then dies during
+teardown:
+
+    SYS1808: The process has stopped. The software diagnostic code (exception
+    code) is 0005.
+
+What is known, each part measured:
+
+* it happens on the success path *and* the failure path, so it is not the error handling;
+* the transport is not implicated: `tools/os2/probe_refuse.cpp` (built by `netprobe`, so
+  the image is http.cpp + sock_os2.cpp + strutil.cpp and nothing else) handles the same
+  refused connection -- `the server refused the connection` -- and exits normally;
+* the same source, same code path, on the host under AddressSanitizer and UBSan with an
+  empty `HOME` and a refused endpoint: no report, clean exit.
+
+That points above the transport and at process teardown -- the statics in the judge,
+the provider store and the permission engine, and `setPermissionJudge()` holding a
+pointer into another translation unit's function-local static, which is a destruction
+order the linker decides rather than the code.  It is not data loss (the answer is
+printed before it) but it is a crash on the most ordinary path there is, so it is next.
+
+### Two things the box teaches again
+
+* `set X=value & next` on this command processor **keeps the space** before the `&`.
+  Setting `ATUI_BASE_URL` that way gave a base URL ending in a space, and the request
+  line went out as `POST /v1 /chat/completions HTTP/1.1` -- answered with a 400 and no
+  body, which every layer above reported faithfully as "the server said 400".  Fixed by
+  trimming environment values (`provider.cpp`, with a test: `provider: env values arrive
+  trimmed`); the diagnosis needed `ATUI_HTTP_DEBUG=1`, which now dumps the outgoing
+  request with the `Authorization` line redacted.  `ATUI_JUDGE_DEBUG=1` prints what the
+  permission agent actually said.
+* the ~315-character input-line limit is still there, and it truncates rather than
+  refusing: a long `--exec` command was cut mid-argument and started the **TUI** in the
+  middle of a script.  Short commands, one thing each.
+
+### The build driver must not be able to say OK about a file that did not compile
+
+A build whose compile printed `src\net\http.cpp: 666 lines, included 8935, no warnings,
+1 error` still reported `ATUI-BUILD-RC=0`: the error level after compiling a response
+file belongs to whoever touched it last.  So `:summary` now asks the log itself --
+`find "Error!" %LOG% >nul && set RC=1` -- because `Error!` is what both wpp386 and wlink
+write on every error line.  This is the second time this class of failure showed up in
+this project (the first was a `call :label` subroutine that never ran and reported OK
+after compiling nothing), and both were found by accident rather than by the driver.
+
+Watcom's `<string>` also has no `compare( pos, len, literal )` overload -- E715 -- which
+is how the request-dump code was first written.  `strncmp` it is.

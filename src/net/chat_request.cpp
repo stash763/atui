@@ -31,6 +31,8 @@ bool ChatRequest::begin( const std::string &baseUrl,
 {
     sink_ = sink;
     reported_ = false;
+    ok_ = false;
+    error_.clear();   // a request that is starting again has not failed yet
     status_ = 0;
     out_ = OaiResponse();
     errorBody_.clear();
@@ -132,6 +134,8 @@ void ChatRequest::finish( bool ok, const std::string &why )
     if( reported_ )
         return;
     reported_ = true;
+    ok_ = ok;
+    error_ = why;
     if( sink_ )
         sink_->onFinished( ok, why );
 }
