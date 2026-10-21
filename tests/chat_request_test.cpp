@@ -403,6 +403,58 @@ int test_chat_done_ends_it_without_the_close()
     return 0;
 }
 
+// A server that hangs up while a request is going out.  Writing to that socket raises
+// SIGPIPE on a POSIX host, whose default disposition is to terminate the process, so
+// the failure of this test is not a red line in a summary -- the whole test binary
+// dies.  Control-checked by taking the protection out of `sock_posix.cpp`: exit 141
+// (128+13) in 5 runs out of 5, and 0/5 with it.  The same thing measured outside the
+// suite is in `tools/probe_sigpipe.cpp`.
+//
+// The two details that make it reproduce are load-bearing.  The body has to be larger
+// than the socket buffers -- at 200 KB everything is written before the peer has even
+// decided to hang up, and the request then fails cleanly on read -- and the hangup
+// has to come *after* the connection is accepted rather than before the first write,
+// because a socket that already knows the peer is gone answers `EPIPE` without the
+// signal.  A version of this test that got either wrong passed with the bug present.
+int test_chat_a_peer_that_hangs_up_mid_send_is_an_error()
+{
+    atui_test::ScriptedHttp server;
+    if( !server.start() )
+        return -1;
+    atui_test::ScriptedHttp::Script script;
+    // Close while the request is still going out -- closing *before* the first write
+    // teaches the stack about the hangup too early and the write just fails cleanly,
+    // which is not the case under test.
+    script.hangUpAfterMs = 50;   // while the write below is still going
+    server.enqueue( script );
+
+    // Big enough that the request cannot go out in one write: the first chunk is
+    // absorbed by the socket buffer and the second is the one that finds the peer
+    // gone.
+    OaiRequest req;
+    req.model = "m";
+    req.stream = true;
+    OaiMessage m;
+    m.role = "user";
+    m.content = std::string( 8u * 1024u * 1024u, 'x' );
+    req.messages.push_back( m );
+
+    Recorder sink;
+    ChatRequest request;
+    const std::string base =
+        "http://127.0.0.1:" + std::to_string( server.port() ) + "/v1";
+    std::string error;
+    if( !request.begin( base, "", req, &sink, 5, 0, &error ) )
+        return -2;
+    if( !Recorder::drive( request, 8000 ) )
+        return -3;                 // must end: an error, but must end
+    if( sink.finishes != 1 || sink.ok )
+        return -4;
+    if( sink.error.empty() )
+        return -5;
+    return 0;
+}
+
 int test_chat_bad_url_is_refused_before_connecting()
 {
     atui_test::ScriptedHttp server;
@@ -449,6 +501,8 @@ void init_chat_request_tests()
                    &test_chat_truncated_stream_is_an_error );
     register_test( "chat: [DONE] ends it without the close",
                    &test_chat_done_ends_it_without_the_close );
+    register_test( "chat: a peer that hangs up mid-send is an error",
+                   &test_chat_a_peer_that_hangs_up_mid_send_is_an_error );
     register_test( "chat: bad url is refused before connecting",
                    &test_chat_bad_url_is_refused_before_connecting );
 }

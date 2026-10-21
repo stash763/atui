@@ -7,16 +7,22 @@
 // results back and ask again, up to a limit, until the model gives an answer instead
 // of a request.
 //
-// That is the same sequence `oai_chat_model.cpp` runs on a worker thread, written so
-// that it can run in the event loop instead -- because the Open Watcom build has no
-// threads, and because a program with one code path is a program whose tests mean
-// the same thing on every platform.  `start()` begins it, `step(waitMs)` advances it
-// whenever the TUI has a moment, and everything the user sees goes through `Sink`.
+// That is the same sequence `oai_chat_model.cpp` runs on a worker thread, written as
+// a state machine instead: `start()` begins it, `step(waitMs)` advances it, and
+// everything the user sees goes through `Sink`.  Two reasons, one of them permanent.
+// A state machine does not care who pumps it -- the TUI's idle handler, a CLI caller
+// willing to wait, a DOS program doing several things on one stack from a timer hook,
+// or a worker thread on the platforms that have threads -- so there is one code path
+// and one set of tests, and they mean the same thing on every target.  The other
+// reason is mundane: this build carries no thread runtime in its compat headers.
+// Nothing below assumes the calling thread, and nothing forbids one (see
+// PORTING.md).
+//
 // Nothing here blocks, with one exception and it is deliberate: a tool that runs a
-// command runs it here, in the loop, because on the platform this was written for
-// first there is no other way to have a child process at all (see the note in
-// `run_command_tool.cpp` and the platform table in TESTING.md).  Everything else --
-// the network, the judging -- yields between bytes.
+// command runs it in the step that was told to, because waiting for a child process
+// is the one thing that has no non-blocking form on the platforms atui runs on (see
+// the note in `run_command_tool.cpp` and the platform table in TESTING.md).  The
+// network and the judging yield between bytes.
 //
 // A tool call is not executed in the same moment it is decided.  `tsRunningTool`
 // means "next `step()` will", which is the gap the screen uses to show the call

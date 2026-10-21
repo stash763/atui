@@ -46,8 +46,20 @@ public:
         std::vector<std::string> pieces;   // written in order
         int pauseMs;                       // between pieces
         bool closeAfter;                   // else hold the connection open
+        // Close the moment the connection is accepted: no reading, no answering.
+        // This is the peer that hangs up while the client is still sending, which is
+        // the case a POSIX process has to survive -- writing to a socket whose peer
+        // has gone raises SIGPIPE, whose default disposition is to terminate.
+        bool hangUpFirst;
+        // Accept, read nothing, answer nothing, and close after this long -- while
+        // the client is still writing.  Different from `hangUpFirst`, which closes
+        // before the client's first write and so teaches the stack about the hangup
+        // before any byte goes out.
+        int hangUpAfterMs;
 
-        Script() : pauseMs( 0 ), closeAfter( true ) {}
+        Script()
+            : pauseMs( 0 ), closeAfter( true ), hangUpFirst( false )
+            , hangUpAfterMs( 0 ) {}
     };
 
     ScriptedHttp()
@@ -158,6 +170,29 @@ private:
 
     void handle( int client )
     {
+        // A hanging-up peer is scripted, not raced: take the instruction before
+        // reading anything, so the timing is the script's and not the test's.
+        int hangUpAfterMs = 0;
+        {
+            std::lock_guard<std::mutex> g( mutex_ );
+            if( !scripts_.empty() )
+            {
+                if( scripts_.front().hangUpFirst )
+                {
+                    scripts_.erase( scripts_.begin() );
+                    return;
+                }
+                hangUpAfterMs = scripts_.front().hangUpAfterMs;
+            }
+        }
+        if( hangUpAfterMs > 0 )
+        {
+            // Close while the client still has bytes to write, and do not answer:
+            // the client is mid-`send` when the FIN arrives.
+            std::this_thread::sleep_for( std::chrono::milliseconds( hangUpAfterMs ) );
+            return;
+        }
+
         // Read the request: until the headers are complete and the body they
         // promise has arrived, with a bounded wait so a client that never sends
         // cannot wedge the test.

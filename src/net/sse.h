@@ -14,8 +14,9 @@
 // since a proxy that adds a comment is not asking to be refused.  A payload of
 // `[DONE]` is the stream saying it has finished.
 //
-// C++98, no threads, no callbacks into anything that blocks: `feed()` is called from
-// the event loop with whatever the socket gave up.
+// C++98.  All state is per-instance and no lock is taken, so a host may keep one of
+// these per thread; what it must not do is block inside the sink, because `feed()`
+// runs on whatever thread is pumping and hands the bytes straight through.
 #ifndef ATUI_NET_SSE_H
 #define ATUI_NET_SSE_H
 

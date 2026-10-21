@@ -2,18 +2,28 @@
 //
 // atui talks to one server, on a LAN, over plain HTTP, and it has to do that from
 // inside a TUI: the screen has to keep drawing while a model thinks, and a click
-// has to reach the transcript.  That rules out the obvious shape -- a thread per
-// request that blocks in the system's socket calls -- because the compiler atui is
-// written for first (Open Watcom, OS/2) has no threads: `<thread>` and
-// `<condition_variable>` are compat headers atui does not even ship.  So the
-// transport is a state machine and these are the calls it drives it with: start a
-// connection, ask whether it is ready, move some bytes, close.
+// has to reach the transcript.  So the transport is a state machine rather than a
+// call that blocks, and these are the calls it drives it with: start a connection,
+// ask whether it is ready, move some bytes, close.
+//
+// The shape is chosen for the platforms, not against them.  Everything here is
+// per-instance and takes no lock, and the stack start-up is idempotent, so a host
+// with threads may own one of these per thread; and the state machine is what a
+// single stack doing several things -- an event loop, or DOS work driven from a timer
+// hook -- needs anyway.  What this build does not have is a thread *runtime*: Open
+// Watcom's OS/2 target ships no `<thread>` or `<atomic>`, which is a fact about the
+// headers and not about OS/2, Windows or DOS (see PORTING.md).
 //
 // Why a layer at all, when every platform has `socket()`: because they agree about
 // almost nothing else, and each disagreement is one that breaks a program if it is
 // assumed rather than handled.  Measured on the OS/2 target, and written up in
 // TESTING.md:
 //
+//   * a POSIX socket raises SIGPIPE at the first write to a connection the peer has
+//     closed, and the default disposition terminates the process; OS/2 and Windows
+//     have no SIGPIPE.  Handled per socket in `sock_posix.cpp` rather than by
+//     ignoring the signal for the process, because an ignored SIGPIPE is inherited by
+//     every command atui runs.  Measured, with the numbers, in TESTING.md;
 //   * a socket is an `int` there and it is closed with `soclose()`.  The C
 //     library's `close()` returns -1 for a socket handle -- every time, so closing
 //     one that way leaks it, and the leak shows up as "cannot open socket" long

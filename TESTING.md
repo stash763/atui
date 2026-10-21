@@ -3,6 +3,11 @@
 Working notes on how to build, run, and test atui — especially the TUI layer,
 which needs a real terminal (pty) to exercise.
 
+Measured facts about the compilers and platforms are here too; the reasoning about
+program shape that comes out of them (why work is a state machine, what that allows a
+threaded host, what has to be guarded if one is added) is in `PORTING.md`, and the
+permission model is in `PERMISSIONS.md`.
+
 ## Build & unit tests
 
     cmake --build build          # from repo root
@@ -633,6 +638,19 @@ asked the user every time, which is exactly how a judge that never worked looks 
 the outside.  The test caught it by reading the body: the tool name, the command, the
 agent's model id and the words "Describe this call." have to be in what goes out.
 Before it, nothing in the suite exercised that call at all.
+
+**SIGPIPE is a crash, not an error, and it is per-socket.**  Writing to a socket whose
+peer has gone raises SIGPIPE on a POSIX host, and the default disposition terminates
+the process: `tools/probe_sigpipe.cpp` measures a peer that accepts, hangs up and is
+written to again killing the process in 6 runs out of 6, with nothing printed.
+`src/net/sock_posix.cpp` turns it off on the socket it opens (`SO_NOSIGPIPE`, and
+`MSG_NOSIGNAL` on the send where the flag exists) rather than ignoring the signal for
+the process, because children inherit that.  The regression test is
+`chat: a peer that hangs up mid-send is an error` -- and it is a test that *dies*
+rather than fails when the fix is removed (exit 141, 5 runs out of 5), which is also
+why its two details are commented: an 8 MB body (smaller ones are written before the
+peer hangs up) and a hangup after accept (before the first write gives a clean EPIPE
+with no signal).  A version of the test that got either wrong passed with the bug in.
 
 `tests/http_test.cpp` runs it against `tests/http_pipe.h`, a scripted responder
 on `127.0.0.1` that writes whatever it is told, in pieces, with a pause between

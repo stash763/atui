@@ -9,8 +9,10 @@
 // loop by whoever is waiting, which is the same code the event loop runs, minus the
 // event loop.
 //
-// C++98, no threads: the pump is the reason there are no threads here, and the
-// reason the chat path cannot use it.
+// C++98.  A pump is one caller waiting on one state machine, which is exactly what
+// the chat path cannot afford while it has a screen to keep drawing.  A host with
+// threads does not need the pump either: it can give the state machine a thread of
+// its own and marshal the sink back to whatever draws.
 #ifndef ATUI_NET_HTTP_SIMPLE_H
 #define ATUI_NET_HTTP_SIMPLE_H
 

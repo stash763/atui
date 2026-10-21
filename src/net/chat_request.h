@@ -23,7 +23,9 @@
 //     program produced, because it was indistinguishable from a model that had
 //     nothing to say.
 //
-// C++98, because the Open Watcom build has no threads to do this any other way.
+// C++98, for the compilers atui is built with.  Nothing here assumes who is calling:
+// `step()` is driven by whoever owns the request, and no state is shared between two
+// of them.
 #ifndef ATUI_NET_CHAT_REQUEST_H
 #define ATUI_NET_CHAT_REQUEST_H
 

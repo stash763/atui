@@ -1,5 +1,12 @@
 #include "dbg.h"
+
+// Guarded, and not at file scope in the usual way: `<mutex>` is a C++11 header that
+// Open Watcom does not ship, so a debug-off build -- which is the shipping build, and
+// the one the Watcom target compiles -- must not look at it at all.  A debug build is
+// a host-build thing, and on those hosts `<mutex>` exists.
+#ifdef ATUI_DEBUG_KEYS
 #include <mutex>
+#endif
 
 namespace atui {
 namespace net {

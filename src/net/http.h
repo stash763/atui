@@ -1,12 +1,13 @@
 // HTTP/1.1 as a state machine, so a request can be made from inside the event loop.
 //
-// This is the transport atui uses where there are no threads to spare -- the Open
-// Watcom/OS/2 build in particular, where the screen is drawn by the same execution
-// stream that would have to wait for a server.  `step()` is what the event loop
-// calls when it is idle: it waits for at most the time it is given, moves whatever
-// bytes the stack will move, hands them to the sink, and returns.  Between calls
-// nothing runs, and the program stays responsive because it was never inside a
-// blocking call to begin with.
+// This is the transport atui uses everywhere, and who runs it is deliberately not
+// the transport's business: the TUI's idle handler calls `step()`, a command-line
+// tool pumps it until it finishes, one stack doing several things from a timer hook
+// can drive it, and on a platform with threads a worker thread may own one.  `step()`
+// waits for at most the time it is given, moves whatever bytes the stack will move,
+// hands them to the sink, and returns.  Between calls nothing runs, and a program
+// driven this way stays responsive because it was never inside a blocking call to
+// begin with.
 //
 // What it does understand is the part of HTTP/1.1 a client actually has to:
 //

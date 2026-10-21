@@ -97,6 +97,25 @@ SockHandle sockConnectStart( const std::string &host, int port, std::string *rea
         return kNoSocket;
     }
 
+    // Writing to a socket whose peer has gone raises SIGPIPE, and the default
+    // disposition of that signal is to terminate the process.  Measured on the host
+    // (tools/probe_sigpipe.cpp): a peer that accepts, hangs up, and is written to
+    // twice killed the process in 6 runs out of 6, with nothing printed -- so a
+    // server that dropped a chat request would not have shown an error, it would
+    // have shown an atui that had vanished.  Ignoring the signal process-wide is not
+    // an answer here: that disposition is inherited by every command atui runs
+    // through the shell, which is how `yes | head` starts misbehaving.  So it is
+    // switched off on this socket, and only this one.  Both spellings are used
+    // because the platforms disagree: `SO_NOSIGPIPE` is BSD and macOS (and Linux
+    // 2.6+), `MSG_NOSIGNAL` is a per-send flag that Linux has and the BSDs do not.
+    // Neither exists on OS/2 or Windows, which have no SIGPIPE.
+#ifdef SO_NOSIGPIPE
+    {
+        int nosigpipe = 1;
+        setsockopt( fd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof nosigpipe );
+    }
+#endif
+
     // Non-blocking before connecting, so there is no window in which a connect to
     // a machine that is up-but-unanswered can block the screen.
     const int flags = fcntl( fd, F_GETFL, 0 );
@@ -169,7 +188,15 @@ SockWhy sockSend( SockHandle handle, const char *data, size_t len,
 {
     if( written )
         *written = 0;
+    // MSG_NOSIGNAL is the other half of the pair explained in sockConnectStart:
+    // Linux's way of saying the same thing per call, for the sockets where the
+    // socket option is not available.  Where the macro does not exist the option
+    // above is what does the work.
+#ifdef MSG_NOSIGNAL
+    const ssize_t n = send( (int) handle, data, len, MSG_NOSIGNAL );
+#else
     const ssize_t n = send( (int) handle, data, len, 0 );
+#endif
     if( n > 0 )
     {
         if( written )
