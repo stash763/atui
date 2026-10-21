@@ -180,10 +180,17 @@ distinction matters, because the thing this restructure spent a week deleting wa
    because the mutex atui has on OS/2 is a kernel semaphore and that is enough. Tested
    in three configurations on the host, including one built specifically to have no
    threads, and compile-checked on the target (`TESTING.md`, "The thread seam").
-2. `core/task_runner.{h,cpp}`: given a machine, run it to completion on a thread --
-   `while (m.busy()) m.step(50);` -- or, where there is no thread, register it with
-   the cooperative scheduler that the app timer steps. Either way the sink is the
-   queue.
+2. ~~`core/task_runner.{h,cpp}`~~ → **`net/turn_queue.{h,cpp}`, and no runner.** What
+   turned out to be wrong about the plan is the word "generic": a runner in `core`
+   would have to know when a machine is waiting on its owner rather than on a socket,
+   and the only honest way for it to learn that is a hook every machine implements --
+   which is a framework, and frameworks are how a port ends up with two ways to do a
+   thing. So `core` keeps `Thread` (one thread, one join, no opinions), and the pump
+   loop lives with the machine that has the states: `while (turn.busy()) { if
+   (!queue.waitIfWaiting()) turn.step(50); }`. The queue is the part that is genuinely
+   shared and genuinely tested: `net::TurnQueue` implements `ChatTurn::Sink`, appends
+   on the worker's stack in order, and carries the approval question both ways -- take
+   it once, answer it once, and a question nobody answers ends as a refusal.
 3. Put a `ChatTurn` behind it. The visible win is a `run_command` that takes a minute:
    today it stops the screen, and after this it does not.
 4. Move the process-wide state out of the way first, in the same change: read once at

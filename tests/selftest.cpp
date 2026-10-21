@@ -61,6 +61,9 @@ void init_live_tests();
 void init_url_tests();
 // Defined in tests/markdown_test.cpp (always built).
 void init_markdown_tests();
+// Defined in tests/turn_queue_test.cpp (network builds only): the hand-off between a
+// turn on a thread and the screen that draws it -- ordering, and the approval round trip.
+void init_turn_queue_tests();
 // Defined in tests/thread_test.cpp (always built): the thread seam -- work moves to
 // another stack where the platform has one, and the refusal is honest where it does
 // not, which is the DOS case and today's Watcom case.
@@ -2884,6 +2887,10 @@ void init()
 
     // The permission agent's own network call (tests/judge_transport_test.cpp).
     init_permission_judge_tests();
+
+    // The queue a threaded turn hands its records back through
+    // (tests/turn_queue_test.cpp).
+    init_turn_queue_tests();
 #endif
     // The thread seam, outside the network ifdef: a core object, tested in both
     // configurations so the no-threads answer is covered too.
