@@ -2840,3 +2840,61 @@ Two controls, because a thread test that cannot fail is worse than none:
     fails with `rc=-3` and the second-start test with `rc=-2`.
 
 Both restored, 164/164 again.
+
+## The turn on a thread: what was measured, and what the tests caught
+
+`src/tui/app.cpp` now starts the turn on a `core::Thread` where the platform has one and
+steps it from the 50 ms timer where it does not.  The UI thread's only contact is
+`net::TurnQueue`, which is why the approval answer goes back through the queue: calling
+`ChatTurn::answerApproval()` from the dialog would be the UI reaching into an object a
+worker is stepping, and the types make that awkward on purpose.
+
+`tools/tui_liveness.py` is the new measurement.  It types a message, waits, and types a
+second one *before the answer arrives*.  A live loop answers with `(busy, try again)` and
+still delivers the first answer; a blocked one reads the keystroke after the fact and
+sends it as a second message instead.  Measured against the live endpoint:
+
+| build | message | poked | busy line | answer |
+|---|---|---|---|---|
+| threads (`build/`) | 2.0 s | 5.1 s | **5.2 s** | 6.1 s |
+| no threads (`build-nothreads/`) | 2.0 s | 5.1 s | 5.6 s | 7.9 s |
+
+Read the table honestly: both configurations pass, because streaming was already
+non-blocking and a `step(0)` returns at once.  What this harness proves is the new
+ownership rules hold under a real terminal (a turn in flight is refused, not interleaved;
+the turn is not disturbed by the poke).  The two waits that only a thread fixes --
+`gethostbyname()` before the first byte, and a tool call's child process -- are not
+reachable from here: this endpoint is an IP literal, and a tool call needs the model to
+ask for one and a person to approve it.  Those are measured on the OS/2 box, and the
+script says so in its own docstring rather than letting the two green rows imply more
+than they show.
+
+`tools/tui_smoke.py` (`SMOKE OK: the answer reached the transcript`) is the end-to-end
+check of the same path.
+
+Three defects, all found by running rather than reading, and all mine from this change:
+
+*   `TurnTask::run()` called the pump once instead of looping.  The threaded build worked
+    only because the timer picked up the turn after the worker exited -- which meant the
+    screen was doing the pumping the thread was supposed to take over.  The smoke test
+    failed (`no 8042 on screen`) and the cause was two lines.
+*   the shared pump body took `step(50)` unconditionally, so the *unthreaded* timer path
+    blocked in `select` for up to 4x50 ms per 50 ms tick: a latency regression on the
+    platforms with the least to spare.  The wait is now the caller's (50 on the worker, 0
+    on the timer), which is the difference between a thread polling at full tilt and a UI
+    holding a keystroke.
+*   the destructor joined the worker unconditionally, so quitting during a turn waited
+    for the model's answer before the process would close.  `TurnQueue::requestStop()` is
+    the fix -- cooperative, checked between passes, and bounded by one step rather than by
+    a model.  `ChatTurn::cancel()` could not be used for this: it mutates the machine that
+    the worker is stepping.
+
+**A separate finding, not from this work:** atui ignores `SIGTERM`.  Measured with a
+minimal pty probe against an idle instance -- no turn in flight -- it survived the signal
+for the full six seconds of the probe and needed `SIGKILL`.  Any harness that asks
+politely hangs forever (two of them did before this was understood), and it is worth
+fixing in the terminal layer: the durability work means there is state worth flushing on
+the way out.
+
+Gate state with this change: 167 passed (network, threads), 167 (network, `ATUI_NO_THREADS`),
+94 (neither), `gate98.py` at its one known diagnostic, `watcom-gaps.py` unchanged at 28.

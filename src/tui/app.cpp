@@ -68,6 +68,8 @@
 
 #ifdef ATUI_HAVE_NETWORK
 #include "net/chat_turn.h"
+#include "net/turn_queue.h"
+#include "core/thread.h"
 #include "net/permission_judge.h"
 #include "tools/approval.h"
 #endif
@@ -112,16 +114,26 @@ namespace {
 
     // M2 streaming state (only used when ATUI_HAVE_NETWORK).
 #ifdef ATUI_HAVE_NETWORK
-    // One chat turn: the model, the tools and the asking, as a state machine
-    // stepped from the timer in TApp::handleEvent.  There used to be a queue here
-    // and a worker thread behind it, and the mutex that guarded the approval
-    // handshake; a turn is stepped by this stack now, so the transcript calls
-    // arrive in the order the model made them without any of that.
-    atui::net::ChatTurn *g_turn_ = 0;
-    // Set while the machine is being stepped.  The approval dialog runs a nested
-    // event loop, and so does any dialog the user opens while a turn streams, and
-    // the 50ms timer keeps firing in both cases: without this the machine would be
-    // stepped from inside its own step().
+    // One chat turn, the queue it reports through, and -- where the platform has
+    // one -- the stack it runs on.
+    //
+    // The division is deliberate and it is the whole design of this file: the
+    // ChatTurn is touched by exactly one thread at a time (the worker when there is
+    // one, this one otherwise), and the only thing the UI thread reads is the queue.
+    // The approval answer goes back through the queue for the same reason: calling
+    // `answerApproval()` from here would be the UI reaching into an object the worker
+    // is stepping.
+    atui::net::ChatTurn  *g_turn_  = 0;
+    atui::net::TurnQueue  g_queue_;
+
+    // The stack a turn runs on while one is running, or nothing.  `running()` is also
+    // how "busy" is answered when the user types during a turn.
+    atui::core::Thread    g_turnThread_;
+
+    // Set while the timer is pumping -- stepping, draining records into the
+    // transcript, or showing the approval dialog, which runs a nested event loop with
+    // the 50ms timer still firing underneath it.  Without this, that dialog re-enters
+    // the pump that opened it.
     bool g_inStep_ = false;
 #endif
 
@@ -170,7 +182,7 @@ void maybeRecoverInterruptedWrites_();
 //
 // No question and no answer means no: a turn that is cancelled while a question is
 // open simply never runs the tool, which is the safe direction for the mistake.
-atui::tools::ApprovalRef   g_pendingApproval;
+
 
 // What the user made of a confirmation request. The third answer is not "allow
 // this kind of thing": it is this call, tool and arguments included, for the
@@ -1007,6 +1019,22 @@ public:
         delete g_stub_;
         g_stub_ = 0;
 #ifdef ATUI_HAVE_NETWORK
+        // A turn still in flight at exit: refuse whatever it is waiting on, so it
+        // stops waiting, then wait for the stack to finish with it -- the task and the
+        // turn it holds are both about to go away.  This can take as long as a tool
+        // call takes, because a child process is not interruptible: the same truth
+        // `ChatTurn::cancel()` documents, arriving at exit instead of at Escape.
+        if( g_turnThread_.running() )
+        {
+            // Requests, both of them, rather than cancellations: `requestStop()` is
+            // checked between passes, `declineUnanswered()` releases a worker parked on
+            // a dialog.  A bare join here was tried first, and it meant that quitting
+            // during a turn waited for the model's answer before the process would close
+            // -- which is indistinguishable from a hang to whoever is typing.
+            g_queue_.requestStop();
+            g_queue_.declineUnanswered();
+            g_turnThread_.join();
+        }
         delete g_turn_;
         g_turn_ = 0;
 #endif
@@ -1360,75 +1388,163 @@ void appendReply_( const char *text )
 }
 
 #ifdef ATUI_HAVE_NETWORK
-// Where a turn's news goes: straight into the transcript, from inside step().  The
-// order the methods are called in is the order the model made the calls, which is
-// what a queue plus a worker used to have to get right across two stacks.
-class AppSink : public atui::net::ChatTurn::Sink
+// Runs a turn until it is over, handing every record to the queue.
+//
+// This is the pump loop, and it lives here rather than in some generic runner because
+// the decision it makes -- sleep, or step? -- belongs to whoever knows what the machine
+// is waiting for.  `TurnQueue::waitIfWaiting()` is that knowledge expressed as data: the
+// turn asked the user something, so sleeping is correct, and a thread burning a core
+// beside an open dialog on a 30-year-old CPU would be the second worst thing it could
+// do.  The worst would be spinning on the user's answer while the UI thread waits for a
+// lock this one is holding.
+//
+// Nothing here touches the screen.  TVision belongs to the thread that created it, and
+// that is not this one when there is a this one.
+class TurnTask : public atui::core::Task
 {
 public:
-    virtual void onText( const std::string &text, bool thinking )
+    TurnTask() : turn_( 0 ), queue_( 0 ) {}
+
+    void set( atui::net::ChatTurn &turn, atui::net::TurnQueue &queue,
+              const std::string &message )
     {
-        if( !g_transcript_ ) return;
-        if( thinking ) g_transcript_->appendThinking( text );
-        else           g_transcript_->appendAnswer( text );
+        turn_ = &turn;
+        queue_ = &queue;
+        message_ = message;
     }
-    virtual void onStatus( const std::string &text )
+
+    virtual void run()
     {
-        if( g_transcript_ ) g_transcript_->appendStatus( text );
+        if( !turn_->start( message_, queue_ ) )
+        {
+            // Nothing was sent: say so, because the user already pressed Enter.
+            // (Busy is not this: the caller refuses that before starting the thread.)
+            queue_->onStatus( "the model was not asked (is a provider configured?)" );
+            queue_->onTurnFinished( false );
+            return;
+        }
+        // Run it to the end.  This is the whole reason for the thread: every wait in
+        // here -- the DNS lookup, the first byte, a tool's child process -- is a wait
+        // the screen does not have to sit through.
+        while( turn_->busy() && !queue_->stopRequested() )
+            driveOnce( kWorkerWaitMs );
     }
-    virtual void onToolCall( const std::string &preview )
+
+    // One pass of the pump: take any answer the UI left, then step or sleep.
+    //
+    // Split out so the build without threads can call it from the app timer instead of
+    // running the loop above -- one body of logic either way, which is the entire point
+    // of the arrangement, and the reason a `while` in `run()` cannot change behaviour
+    // between the two platforms.
+    void driveOnce( int waitMs )
     {
-        if( g_transcript_ ) g_transcript_->appendTool( preview );
+        bool allow = false, session = false;
+        if( queue_->hasAnswer( allow, session ) )
+        {
+            turn_->answerApproval( allow, session );
+            queue_->clearQuestion();
+        }
+        if( turn_->busy() && !queue_->waitIfWaiting() )
+            turn_->step( 50 );
     }
-    virtual void onToolNote( const std::string &note )
+
+    // The timer's entry point, and the only one that checks the pointers: the turn may
+    // not exist yet, and the timer runs from the first tick.
+    //
+    // Zero wait, and that number is not a detail: this is the build where this stack
+    // pumps, so every millisecond spent inside `select` is a millisecond a keystroke
+    // waits.  The worker has no such constraint, which is why it passes 50 -- a step
+    // that waits is how you keep a thread from polling the network at full tilt.
+    void drive()
     {
-        if( g_transcript_ ) g_transcript_->appendToolNote( note );
+        if( turn_ == 0 || queue_ == 0 )
+            return;
+        driveOnce( 0 );
     }
-    virtual void onToolResult( const std::string &result )
-    {
-        if( g_transcript_ ) g_transcript_->appendToolResult( result );
-    }
-    // Only parked here.  The dialog is modal and runs its own event loop, and
-    // showing it from inside step() would let a timer tick step the machine while
-    // it is in the middle of handing over the question; pumpChat_ shows it once the
-    // step has returned.
-    virtual void onApprovalNeeded( const atui::tools::ApprovalRef &question )
-    {
-        g_pendingApproval = question;
-    }
-    virtual void onTurnFinished( bool /*ok*/ )
-    {
-        // Closes the reply block whatever the outcome; the reason a turn ended was
-        // already said with onStatus, which is where a failure belongs.
-        if( g_transcript_ ) g_transcript_->finishReply();
-    }
+
+    enum { kWorkerWaitMs = 50 };
+
+private:
+    atui::net::ChatTurn  *turn_;
+    atui::net::TurnQueue *queue_;
+    std::string           message_;
 };
 
-AppSink g_sink_;
+TurnTask g_task_;
+
+// Where a record goes: the transcript, and only ever from the thread that owns it.
+void showRecord_( const atui::net::TurnQueue::Record &rec )
+{
+    if( g_transcript_ == 0 )
+        return;
+    switch( rec.kind )
+    {
+        case atui::net::TurnQueue::tkText:
+            g_transcript_->appendAnswer( rec.text );          break;
+        case atui::net::TurnQueue::tkThinking:
+            g_transcript_->appendThinking( rec.text );        break;
+        case atui::net::TurnQueue::tkStatus:
+            g_transcript_->appendStatus( rec.text );          break;
+        case atui::net::TurnQueue::tkTool:
+            g_transcript_->appendTool( rec.text );            break;
+        case atui::net::TurnQueue::tkToolNote:
+            g_transcript_->appendToolNote( rec.text );        break;
+        case atui::net::TurnQueue::tkToolResult:
+            g_transcript_->appendToolResult( rec.text );      break;
+        case atui::net::TurnQueue::tkFinished:
+            g_transcript_->finishReply();                     break;
+    }
+}
+
 #endif // ATUI_HAVE_NETWORK
 
 void pumpChat_()
 {
 #ifdef ATUI_HAVE_NETWORK
-    if( g_transcript_ == 0 || g_turn_ == 0 || g_inStep_ ) return;
+    if( g_transcript_ == 0 || g_inStep_ ) return;
 
     g_inStep_ = true;
-    // A few non-blocking steps per tick rather than one that waits: an answer
-    // arrives in pieces over seconds and the 50ms timer is what paces the redraw,
-    // so the pump takes whatever is readable now and gives the keyboard back.
-    // Stepping with a long wait would hold a keystroke for the length of that wait.
-    for( int i = 0; i < 4 && g_turn_->busy(); ++i )
-        g_turn_->step( 0 );
-    g_inStep_ = false;
 
-    if( g_pendingApproval )
+    // Who steps the turn depends on the build; nothing below this line can tell, and
+    // that is the design: a record that came from a worker's stack and one that came
+    // from this stack are drawn by the same four lines.
+    if( !g_turnThread_.running() )
     {
-        const atui::tools::ApprovalRef question = g_pendingApproval;
-        g_pendingApproval.reset();
-        const int answer = showApprovalDialog_( question );
-        if( g_turn_ )
-            g_turn_->answerApproval( answer != apNo, answer == apSession );
+        // A few passes per tick rather than one that waits: an answer arrives in
+        // pieces over seconds and the 50ms timer paces the redraw, so the pump takes
+        // what is ready now and gives the keyboard back.  A long wait inside step()
+        // would hold a keystroke for its length.
+        for( int i = 0; i < 4; ++i )
+        {
+            if( g_turn_ == 0 || !g_turn_->busy() )
+                break;
+            g_task_.drive();
+        }
     }
+
+    // Records, oldest first.  The cap is per tick so that a long answer spreads over
+    // ticks instead of holding the screen still for the whole of it; the next tick
+    // takes the rest, and nothing is lost because the queue keeps them.
+    atui::net::TurnQueue::Record rec;
+    for( int i = 0; i < 64; ++i )
+    {
+        if( !g_queue_.pop( rec ) )
+            break;
+        showRecord_( rec );
+    }
+
+    // The question, if the turn is waiting on one.  Modal -- and the answer goes into
+    // the queue rather than into the turn, because the thread stepping that turn owns
+    // it.  That is what wakes the worker; with no threads it is the next tick's
+    // `drive()` that hands the answer over.
+    atui::tools::ApprovalRef question;
+    if( g_queue_.takeQuestion( question ) )
+    {
+        const int answer = showApprovalDialog_( question );
+        g_queue_.answer( answer != apNo, answer == apSession );
+    }
+
+    g_inStep_ = false;
 #endif // ATUI_HAVE_NETWORK
 }
 
@@ -1444,12 +1560,43 @@ void processMessage_()
     if( !g_turn_ )
         g_turn_ = new atui::net::ChatTurn();
 
+    if( g_turnThread_.running() )
+    {
+        // Busy: a turn is in flight.  Refusing beats interleaving two conversations,
+        // and the text stays in the prompt for the next try.
+        g_transcript_->appendStatus( "(busy, try again)" );
+        return;
+    }
+
+    // A turn reads its endpoint when it starts, and where the platform has threads it
+    // starts on another stack -- so look at the settings here, on the thread that owns
+    // the screen.  It fails now, with something the user can act on, instead of as a
+    // record from a thread nobody expected; and the provider store, which is built on
+    // first use, is not built by whichever thread got there first (PORTING.md, "What a
+    // threaded host has to guard").
+    if( atui::net::providerSettings().baseUrl.empty() )
+    {
+        g_transcript_->appendStatus( "(no provider configured - Alt-P)" );
+        return;
+    }
+
     // The turn carries the conversation itself now (only rounds the model actually
     // answered are in it), so the transcript text is no longer fed back as history.
-    if( !g_turn_->start( std::string( msg.c_str(), msg.size() ), &g_sink_ ) )
+    const std::string message( msg.c_str(), msg.size() );
+    g_task_.set( *g_turn_, g_queue_, message );
+
+    // Where the work runs is the platform's business; what runs is the same either
+    // way.  With a thread, the turn leaves this stack now -- and the waits that have
+    // no non-blocking form, the DNS lookup before the first byte and the child process
+    // of a tool call, happen somewhere the screen does not depend on.  Without one,
+    // `pumpChat_()` steps the same task from the timer.  A thread the OS refuses (out
+    // of memory, out of handles) takes the same fallback rather than failing: the user
+    // asked for an answer, not for a report about threads.
+    std::string why;
+    const bool threaded = atui::core::threadsAvailable()
+                          && g_turnThread_.start( g_task_, &why );
+    if( !threaded && !g_turn_->start( message, &g_queue_ ) )
     {
-        // Busy: a turn is already running.  Refusing beats interleaving two
-        // conversations, and the text stays in the prompt for the next try.
         g_transcript_->appendStatus( "(busy, try again)" );
         return;
     }

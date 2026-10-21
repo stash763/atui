@@ -72,6 +72,7 @@ public:
         , asked_( false )
         , answered_( false )
         , shown_( false )
+        , stop_( false )
         , allow_( false )
         , allowSession_( false )
     {
@@ -199,6 +200,28 @@ public:
     // cancelled while the dialog was up.  Refusing is the only safe default, and it is
     // also what a turn does with no answer at all -- this exists so the worker is not
     // left waiting on a decision that has become impossible.
+    // "Finish what you are holding and stop."  The only form of cancellation there is
+    // across this boundary: `ChatTurn::cancel()` touches the machine's own state, so
+    // calling it from the UI thread while a worker is stepping it would be two threads
+    // in one object -- the thing the rest of this file exists to prevent.
+    //
+    // So it is cooperative and coarse: the worker notices between passes, which means
+    // stopping can still take one step, and one running command if a tool is mid-flight
+    // (a child process is not interruptible -- `ChatTurn::cancel()` says the same).  What
+    // stopping must not do is wait for the model's answer, and it does not.
+    void requestStop()
+    {
+        std::lock_guard< std::mutex > lock( m_ );
+        stop_ = true;
+        cv_.notify_all();            // a worker parked on a dialog wakes to see this
+    }
+
+    bool stopRequested()
+    {
+        std::lock_guard< std::mutex > lock( m_ );
+        return stop_;
+    }
+
     void declineUnanswered()
     {
         answer( false, false );
@@ -253,6 +276,11 @@ private:
     // decision at a time (`ChatTurn` handles calls one by one, see its `toolIndex_`).
     atui::tools::ApprovalRef question_;
     bool asked_, answered_, shown_;
+
+    // Set by the owner of the screen when the worker should stop early.  Never cleared:
+    // a quit that can be forgotten is worse than one that is early, and the next turn
+    // starts with a queue of its own to be asked about.
+    bool stop_;
     bool allow_, allowSession_;
 
     // Not copied: it holds a mutex, and a copy of a queue that somebody is appending
