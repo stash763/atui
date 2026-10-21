@@ -139,20 +139,57 @@ thread should not have to find these by hand:
   the process's cwd and environment, and two of them at once is a decision to make
   deliberately, not accidentally.
 
-## Why the chat path stays pumped where threads are available
+## Where the work runs: a thread where the platform has one, a timer where it does not
 
-- **One code path, one set of tests.** The 160 self-tests assert the same behaviour on
-  the target and on the host. Two transports plus a thread handoff is exactly what
-  this restructure spent a week deleting, and it is what would have to be tested twice.
-- **A thread buys less than it looks like.** Waiting for a child process has no
-  non-blocking form on these targets, so a tool call blocks whatever runs it either
-  way; the part that needed to stop blocking was the network, and that is now a state
-  machine that yields between bytes on every platform, threads included.
-- **Where a thread genuinely pays** is a *second* request while the first waits:
-  prefetching the model list, or a judging agent that never delays the screen. That
-  fits this design as a second owner of a second `ChatRequest`, and needs no change to
-  either class -- which is the test the design has to pass.
+The requirement, stated plainly: **the UI must not be blocked while an HTTP response
+is waited for, or while a tool call runs.** That rules out "pumped everywhere" as the
+final answer, and it rules it out for a reason a state machine cannot argue away: on
+these platforms waiting for a child process has no non-blocking form at all, so a tool
+call blocks whatever runs it, and the only way the screen keeps moving is if the thing
+being blocked is not the thread that draws.
 
-Where an object cannot be moved to a thread, that should be written at its door, in
-the same sentence as the reason, so the next person is not left to discover it by
-trying.
+So the direction is: **run the work on a thread on the platforms that have them, and
+emulate the thread where they do not** -- DOS by stepping several state machines from a
+timer tick, which is the same cooperative shape the pump already is. Threads were
+measured working on the OS/2 target, heap and `printf` and TCP/IP from a child
+included, so the platforms divide as `Threading: what the platforms have` above; what
+is missing is not a platform's permission but two headers of atui's own.
+
+What that does *not* change is the part worth keeping from the pumped design, and the
+distinction matters, because the thing this restructure spent a week deleting was not
+"a thread" -- it was **two transports and a handoff between them**:
+
+- **One body of logic.** `HttpStream`, `SseStream`, `ChatRequest`, `ChatTurn` stay
+  exactly as they are: `start()`, `step(waitMs)`, `busy()`, `abort()`, a sink. Nobody
+  in them knows or cares who calls `step()`.
+- **One owner per machine**, chosen by whoever holds it -- and now: a thread.
+- **One UI-side path.** The thread's sink calls go into a queue the UI drains on its
+  own event loop, and on a platform with no thread the same queue is filled by the
+  cooperative step on the UI's own timer. The screen code does not have two versions,
+  and neither do the tests.
+- **The sink still never blocks**, and it still does not draw: on a threaded host it
+  is where the handoff happens; the thread that owns the screen is the one that draws.
+
+### The order to do it in
+
+1. `core/thread.{h,cpp}`: one `start`/`join` over pthreads (Linux, FreeBSD),
+   `_beginthreadex` (Windows) and `_beginthread` (OS/2, `-bm`), and a no-thread build
+   for DOS. No C++11 `<thread>`, and no `<atomic>` either: sharing is a mutex and a
+   queue, never a lock-free trick, because the mutex atui has on OS/2 is a kernel
+   semaphore and that is enough.
+2. `core/task_runner.{h,cpp}`: given a machine, run it to completion on a thread --
+   `while (m.busy()) m.step(50);` -- or, where there is no thread, register it with
+   the cooperative scheduler that the app timer steps. Either way the sink is the
+   queue.
+3. Put a `ChatTurn` behind it. The visible win is a `run_command` that takes a minute:
+   today it stops the screen, and after this it does not.
+4. Move the process-wide state out of the way first, in the same change: read once at
+   the boundary and pass values, which `ChatTurn::start()` already does for the
+   endpoint. The list it has to cover is above under "What a threaded host has to
+   guard"; the plan cache is the one that already raced in the old threaded model.
+5. Decide `-bm` as a build configuration for the OS/2 modes, not for one file -- it
+   changes the C runtime every object links against.
+
+`-DATUI_HAVE_THREADS` is the only place the platforms differ, and the state machines
+never test it. That is the test the design has to pass: a machine that can be stepped
+by a thread and by a timer without either one being mentioned in it.
