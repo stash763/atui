@@ -13,6 +13,7 @@
 
 #include <string>
 
+#include "oai_client.h"      // OaiRequest, OaiResponse
 #include "tools/judge.h"
 
 namespace atui {
@@ -39,6 +40,22 @@ void parseEffectPlan( const std::string &reply, atui::tools::EffectPlan &plan );
 
 // The OpenAI-compatible judge: one short, cheap request per call the facts could
 // not settle, with a wall-clock budget of its own (Options > Settings).
+// The judge's question, as a request, without asking it.  Split out from
+// `OaiPermissionJudge::plan()` so an event-loop caller can send it with its own
+// transport: same words, same model choice, same thinking-off, and the answer
+// parsed by `parseJudgeReply`.  Returns false when there is nothing to ask -- no
+// agent model set, or no server.
+bool buildJudgeRequest( const std::string &toolName,
+                        const std::string &argumentsJson,
+                        OaiRequest &out );
+
+// A judge's answer into a plan: the model's reply text, falling back to its
+// reasoning when it thought out loud and ran out of budget before answering.
+void parseJudgeReply( const std::string &toolName,
+                      const std::string &content,
+                      const std::string &reasoning,
+                      atui::tools::EffectPlan &out );
+
 class OaiPermissionJudge : public atui::tools::PermissionJudge {
 public:
     void plan( const std::string &toolName,

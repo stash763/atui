@@ -209,15 +209,14 @@ void parseEffectPlan( const std::string &reply, atui::tools::EffectPlan &plan )
     plan.parsed = ( recognised > 0 );
 }
 
-void OaiPermissionJudge::plan( const std::string &toolName,
-                               const std::string &argumentsJson,
-                               atui::tools::EffectPlan &out )
+bool buildJudgeRequest( const std::string &toolName,
+                        const std::string &argumentsJson,
+                        OaiRequest &out )
 {
-    out = atui::tools::EffectPlan();   // fail closed until an answer says otherwise
-
     const std::string model = permissionAgentModel();
     const atui::net::ProviderSettings provider = atui::net::providerSettings();
-    if( model.empty() || provider.baseUrl.empty() ) return;
+    if( model.empty() || provider.baseUrl.empty() )
+        return false;
 
     std::string ask = "Project directory: " + atui::tools::projectRoot() + "\n" +
                       "Tool: " + toolName + "\n" +
@@ -239,6 +238,38 @@ void OaiPermissionJudge::plan( const std::string &toolName,
     req.disableThinking = true;
     req.messages.push_back( OaiMessage( "system", kSystemPrompt ) );
     req.messages.push_back( OaiMessage( "user", ask ) );
+    return true;
+}
+
+void parseJudgeReply( const std::string &toolName,
+                      const std::string &content,
+                      const std::string &reasoning,
+                      atui::tools::EffectPlan &out )
+{
+    parseEffectPlan( content, out );
+
+    if( !out.parsed && !reasoning.empty() )
+    {
+        // A model that thinks out loud and runs out of budget before answering
+        // still described the call, just in the other field. Reading it is the
+        // same kind of thing the parser was built for - it is a description, and
+        // `decide()` is what acts on it - and the alternative is asking the user
+        // about a command that was described in full one field away.
+        parseEffectPlan( reasoning, out );
+        judgeDebug( toolName, reasoning, "" );
+    }
+}
+
+void OaiPermissionJudge::plan( const std::string &toolName,
+                               const std::string &argumentsJson,
+                               atui::tools::EffectPlan &out )
+{
+    out = atui::tools::EffectPlan();   // fail closed until an answer says otherwise
+
+    const atui::net::ProviderSettings provider = atui::net::providerSettings();
+    OaiRequest req;
+    if( !buildJudgeRequest( toolName, argumentsJson, req ) )
+        return;
 
     OaiResponse resp;
     OaiClient client;
@@ -254,18 +285,7 @@ void OaiPermissionJudge::plan( const std::string &toolName,
     }
 
     judgeDebug( toolName, resp.content, "" );
-    parseEffectPlan( resp.content, out );
-
-    if( !out.parsed && !resp.reasoning.empty() )
-    {
-        // A model that thinks out loud and runs out of budget before answering
-        // still described the call, just in the other field. Reading it is the
-        // same kind of thing the parser was built for - it is a description, and
-        // `decide()` is what acts on it - and the alternative is asking the user
-        // about a command that was described in full one field away.
-        parseEffectPlan( resp.reasoning, out );
-        judgeDebug( toolName, resp.reasoning, "" );
-    }
+    parseJudgeReply( toolName, resp.content, resp.reasoning, out );
 }
 
 OaiPermissionJudge &oaiPermissionJudge()

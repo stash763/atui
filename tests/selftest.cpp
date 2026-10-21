@@ -47,6 +47,9 @@ void init_http_transport_tests();
 // Defined in tests/chat_request_test.cpp (network builds only): the SSE framing
 // and one streaming chat completion, against the scripted responder.
 void init_chat_request_tests();
+// Defined in tests/chat_turn_test.cpp (network builds only): the agent loop as a
+// state machine -- tools, policy, judging, approval -- against the scripted responder.
+void init_chat_turn_tests();
 // Defined in tests/oai_live_test.cpp (network builds only; registers nothing
 // unless ATUI_LIVE_BASE_URL names a server).
 void init_live_tests();
@@ -2867,6 +2870,10 @@ void init()
     // The layer above it: SSE framing and one streaming completion
     // (tests/chat_request_test.cpp).
     init_chat_request_tests();
+
+    // And the loop above that: tools, permissions and approval as states
+    // (tests/chat_turn_test.cpp).
+    init_chat_turn_tests();
 #endif
     register_test( "tool: get_time", &test_time_tool );
     register_test( "tool: registry render", &test_tool_registry );

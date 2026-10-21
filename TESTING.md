@@ -6,7 +6,7 @@ which needs a real terminal (pty) to exercise.
 ## Build & unit tests
 
     cmake --build build          # from repo root
-    ./build/atui --self-test     # unit + integration tests (146/146 network build, 91/91 without)
+    ./build/atui --self-test     # unit + integration tests (155/155 network build, 91/91 without)
     # ...plus 4 live-server tests when ATUI_LIVE_BASE_URL is set (see 'Live endpoint testing')
 
 Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
@@ -572,6 +572,40 @@ holds the socket open, a truncated stream failing, and a refusal reporting the
 server's own words.  Control-checked: putting the "was the body well framed" check
 back in front of the status check fails exactly
 `chat: error status outranks a broken framing` and nothing else.
+
+`src/net/chat_turn.{h,cpp}` is the loop above that — the model, the tools, the
+policy, the judging agent and the user as states (`tsAsking`, `tsJudging`,
+`tsAwaitingApproval`, `tsRunningTool`), which is what replaces the worker thread.  Its
+tests (`tests/chat_turn_test.cpp`, nine of them) drive it against the same scripted
+responder:
+
+| what is checked | why it is the thing to check |
+|---|---|
+| an answer is committed and the next turn is asked about both messages | a history the model never saw reads as the model having forgotten |
+| a tool call is recorded, run, and handed back to the model | the transcript's record of what was done |
+| a declined call does not happen, is reported as declined, and the model is told | the whole reason the approval step exists |
+| an allowed call happens | the other side of the same dialog |
+| "allow this session" is exact to the arguments — the same command runs without asking, a different one asks | a session allowance is a decision about a command, not a door left open |
+| a failed request leaves the history alone | the next message is asked against what the model actually saw |
+| a second message mid-turn is refused | two turns interleaving means one interleaved history |
+| an unreadable judgement from the agent asks, and nothing runs | the failure-shape property, now through the event-loop path too |
+| six tool rounds stop, out loud | a model that only asks for tools should not cost the session |
+
+Three things about those tests are worth keeping in mind when they need changing.
+**The judging agent is asked over the same transport**, so a test that wants the agent
+involved has to script the agent's answer as the second response — and it has to pick
+a command the *facts* cannot settle: `touch /tmp/x` is rung 7 (reaches outside the
+project) and never asks anybody, while `cd '<root>' && touch x` hides the write behind
+a `cd` and does.  `--judge-check` answers that question in advance rather than by
+guessing.  **A tool that needs no approval** (`get_time`) is what the loop-guard test
+uses, so the six rounds cost nothing but requests.  And **the fixtures clear the plan
+cache and the session's allowances** in both directions: a cache shared between tests
+is one test answering another test's question.
+
+Control-checked, each by breaking the code it guards: ignoring the session allowance
+fails the exactness test; running a declined call fails the decline test and the
+exactness test; treating an unreadable judgement as permission fails the judgement
+test.  Restored after each.
 
 `tests/http_test.cpp` runs it against `tests/http_pipe.h`, a scripted responder
 on `127.0.0.1` that writes whatever it is told, in pieces, with a pause between

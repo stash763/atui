@@ -9,6 +9,8 @@
 #ifdef ATUI_HAVE_NETWORK
 
 #include "http_pipe.h"
+#include "sse_script.h"
+
 #include "net/chat_request.h"
 #include "net/sse.h"
 
@@ -20,6 +22,13 @@
 namespace atui_test {
 
 namespace {
+
+// A whole answer, in the shape this file's tests want: one content delta, `stop`,
+// and the end of the stream.
+std::string sseBody( const std::string &answer )
+{
+    return atui_test::sseAnswer( answer );
+}
 
 using atui::net::ChatRequest;
 using atui::net::OaiMessage;
@@ -163,34 +172,6 @@ struct Recorder : public ChatRequest::Sink
     }
 };
 
-std::string deltaJson( const std::string &field, const std::string &value,
-                       const std::string &finish = "" )
-{
-    return "data: {\"choices\":[{\"delta\":{\"" + field + "\":\"" + value + "\"}" +
-           ( finish.empty() ? std::string()
-                            : ",\"finish_reason\":\"" + finish + "\"" ) +
-           "}]}\n\n";
-}
-
-std::string sseBody( const std::string &answer )
-{
-    return deltaJson( "content", answer, "stop" ) + "data: [DONE]\n\n";
-}
-
-// A chunked HTTP response wrapping an SSE body: what llama.cpp actually sends.
-std::string chunked( const std::string &payload )
-{
-    char head[ 32 ];
-    std::snprintf( head, sizeof head, "%lx\r\n", (unsigned long) payload.size() );
-    return std::string( head ) + payload + "\r\n";
-}
-
-std::string sseResponse( const std::string &body, const std::string &status = "200 OK" )
-{
-    return "HTTP/1.1 " + status + "\r\nTransfer-Encoding: chunked\r\n\r\n" +
-           chunked( body ) + "0\r\n\r\n";
-}
-
 bool start( ChatRequest &request, atui_test::ScriptedHttp &server,
             Recorder &sink, const std::string &model = "test-model" )
 {
@@ -265,8 +246,8 @@ int test_chat_keeps_reasoning_apart()
     if( !server.start() )
         return -1;
     const std::string body =
-        deltaJson( "reasoning_content", "thinking hard" ) +
-        deltaJson( "content", "the answer" ) +
+        atui_test::deltaJson( "reasoning_content", "thinking hard" ) +
+        atui_test::deltaJson( "content", "the answer" ) +
         "data: [DONE]\n\n";
     server.enqueueResponse( sseResponse( body ) );
 
