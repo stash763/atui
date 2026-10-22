@@ -3060,19 +3060,14 @@ Read the last two lines together, because that is where the next piece of work i
 worker was stepping the turn within the same second the question was asked — the
 six-second stall that this whole line of work began with is gone, and the "server closed
 the connection" alternation with it.  But between +8s and +325s the UI thread logged
-nothing at all: **317 seconds in tvision's input wait without one timer event**, and
-then the ticks arrive at ~13Hz, which is roughly the 20Hz `setTimer( 50, 50 )` asked
-for.  The timer is fine.  The wait it lives behind is not.
+nothing at all: 317 seconds without one timer event, and then the ticks arrived in a
+burst at ~13Hz, roughly the 20Hz `setTimer( 50, 50 )` asked for.
 
-The reason is in our own fork's OS/2 layer, and it is the same shape as the
-`netstat`/`select` surprises: `hardwvos2.cpp` asks whether input is ready with
-`kbhit()`, and Watcom's `kbhit()` is `KbdPeek()` — the 16-bit physical-keyboard call.
-On the box's own screen that is the right call and it works.  Over telnet, where the
-stream path's stdin is a pipe, it can sit; while it sits, no timer event is dispatched
-and the transcript stops being drawn.  Which is why the app looked alive while I was
-typing at it (every keystroke returns the wait, and everything queued gets drawn then)
-and frozen while I was only watching it.  A redraw of a streaming answer should not
-depend on the user pressing a key.
+What that gap actually was took three more measurements, and the first explanation
+written here was wrong: it blamed `kbhit()`, and `kbhit()` was innocent.  The arc is in
+"The transcript was the freeze" below, kept in full because the wrong theory was
+plausible enough to be written into this document and into a code comment within one
+reading of the log.
 
 Two smaller measurements for anyone repeating this.  The debug log cannot be watched
 live over FTP: HPFS reports a file's last committed size, so a fetch mid-run sees the
@@ -3080,3 +3075,91 @@ first few hundred lines and no more, and no amount of `fflush` changes that — 
 after the process exits.  And `--ask` matters for all of this: over the bridge a typed
 keystroke is itself an event that wakes the UI, so anything measured by typing is not a
 measurement of the thing being tested.
+
+## The transcript was the freeze (measured 2026-10-22)
+
+The symptom was the 317 seconds above: a UI thread that dispatched no timer event while
+a worker thread drove a turn, then caught up in a burst. A timer event is dispatched by
+`TProgram::idle()`, which runs when the event loop comes round with nothing pending, so
+either the loop was not coming round, or it came round and the timer queue had nothing.
+Three measurements, each one killing the theory before it:
+
+**1. Does `kbhit()` block?** The OS/2 input layer asks readiness with `kbhit()`, and
+Watcom's `kbhit()` is `KbdPeek()` — the 16-bit physical-keyboard call — which looked
+guilty on a stdin that is a telnet session rather than a keyboard. `probe_kbhit.cpp`
+(`build.cmd thrprobe probe_kbhit.cpp pkb.exe`, run with nobody typing) says otherwise:
+60 calls at a 10 ms cadence finished in 2 seconds, each one answering "not ready"
+immediately, and a tvision-shaped 50 ms wait took its 5 loops and no measurable time.
+
+    probe_kbhit: isatty(0)=1, 60 calls at a 10ms cadence (expect <1s total)
+      # 0 kbhit -> 0 at +0 s
+      ...
+      #59 kbhit -> 0 at +2 s
+    one tvision-shaped 50ms wait: 5 loops, 0 second(s)
+    RESULT: kbhit returns; the wait can be bounded, so look elsewhere
+
+**2. Does `waitForEvents` return when asked?** Instrumented in the fork behind
+`-DTV_DEBUG_LOOP`, compiled out by default: it prints an aggregate line about once a
+second, and one immediately whenever a wait runs over a second, since a wait that never
+returns is the case worth hearing about. Only that one object needs recompiling and the
+library re-archiving —
+
+    wpp386 @defs.rsp -DTV_DEBUG_LOOP -fo=obj\tv\ tvision\source\tvision\hardwvos2.cpp
+    build.cmd lib - -
+    build.cmd exe - -
+
+—a minute, against ten for the whole library. The answer, from a run with a turn in
+flight:
+
+    [tvwait] 20 calls, 990 ms total, longest 70 ms (asked 20), last asked 20 (timeout)
+    [tvwait] 19 calls, 1000 ms total, longest 70 ms (asked 20), last asked 10 (timeout)
+
+Twenty waits a second, none over 70 ms, no LONG line anywhere in the run. The input wait
+does what it is told — and with it goes the companion guess that reading the screen is
+what unblocked the app.
+
+**3. Then what does the tick handler do?** The tick line is written *first*, so a gap
+between tick lines is a tick handler that took that long. Timed inside the pump, on
+"list every number from 1 to 250":
+
+    [turn 3507] drawslow busy=5050 n=64      # milliseconds, records drawn
+    [turn 3640] drawslow busy=5050 n=64
+
+Five seconds — and the pump's total was the same five, so it was all of it drawing. Three
+records cost 120 ms. `TranscriptView::relayout()` re-wrapped **the whole transcript**,
+every block through `wrapText_` and every answer block through the markdown renderer,
+and then repainted, once per appended record — and a streamed answer arrives in dozens
+of chunks a second. That is quadratic in the length of the conversation, which is why it
+presented as a hang rather than as slowness: the 317 seconds were one tick handler, not
+a sleeping UI thread, and the burst was it finishing.
+
+The fix is two halves, both in the view. `lines_` is maintained incrementally:
+`firstDirty_` is the earliest block whose wrapped rows are stale, `rowsEnd_[i]` says
+where block *i*'s rows end, and a change at the tail re-wraps the tail — while a fold
+toggled in the middle, or a resize, sets `restartLayout_` and rebuilds everything, which
+is correct and rare. And the pump wraps its drain in `beginBatch()`/`endBatch()` so
+sixty records lay out and repaint once instead of sixty times.
+
+Same question, same box, nothing read or typed during the run:
+
+| | before | after |
+|---|---|---|
+| slow-draw lines in the log | 67 | 1 |
+| worst single draw | 5370 ms (64 records) | 100 ms (1 record) |
+| tick gaps over 2 s | 4 | 0 |
+| ticks in the 200 s window | 3104 | 3524 |
+
+The one slow draw left is the first paint of the whole 250-line answer, which is work
+that legitimately happens once. Layout was checked for correctness as well as speed: the
+tool record, both thinking folds opened and closed with Ctrl-T, and a streamed answer all
+render right, and the count of copies of the answer's tail on an 80×25 screen is 1 — the
+first version of the fix said 2, because `rowsEnd_.resize( first - 1 )` kept one entry
+fewer than it should and the row index drifted out of step with the blocks, leaving the
+old copy of the changed block in place while appending the new one.
+
+Two lessons that generalise. A wrong theory that explains the symptom gets written down
+as though it were measured; the check is to ask which measurement would tell this theory
+apart from its neighbours and make that one first — here, two cheap probes and one
+minute-long rebuild. And quadratic work in a UI path is a hang, not a slowness: the
+per-record cost was invisible on a laptop at conversational speeds and indistinguishable
+from a dead network on the box.

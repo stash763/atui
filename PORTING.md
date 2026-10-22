@@ -200,15 +200,20 @@ distinction matters, because the thing this restructure spent a week deleting wa
    it, two children ran 100,000 concurrent `new`/`delete` pairs and finished clean, and
    `__MT__` is defined by neither. The flag would cost a rebuilt tvision -- 177 objects
    that all have to agree about the run time -- for nothing measured.
-6. **The next gap is the wake-up, and it is now measurable** (`TESTING.md`, "A turn
-   runs on a thread on the box"): with the worker stepping, the UI thread sat in
-   tvision's input wait for 317 seconds without one timer event, and drew everything in
-   a burst once the wait returned. On OS/2 the reason is specific and local --
-   `kbhit()` is `KbdPeek()`, the physical keyboard call, and the stream path's stdin is
-   a pipe. Whatever the platform mechanism is (POSIX: a self-pipe into the input wait;
-   OS/2: a reader thread over the stream, since `KbdPeek` cannot see it), the rule is
-   the same: **the UI never sleeps past the point where it has been told**, and
-   `pumpUntilDone()` never runs on the UI thread.
+6. **The wake-up, settled by measurement rather than by design** (`TESTING.md`, "The
+   transcript was the freeze"). The UI thread on the box looked like a thread that was
+   never woken -- 317 seconds without a timer event -- and the fix that would have
+   followed from that guess was a wakeup channel into tvision's input wait. Measured,
+   the input wait returns when asked (20 calls a second, none over 70 ms) and the timer
+   fires at ~20 Hz; what held the UI thread for 317 seconds was the transcript's own
+   layout, quadratic in the conversation because every streamed chunk re-wrapped and
+   repainted the whole document. That is fixed, and a record now reaches the screen
+   within one tick on every platform, so **no wakeup pipe is needed and none was built**
+   -- on OS/2 there is nothing to wake anyway, since readiness is `KbdPeek()` on a
+   console rather than a descriptor a `select()` could watch.
+   What the rule comes down to is the two that the measurements actually support:
+   `pumpUntilDone()` never runs on the UI thread, and a UI path that costs more than a
+   tick is a bug on the slowest target even when it is invisible on the fastest.
 
 `-DATUI_HAVE_THREADS` is the only place the platforms differ, and the state machines
 never test it. That is the test the design has to pass: a machine that can be stepped

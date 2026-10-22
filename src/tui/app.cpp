@@ -12,6 +12,7 @@
 #define Uses_TApplication
 #define Uses_TProgram
 #define Uses_TEvent
+#define Uses_THardwareInfo       // only for getTickCountMs(), in the debug log below
 #define Uses_TRect
 #define Uses_TView
 #define Uses_TGroup
@@ -166,6 +167,14 @@ namespace {
 // exits: HPFS reports a file's last committed size, so a mid-run fetch sees a prefix no
 // matter how often the log is flushed.  The timestamp is whole seconds: enough to see a
 // rate.
+// Milliseconds, from tvision's own clock -- the same one its timer queue reads, so a
+// duration measured here can be set against the tick rate without two clocks having to
+// agree about anything. Debug use only.
+static unsigned long nowMs_()
+{
+    return (unsigned long) THardwareInfo::getTickCountMs();
+}
+
 static void turnDebug_( const char *what, long a, long b )
 {
     static const char *on = std::getenv( "ATUI_TURN_DEBUG" );
@@ -341,9 +350,26 @@ public:
         eventMask |= (evMouseDown | evMouseWheel);
         expandAll_ = false;
         follow_ = true;
+        firstDirty_ = 0;
+        batchDepth_ = 0;
+        layoutDirty_ = false;
+        restartLayout_ = false;
     }
 
     // --- document building (called on the UI thread) ---------------------
+
+    // A tick drains up to 64 records at once. Between these two calls the appends
+    // accumulate and the batch's end lays out and repaints once, rather than sixty
+    // times. It is the other half of the fix for the 5 second tick handler measured on
+    // the box: incremental layout makes a rebuild cheap, batching makes it happen once.
+    void beginBatch() { ++batchDepth_; }
+    void endBatch()
+    {
+        if( batchDepth_ > 0 )
+            --batchDepth_;
+        if( batchDepth_ == 0 && layoutDirty_ )
+            relayout();
+    }
 
     void appendUser( const std::string &text )
     {
@@ -351,7 +377,7 @@ public:
         Block b; b.kind = kUser; b.text = text; b.open = false; b.expanded = false;
         blocks_.push_back( b );
         follow_ = true;
-        relayout();
+        changed_( blocks_.size() - 1 );
     }
 
     void appendStatus( const std::string &text )
@@ -359,7 +385,7 @@ public:
         closeOpen();
         Block b; b.kind = kStatus; b.text = text; b.open = false; b.expanded = false;
         blocks_.push_back( b );
-        relayout();
+        changed_( blocks_.size() - 1 );
     }
 
     // A tool call is being made: start a record of it. Unlike a status line this
@@ -372,7 +398,7 @@ public:
         Block b;
         b.kind = kTool; b.text = preview; b.open = true; b.expanded = false;
         blocks_.push_back( b );
-        relayout();
+        changed_( blocks_.size() - 1 );
     }
 
     // Who let the open tool record through, and why. Kept separate from the
@@ -385,7 +411,7 @@ public:
             !blocks_.back().open )
             return;
         blocks_.back().note = note;
-        relayout();
+        changed_( blocks_.size() - 1 );
     }
 
     // The outcome of the tool call whose record is still open. A result that
@@ -397,7 +423,7 @@ public:
             appendTool( "(tool result)" );
         blocks_.back().out = result;
         closeOpen();
-        relayout();
+        changed_( blocks_.size() - 1 );
     }
 
     void appendThinking( const std::string &chunk )
@@ -411,7 +437,7 @@ public:
             blocks_.push_back( b );
         }
         blocks_.back().text += chunk;
-        relayout();
+        changed_( blocks_.size() - 1 );
     }
 
     void appendAnswer( const std::string &chunk )
@@ -424,23 +450,27 @@ public:
             blocks_.push_back( b );
         }
         blocks_.back().text += chunk;
-        relayout();
+        changed_( blocks_.size() - 1 );
     }
 
     void finishReply()
     {
         closeOpen();
-        relayout();
+        changed_( blocks_.empty() ? 0 : blocks_.size() - 1 );
     }
 
     // Toggle every thinking block (Ctrl-T).
     void toggleThinkingAll()
     {
         expandAll_ = !expandAll_;
+        size_t first = blocks_.size();
         for( size_t i = 0; i < blocks_.size(); ++i )
             if( blocks_[i].kind == kThinking )
+            {
                 blocks_[i].expanded = expandAll_;
-        relayout();
+                if( i < first ) first = i;
+            }
+        changed_( first );
     }
 
     // Reflect a persisted default without flipping it (called once at startup).
@@ -456,6 +486,8 @@ public:
 
     virtual void draw()
     {
+        if( layoutDirty_ )
+            relayout();   // painted while a batch is open: relayout does not repaint one
         int top = delta.y;
         for( int row = 0; row < size.y; ++row )
         {
@@ -515,7 +547,7 @@ public:
                       blocks_[b].kind == kTool ) )
                 {
                     blocks_[b].expanded = !blocks_[b].expanded;
-                    relayout();
+                    changed_( (size_t) b );
                     clearEvent( event );
                     return;
                 }
@@ -552,6 +584,9 @@ public:
     virtual void changeBounds( const TRect &bounds )
     {
         TScroller::changeBounds( bounds );
+        // Every wrap depends on the width, so nothing laid out at the old size can be
+        // kept -- which is exactly what restartLayout_ is for.
+        restartLayout_ = true;
         relayout();
     }
 
@@ -625,14 +660,53 @@ private:
     void closeOpen()
     {
         for( size_t i = 0; i < blocks_.size(); ++i )
+        {
+            if( !blocks_[i].open )
+                continue;
             blocks_[i].open = false;
+            // An open block renders differently from a closed one -- a tool record
+            // says what is still running -- so closing one dirties it.
+            if( i < firstDirty_ ) firstDirty_ = i;
+        }
     }
 
     void relayout()
     {
-        lines_.clear();
-        int width = size.x > 0 ? size.x : 1;
-        for( size_t b = 0; b < blocks_.size(); ++b )
+        layoutDirty_ = false;
+        const int width = size.x > 0 ? size.x : 1;
+
+        // Where the rebuild starts. `lines_` is the wrapped form of `blocks_`, and
+        // almost every change is at the end of it: a streamed chunk extends the last
+        // block, a result completes one, a new record adds one. For those the rows up to
+        // the changed block are kept and only that block's own rows -- and anything after
+        // it -- are re-wrapped. `restartLayout_` says nothing can be kept, which is what
+        // a resize does.
+        //
+        // Before this, every chunk of every answer re-wrapped the whole transcript and
+        // repainted the whole view. On the box, a 250-line streamed answer spent 5.05
+        // seconds in one tick handler, and the keyboard was dead for as long as the model
+        // kept talking (TESTING.md, "The transcript was the freeze").
+        size_t first = firstDirty_;
+        if( restartLayout_ || first == 0 || first > rowsEnd_.size() )
+        {
+            first = 0;
+            lines_.clear();
+            rowsEnd_.clear();
+        }
+        else
+        {
+            // `rowsEnd_[i]` covers blocks 0..i, so keeping blocks 0..first-1 means
+            // keeping `first` entries -- and truncating the rows to where entry
+            // `first-1` ended. Getting this by one keeps the old copy of the changed
+            // block's rows while appending the new one, which is a transcript that
+            // repeats the answer: caught by counting copies of the answer's tail on
+            // screen before and after this change (2 before the fix below, 1 after).
+            lines_.resize( rowsEnd_[ first - 1 ] );
+            rowsEnd_.resize( first );
+        }
+        restartLayout_ = false;
+
+        for( size_t b = first; b < blocks_.size(); ++b )
         {
             if( !lines_.empty() )
                 lines_.push_back( RLine() );   // blank spacer between blocks
@@ -729,7 +803,10 @@ private:
                 if( bl.expanded )
                     emitThinking_( bl, (int) b, width );
             }
+            rowsEnd_.push_back( lines_.size() );
         }
+
+        firstDirty_ = blocks_.size();
 
         int contentH = (int) lines_.size();
         setLimit( 0, contentH );
@@ -737,11 +814,33 @@ private:
         if( maxTop < 0 ) maxTop = 0;
         if( follow_ || delta.y > maxTop )
             scrollTo( 0, maxTop );
-        drawView();
+        // While a batch is open the caller is still appending; it repaints once at the
+        // end of the batch instead of once per record.
+        if( batchDepth_ == 0 )
+            drawView();
+    }
+
+    // The earliest block whose rows in `lines_` are no longer current, and the row each
+    // block ends at -- which is what lets a rebuild start in the middle. Blocks are only
+    // added at the end and never removed or reordered, so a block index stays meaningful
+    // for the life of the transcript.
+    void changed_( size_t fromBlock )
+    {
+        if( fromBlock < firstDirty_ )
+            firstDirty_ = fromBlock;
+        if( batchDepth_ == 0 )
+            relayout();
+        else
+            layoutDirty_ = true;
     }
 
     std::vector<Block> blocks_;
     std::vector<RLine> lines_;
+    std::vector<size_t> rowsEnd_;
+    size_t firstDirty_;
+    int    batchDepth_;
+    bool   layoutDirty_;
+    bool   restartLayout_;
     bool expandAll_;
     bool follow_;
 };
@@ -1572,13 +1671,29 @@ void pumpChat_()
     // Records, oldest first.  The cap is per tick so that a long answer spreads over
     // ticks instead of holding the screen still for the whole of it; the next tick
     // takes the rest, and nothing is lost because the queue keeps them.
+    //
+    // Timed, and the whole pump below timed too, because a measured gap between tick
+    // lines means a tick handler that took that long -- the tick line is written first --
+    // and on the box a long streamed answer produced 5 second gaps with the input wait
+    // ruled out (20 waits a second, none over 70ms: TESTING.md).  Which half of the pump
+    // spends the time is the difference between a terminal that cannot drain and a queue
+    // that is not being read.  Only a slow pass is worth a line: at 20 ticks a second an
+    // unconditional duration log buries the events it was added to put in context.
+    const unsigned long tPump0 = nowMs_();
     atui::net::TurnQueue::Record rec;
+    long drawn = 0;
+    g_transcript_->beginBatch();
     for( int i = 0; i < 64; ++i )
     {
         if( !g_queue_.pop( rec ) )
             break;
         showRecord_( rec );
+        ++drawn;
     }
+    g_transcript_->endBatch();
+    const long drawMs = (long) ( nowMs_() - tPump0 );
+    if( drawMs >= 100 )
+        turnDebug_( "drawslow", drawMs, drawn );
 
     // The question, if the turn is waiting on one.  Modal -- and the answer goes into
     // the queue rather than into the turn, because the thread stepping that turn owns
@@ -1592,6 +1707,10 @@ void pumpChat_()
     }
 
     g_inStep_ = false;
+
+    const long pumpMs = (long) ( nowMs_() - tPump0 );
+    if( pumpMs >= 100 )
+        turnDebug_( "pumpslow", pumpMs, drawMs );   // b: what the draw itself took
 #endif // ATUI_HAVE_NETWORK
 }
 
