@@ -298,6 +298,50 @@ int test_chat_escapes_control_characters_in_the_body()
     return 0;
 }
 
+// A request that is decided and a connection that is alive are not the same event, and
+// only a machine that reaches the first step late can tell the difference.  Measured on
+// the OS/2 box: the interface asked the model a question and first stepped the answer six
+// seconds later -- it was drawing its first screen down a telnet link -- and the server
+// hung up on a connection that had been opened and then left saying nothing.  "request
+// failed: the server closed the connection without answering" was all the user got, for a
+// fault that was ours and six seconds old.
+//
+// So the connect belongs to the first step, and this asserts both halves: that opening is
+// deferred (`connections()` says so; the request bytes look the same either way, which is
+// why the counter exists), and that stepping late then works like stepping at once.  Who
+// steps this machine, and when, is not supposed to be part of it -- on the wire as well
+// as in the code.
+int test_chat_a_stepper_that_arrives_late_still_gets_the_answer()
+{
+    atui_test::ScriptedHttp server;
+    if( !server.start() )
+        return -1;
+    server.enqueueResponse( sseResponse( sseBody( "hello" ) ) );
+
+    Recorder sink;
+    ChatRequest request;
+    if( !start( request, server, sink, "m" ) )
+        return -2;
+
+    // Wait first, then look.  Without the pause a connection made here would usually not
+    // have reached the accept loop yet, and zero would mean "not noticed" rather than
+    // "none was opened" -- which is a test that passes by accident and would have passed
+    // against the code it was written to catch.  Two hundred ms on a loopback is a
+    // connect and an accept many times over, and still short beside the six seconds the
+    // interface actually took; it is the late stepper as well as the quiet wire.
+    std::this_thread::sleep_for( std::chrono::milliseconds( 200 ) );
+    if( server.connections() != 0 )
+        return -3;
+
+    if( !Recorder::drive( request ) )
+        return -4;
+    if( server.connections() != 1 )
+        return -5;
+    if( !sink.ok || sink.text != "hello" )
+        return -6;
+    return 0;
+}
+
 int test_chat_keeps_reasoning_apart()
 {
     atui_test::ScriptedHttp server;
@@ -561,6 +605,8 @@ void init_chat_request_tests()
                    &test_chat_done_ends_it_without_the_close );
     register_test( "chat: a peer that hangs up mid-send is an error",
                    &test_chat_a_peer_that_hangs_up_mid_send_is_an_error );
+    register_test( "chat: a stepper that arrives late still gets the answer",
+                   &test_chat_a_stepper_that_arrives_late_still_gets_the_answer );
     register_test( "chat: control characters are escaped in the body",
                    &test_chat_escapes_control_characters_in_the_body );
     register_test( "chat: bad url is refused before connecting",

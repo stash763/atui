@@ -31,7 +31,10 @@ void dumpRequest( const std::string &req )
     if ( !on || !*on || *on == '0' )
         return;
 
-    const std::size_t kShow = 1500;      // headers plus the beginning of the body
+    // Generous, because the usual way to read this is `atui.exe 2>req.dbg` and then
+    // look at the file: a chat request is several kilobytes once the tool list is in
+    // it, and a dump that cuts off before the part that broke is not much of a dump.
+    const std::size_t kShow = 16000;
     std::string shown;
     std::size_t from = 0;
     while ( from < req.size() )
@@ -171,6 +174,7 @@ long parseChunkSize( const std::string &line )
 HttpStream::HttpStream()
     : state_( stIdle )
     , sock_( kNoSocket )
+    , targetPort_( 0 )
     , sink_( 0 )
     , sent_( 0 )
     , status_( 0 )
@@ -298,14 +302,13 @@ bool HttpStream::start( const std::string &method,
     request_ += body;
     dumpRequest( request_ );
 
-    std::string why;
-    sock_ = sockConnectStart( host, port, &why );
-    if ( sock_ == kNoSocket )
-    {
-        if ( reason )
-            *reason = why;
-        return false;
-    }
+    // Not connected here: the socket belongs to the first `step()`, which is the first
+    // moment somebody is actually there to drive it.  Everything above this line can
+    // fail and does, synchronously and usefully -- a server that is not set, a url that
+    // is not a url -- and those are worth an answer before the caller commits.  Whether
+    // the port is open is not one of those: it arrives as a record either way.
+    targetHost_ = host;
+    targetPort_ = port;
 
     connectSeconds_ = connectSeconds > 0 ? connectSeconds : 30;
     idleSeconds_ = idleSeconds > 0 ? idleSeconds : 0;
@@ -325,6 +328,18 @@ void HttpStream::step( int waitMs )
     if ( state_ == stConnect )
     {
         std::string why;
+        if ( sock_ == kNoSocket )
+        {
+            // The connect `start()` left for here.  From this point to the first byte of
+            // the request there is at most one step's wait, whatever the caller's cadence
+            // was between the two, which is the point: see targetHost_.
+            sock_ = sockConnectStart( targetHost_, targetPort_, &why );
+            if ( sock_ == kNoSocket )
+            {
+                finish( false, why );
+                return;
+            }
+        }
         const SockWhy ready = sockWait( sock_, false, waitMs, &why );
         if ( ready == srError )
         {

@@ -143,6 +143,19 @@ private:
 
     State state_;
     SockHandle sock_;
+    // Where to connect, and the fact that it has not happened yet.
+    //
+    // The socket is opened by the first `step()`, not by `start()`.  A connection is a
+    // thing this machine has to keep alive by reading and writing it, and `start()` is
+    // the moment the request is decided, not the moment it is carried: between the two
+    // a caller may be drawing a screen, resolving a provider, or on DOS waiting for the
+    // next tick of a timer.  Measured on the OS/2 box, the interface asked a question and
+    // first stepped the answer six seconds later -- long enough for the server to give up
+    // on a connection that had been opened and then left saying nothing.  A turn that is
+    // never stepped now costs nothing at all, and one that is stepped late behaves like
+    // one that was stepped at once, which is the promise the state machine makes.
+    std::string targetHost_;
+    int targetPort_;
     Sink *sink_;
 
     std::string request_;      // the whole request, for retry-free partial writes

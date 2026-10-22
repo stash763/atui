@@ -63,7 +63,7 @@ public:
     };
 
     ScriptedHttp()
-        : listenFd_( -1 ), port_( 0 ), stop_( false )
+        : listenFd_( -1 ), port_( 0 ), stop_( false ), connections_( 0 )
     {
     }
 
@@ -142,6 +142,18 @@ public:
         enqueue( s );
     }
 
+    // How many times a client has connected.
+    //
+    // A request that is *decided* and a connection that is *alive* are different things,
+    // and the difference only shows on a machine that gets to the first step late -- the
+    // OS/2 interface measured six seconds, long enough for a server to hang up on a
+    // connection nobody was reading.  The request bytes look the same either way, so this
+    // counter is how a test can tell whether opening was deferred.
+    int connections() const
+    {
+        return connections_.load();
+    }
+
     std::string lastRequest() const
     {
         std::lock_guard<std::mutex> g( mutex_ );
@@ -163,6 +175,7 @@ private:
             const int client = ::accept( listenFd_, 0, 0 );
             if( client < 0 )
                 return;
+            ++connections_;
             handle( client );
             ::close( client );
         }
@@ -270,6 +283,7 @@ private:
     std::thread thread_;
     std::vector<Script> scripts_;
     std::string lastRequest_;
+    std::atomic<int> connections_;
     mutable std::mutex mutex_;
 };
 
