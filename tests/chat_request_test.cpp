@@ -483,6 +483,34 @@ int test_chat_truncated_stream_is_an_error()
     return 0;
 }
 
+// A stream that is framed perfectly and simply stops mid-sentence.  HTTP calls that a
+// whole body; this protocol calls it half an answer, and the difference is what the user
+// reads back -- and what the next request quotes.  Found against a server that sent two
+// deltas and hung up: the transcript showed "halfansw" with nothing after it, and there
+// was no way to tell that from an answer of two words.
+int test_chat_a_stream_that_never_says_done_is_not_an_answer()
+{
+    atui_test::ScriptedHttp server;
+    if( !server.start() )
+        return -1;
+    // Chunked, with the terminating zero-length chunk: the framing is not the problem.
+    server.enqueueResponse( sseResponse( deltaJson( "content", "half an answer" ) ) );
+
+    Recorder sink;
+    ChatRequest request;
+    if( !start( request, server, sink ) )
+        return -2;
+    if( !Recorder::drive( request, 3000 ) )
+        return -3;
+    if( sink.text != "half an answer" )
+        return -4;                       // what did arrive is still shown
+    if( sink.finishes != 1 || sink.ok )
+        return -5;
+    if( sink.error.find( "stopped before it was finished" ) == std::string::npos )
+        return -6;
+    return 0;
+}
+
 // `[DONE]` means the answer is over: a server that keeps the socket open after it
 // must not hold up the transcript.
 int test_chat_done_ends_it_without_the_close()
@@ -653,6 +681,8 @@ void init_chat_request_tests()
                    &test_chat_error_status_outranks_a_broken_framing );
     register_test( "chat: truncated stream is an error",
                    &test_chat_truncated_stream_is_an_error );
+    register_test( "chat: a stream that never says done is not an answer",
+                   &test_chat_a_stream_that_never_says_done_is_not_an_answer );
     register_test( "chat: [DONE] ends it without the close",
                    &test_chat_done_ends_it_without_the_close );
     register_test( "chat: a peer that hangs up mid-send is an error",

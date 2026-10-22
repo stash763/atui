@@ -126,6 +126,21 @@ void ChatRequest::onFinish( bool ok, const std::string &reason )
         return;
     }
 
+    // The connection ended, and at the HTTP layer that is a complete body: no length
+    // promised more, no chunk left unterminated.  It is still not a complete *answer*,
+    // because in this protocol the answer says so itself with `[DONE]`.  Treating the
+    // close as enough was measured against a server that answered a few characters and
+    // hung up: the transcript showed the fragment with nothing after it, which is
+    // indistinguishable from an answer that ended there -- and the transcript is what
+    // the next request is built from, so the model is then told it said something it
+    // never finished saying.  So the close is reported for what it is -- an answer that
+    // stopped early -- with the fragment still on screen, because it was said.
+    if( !sse_.done() )
+    {
+        finish( false, "the answer stopped before it was finished" );
+        return;
+    }
+
     finish( true, std::string() );
 }
 

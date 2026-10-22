@@ -3717,3 +3717,83 @@ that only frees at exit, which is what a flat curve over ten turns is evidence f
 what does not is the number, which says atui sits at about 3.9MB on macOS and that is not a
 figure to quote for eComStation.
 
+## A server that stops mid-answer was an answer (measured 2026-10-22)
+
+A localhost server that answers a question with two SSE deltas and then closes the
+connection, with no `[DONE]`:
+
+```python
+c.recv(65536)
+c.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n")
+c.sendall(b'data: {"choices":[{"delta":{"content":"half"}}]}\n\n')
+c.sendall(b'data: {"choices":[{"delta":{"content":"answ"}}]}\n\n')
+time.sleep(0.2)          # then close, which is the whole test
+```
+
+Before, on screen:
+
+    > tell me something
+
+    halfansw
+
+After:
+
+    > tell me something
+
+    halfansw
+
+    request failed: the answer stopped before it was finished
+
+The first one is the bug, and it is a quiet one: a seven-character fragment with nothing
+after it is *indistinguishable from an answer of seven characters*. It is not a crash, not
+a hang, not a red line -- it is a transcript that reads as complete. And the transcript is
+the conversation: what is on screen is what the next request quotes back as the model's own
+preceding statement, so a truncation becomes a thing the model said.
+
+Two layers were each right and the program was wrong. At the HTTP layer a body that ends
+with the connection, having promised no length and left no chunk open, is a complete body
+-- `srClosed` in `http.cpp` finishes it as success, correctly, and that is what the code
+above was trusting. At this protocol's layer the answer says when it is over, with
+`data: [DONE]`, and `SseStream` already kept that fact in `done()`. `ChatRequest::onFinish`
+asked the wrong layer: it had `ok` from HTTP and never looked at `sse_.done()`.
+
+```cpp
+    if( !sse_.done() )
+    {
+        finish( false, "the answer stopped before it was finished" );
+        return;
+    }
+```
+
+The fragment is not thrown away -- it arrived, it is on the transcript, and the failure
+goes under it. That is the same shape as every other failure this path reports.
+
+Three things about the measurement, because each one cost a run:
+
+* **The prompt does not get stuck.** The close is noticed within a few ticks -- the busy
+  window was measured by counting tick lines in the turn debug log, at 50ms resolution,
+  and the prompt was ready again well under a second. A truncated answer was the only
+  lasting damage, which is a strange thing to have to be glad about.
+* **`env ATUI_BASE_URL` does not override a configured provider.** The first two attempts
+  pointed at a fake server and talked to the real one on the lab endpoint, because the
+  provider in the config file wins. Point at a file instead:
+  `ATUI_CONFIG=/tmp/atui_flaky.ini`, with `[provider:flaky]` and its `base_url`.
+* **Reading the screen beats reading the pty** for questions like "what does the user
+  see". `tui-test run --session flaky --env ATUI_CONFIG=... -- ./build/atui`, then
+  `tui-test write`, `tui-test key press Enter`, `tui-test text`. Raw pty bytes have the
+  transcript split across attribute runs, which turns "halfansw" into something no
+  substring test finds.
+
+`chat: a stream that never says done is not an answer` holds it in the suite: a chunked
+body, correctly terminated with the zero-length chunk, that never says `[DONE]`; the text
+that arrived must still be delivered, the finish must be a failure, and the reason must
+name it. Checked by disabling the check, which reports `rc=-5` -- the sink being told
+everything was fine.
+
+Also visible in the same session, and worth recording as a property rather than a
+surprise: with the server not listening at all, the transcript says
+`request failed: Connection refused`, and with a server that answers and hangs up
+*before* the head, `the server closed the connection without answering`. Neither is left
+as a blank screen.
+
+Counts after this: 164 with network and threads, 109 without network, 164 without threads.
