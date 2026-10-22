@@ -3478,6 +3478,16 @@ record says so in words the model will see -- "stopped before finishing: atui wa
 exit, and everything the command started was killed with it" -- which is the difference
 between an interrupted tool and one that silently produced nothing.
 
+The other long wait in a turn -- a server that has not answered -- turned out to be bounded
+already, and it is worth writing down that it was measured rather than feared. Two fake
+servers on localhost: one that accepts the connection and never sends a byte, one that
+sends headers and a single SSE token and then stalls for three minutes. Both stopped in
+0.29s and 0.28s. The reason is in the shape of the worker: it loops
+`while( busy && !stopRequested ) driveOnce( 50 )`, and the socket waits inside are the
+same 50 ms the loop asks for, never one wait for the whole request. A wait that is one
+long `select()` would have turned this into the same 40-second story with a different
+culprit.
+
 The fourth signals test, `signal: a stop request reaches a running command`, holds it:
 `sleep 5` on a thread, SIGTERM, join required back inside 3s *and* the interrupted
 message. Its failure mode is a number -- with the loop's check disabled it reports
