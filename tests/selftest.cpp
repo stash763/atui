@@ -61,6 +61,9 @@ void init_live_tests();
 void init_url_tests();
 // Defined in tests/markdown_test.cpp (always built).
 void init_markdown_tests();
+// Defined in tests/ascii_fold_test.cpp (always built): the fold that stands between the
+// transcript and a terminal whose character set is an 8-bit codepage.
+void init_ascii_fold_tests();
 // Defined in tests/turn_queue_test.cpp (network builds only): the hand-off between a
 // turn on a thread and the screen that draws it -- ordering, and the approval round trip.
 void init_turn_queue_tests();
@@ -2974,6 +2977,7 @@ void init()
     // Markdown + syntax highlighting (network-independent).
     init_url_tests();
     init_markdown_tests();
+    init_ascii_fold_tests();
 
 #ifdef ATUI_HAVE_NETWORK
     // Real-server tests, last: they retarget the process-wide provider, and

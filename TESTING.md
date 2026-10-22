@@ -3163,3 +3163,121 @@ apart from its neighbours and make that one first — here, two cheap probes and
 minute-long rebuild. And quadratic work in a UI path is a hang, not a slowness: the
 per-record cost was invisible on a laptop at conversational speeds and indistinguishable
 from a dead network on the box.
+
+## Transcript-visible text is ASCII (measured 2026-10-22)
+
+The requirement said it and nothing enforced it, until a declined tool call came back
+saying:
+
+    The command sudo ls was not executed ΓÇö it was declined
+
+`ΓÇö` is what an em dash does when its three UTF-8 bytes arrive at a CP850 console. The
+model writes them constantly -- quotation marks, apostrophes, dashes, ellipses, bullets
+-- and the transcript had been passing every one through.
+
+`src/tui/ascii_fold.{h,cpp}` does the folding: recognised characters become their ASCII
+spelling (`-` for a dash, `'` and `"` for the curly pair, `...`, `*` for a bullet, `->`
+for an arrow, `ok` for a tick), accented letters keep their letters (`José`, `Muller`),
+graphics get a shape (`| - +` for box drawing, `#` for a progress bar, `.` for a braille
+spinner), and what cannot be spelled is `?`. Three rules worth stating because they are
+the ones that could have gone the other way:
+
+*   **Bytes that are not valid UTF-8 are passed through untouched.** Keystrokes from an
+    8-bit keyboard arrive as those bytes -- CP850 `é` is 0x8A, a continuation byte -- and
+    turning the user's own typing into `?` would be worse than the problem.
+*   **Overlong encodings are rejected**, so `\xC0\xAF` is not accepted as `/`. A fold
+    that decodes more leniently than it must becomes a way of hiding a character from a
+    check that looks at the character.
+*   **Control characters are dropped, not replaced.** Tab and newline survive, because
+    they are how a tool's output is laid out. Everything else below 0x20, plus DEL, has
+    no printable meaning and some of it moves the cursor out from under the view that
+    owns the screen.
+
+The fold lives in the view's layout step rather than in the append methods, which is the
+one design point here with a reason attached: an answer arrives in chunks and a
+multi-byte character can be split between two of them, so folding on the way in would
+turn a perfectly good em dash into two `?`. Blocks keep the text as it arrived; the fold
+happens when they are laid out, by which time the chunks have been joined. The approval
+dialog, the status line and the model list fold their own text, because all three show
+strings that came off the network.
+
+`foldTerminalText()` is true on OS/2 and DOS, and **`ATUI_FOLD=1` or `0` overrides it**
+-- folding is a property of the terminal in front of the program rather than of the
+machine it was compiled for, and being able to turn it on in front of a developer is how
+it got tested anywhere else.
+
+    # on the host, with the fold forced on: an em dash in and out of a real turn
+    ATUI_FOLD=1 ./build/atui --ask "Repeat exactly these characters and nothing else: The sky--blue--is vast."
+    > Repeat exactly these characters and nothing else: The sky-blue-is vast.
+    The sky-blue-is vast.
+
+    # on the box, where it is on by default -- asked for an em dash in the sentence
+    The sea is vast - full of hidden life.
+
+Ten tests, `fold: ascii passes through` through `fold: the environment can insist`, and
+the strings are written with hex escapes for the reason above: a UTF-8 source file would
+let the test's own bytes disagree with the terminal it runs on, and a `\u` escape is a
+universal character name the compiler resolves before this code is ever reached. Writing
+them found one trap of its own -- `"\xE2\x86\x92b"` is not a byte followed by `b` but
+one escape of 0x92B, out of range -- so hex escapes have to be split before a following
+hex digit, `"...x92" "b"`.
+
+## The approval dialog on the box, answered from the other side of the world
+
+The security path, run where it matters, with a worker thread parked on the answer:
+
+    atui.exe --ask "Use run_command to run exactly this command: sudo ls"
+
+    > Use run_command to run exactly this command: sudo ls
+    [+] t╔═[■]══════════════════ Confirm - run_command ═══════════════════════╗
+        ║  The model wants to run the "run_command" tool.                     ║
+        ║  Run command:                                                       ║
+        ║    $ sudo ls                                                        ║
+        ║  Why it is asking: too indirect to check automatically - it uses     ║
+        ║  sudo                                                               ║
+        ║  Allow this to run?                                                 ║
+        ║  (Alt-Y yes, Alt-R yes and remember this exact command, Enter no)   ║
+
+Enter declined it, and the transcript and the model both say so:
+
+    $ sudo ls
+      # too indirect to check automatically - it uses sudo (you declined)
+      The user declined to run 'run_command'.
+    [+] thinking (127 chars)
+    The command sudo ls was not executed - it was declined. ...
+
+The presence check -- "it uses sudo" -- caught it before the judge was asked anything,
+which is how that tier is meant to work, and the model behaved correctly afterwards: it
+did not retry, it offered the unprivileged alternative.
+
+One thing to know about reading a tick log across a dialog. The log goes quiet while a
+modal dialog is open -- 65 seconds with no `tick` line in this run -- and that is not a
+freeze. `cmTimerExpired` is a broadcast, and during a modal loop tvision delivers
+broadcasts to the dialog's views rather than to the application behind it, so the main
+view's timer handler does not run. The event loop is running (the dialog is what is
+driving it, and Enter arrived); it is one particular handler that is silent. Records the
+worker queues while a dialog is open wait for it to close, which is right -- there is
+one turn at a time, and the worker is parked on the answer anyway.
+
+## Two ways to build the wrong program and hear nothing about it
+
+Found on the same afternoon, both silent, both costing a measurement run.
+
+**`build.cmd one` compiled without the network define.** Its objects go in `obj\at`,
+beside the ones they get linked with, and it did not pass `-DATUI_HAVE_NETWORK`. Two
+`one` compiles and an `exe` link produced a program that starts, draws its screen
+correctly, accepts a question and answers:
+
+    This build of atui has no network transport, so there is nobody to ask.
+
+The `one` mode now passes the same defines `atui` passes, with the story in its comment.
+The related trap: `atui.exe --self-test` is not a capability probe on this target -- the
+OS/2 build does not compile the suite in ("atui: this build has no self-test suite") --
+so what a build can do has to be asked by behaviour, not by a test count.
+
+**A command typed while the app is running goes to the app.** Over the bridge there is
+no difference between a shell and a program holding the console, so the "rebuild and
+relink" I submitted after starting `atui.exe` went into its chat prompt, and the `[one]
+OK` lines I read as their output were the previous commands' leftovers. Two builds were
+not what I thought they were. The check is the prompt on the screen -- `[<P4>-D:\atui]`
+-- before any submit that expects a shell.

@@ -43,6 +43,8 @@ set(ATUI_SOURCES
     "${ATUI_SRC_DIR}/tui/thinking.cpp"
     # The wrapping rule shared by the transcript, the approval box and thinking.
     "${ATUI_SRC_DIR}/tui/wrap.cpp"
+    # Transcript-visible text is ASCII; this is where it becomes so.
+    "${ATUI_SRC_DIR}/tui/ascii_fold.cpp"
     "${ATUI_SRC_DIR}/core/string.cpp"
     # Text and map helpers for the standard library Watcom 1.9 ships: no
     # std::string::compare, no to_string, no std::ostringstream, no std::getline,
@@ -135,6 +137,7 @@ if(ATUI_BUILD_TESTS)
         "${ATUI_TESTS_DIR}/turn_queue_test.cpp"
         "${ATUI_TESTS_DIR}/oai_live_test.cpp"
         "${ATUI_TESTS_DIR}/markdown_test.cpp"
+        "${ATUI_TESTS_DIR}/ascii_fold_test.cpp"
     )
 endif()
 

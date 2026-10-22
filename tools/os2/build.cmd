@@ -467,9 +467,18 @@ rem command processor is willing to read at all.  Control jumps to labels rather
 rem than using a parenthesised block, because `if errorlevel` reads whatever the
 rem last command left behind and a block invites questions about which command
 rem that was.
+rem
+rem Compiled as `atui` compiles everything else, network define included, because
+rem the object lands in obj\at beside the ones it gets linked with.  Without it a
+rem `one` + `exe` produced a program that started, drew its screen and answered
+rem every question with "this build of atui has no network transport" -- it links,
+rem it runs, and only the answer is wrong, which is the worst shape a build
+rem mistake can take.  The no-network configuration belongs to `atunon`, which
+rem rebuilds every file rather than one.
+set NET=-DATUI_HAVE_NETWORK
 echo [one] %2
 echo ---- %2 ---- >> %LOG%
-%WPP% -fo=obj\at\ %2 >> %LOG% 2>&1
+%WPP% %NET% -fo=obj\at\ %2 >> %LOG% 2>&1
 if errorlevel 1 goto one_failed
 echo [one] OK
 goto summary

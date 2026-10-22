@@ -56,6 +56,7 @@
 
 #include "app.h"
 #include "core/ai.h"
+#include "tui/ascii_fold.h"
 #include "core/journal.h"
 #include "core/strutil.h"      // Fmt and toString: Watcom has no std::ostringstream
 #include "tui/theme.h"
@@ -278,10 +279,15 @@ int showApprovalDialog_( const atui::tools::ApprovalRef &req )
         if( i != 0 ) text += "\n";
         text += rows[i];
     }
+    // Folded here, once, rather than at each of the pieces above: everything the dialog
+    // shows comes off the network -- the tool's own words, the judge's reason, the
+    // command the model wrote -- and this is the last point before it reaches a terminal
+    // whose character set may be an 8-bit codepage.
+    text = atui::tui::foldForTerminal( text );
 
     const short w = (short) ( textW + 6 );
     const short h = (short) ( (short) rows.size() + 5 );
-    const std::string title = "Confirm - " + req->tool;
+    const std::string title = atui::tui::foldForTerminal( "Confirm - " + req->tool );
     TDialog *d = new TDialog( TRect( 0, 0, w, h ), title.c_str() );
     d->options |= ofCentered;
     d->insert( new TStaticText( TRect( 3, 1, (short) ( w - 2 ), (short) ( h - 4 ) ),
@@ -650,9 +656,9 @@ private:
     // The body of an expanded thinking block. Everything about how reasoning
     // looks - plain prose, code blocks like an answer's, three-column indent -
     // lives in tui/thinking.cpp, where it can be tested without a terminal.
-    void emitThinking_( const Block &bl, int b, int width )
+    void emitThinking_( const std::string &text, int b, int width )
     {
-        std::vector<Line> body = atui::tui::renderThinkingBody( bl.text, width );
+        std::vector<Line> body = atui::tui::renderThinkingBody( text, width );
         for( size_t i = 0; i < body.size(); ++i )
             lines_.push_back( RLine( body[i].spans, b, true, body[i].bg ) );
     }
@@ -711,16 +717,25 @@ private:
             if( !lines_.empty() )
                 lines_.push_back( RLine() );   // blank spacer between blocks
             const Block &bl = blocks_[b];
+            // What the terminal is shown, which for an 8-bit console is not what
+            // arrived. Folded here, at the last point before the screen, rather than on
+            // the way in, because a streamed answer arrives in chunks and a multi-byte
+            // character can be split between two of them -- by now the block holds the
+            // whole text. Blocks keep what was sent so a copy, an export or a fold
+            // toggle sees the original.
+            const std::string text = atui::tui::foldForTerminal( bl.text );
+            const std::string out  = atui::tui::foldForTerminal( bl.out );
+            const std::string note = atui::tui::foldForTerminal( bl.note );
             if( bl.kind == kUser )
             {
                 std::vector<std::string> w =
-                    wrapText_( "> " + bl.text, width );
+                    wrapText_( "> " + text, width );
                 for( size_t i = 0; i < w.size(); ++i )
                     lines_.push_back( plainLine( w[i], rUser, (int) b, false ) );
             }
             else if( bl.kind == kStatus )
             {
-                std::vector<std::string> w = wrapText_( bl.text, width );
+                std::vector<std::string> w = wrapText_( text, width );
                 for( size_t i = 0; i < w.size(); ++i )
                     lines_.push_back( plainLine( w[i], rStatus, (int) b, false ) );
             }
@@ -733,22 +748,22 @@ private:
                 // record, so it is never cut - then as much of the result as
                 // fits, then the hint that expands it.
                 int  outW = ( width > 12 ) ? width - 2 : width;
-                std::vector<std::string> rl = wrapText_( bl.out, outW );
+                std::vector<std::string> rl = wrapText_( out, outW );
                 trimBlankRows_( rl );
 
                 std::string cmd = "$ ";
-                for( size_t i = 0; i < bl.text.size(); ++i )
+                for( size_t i = 0; i < text.size(); ++i )
                 {
-                    if( bl.text[i] == '\n' ) cmd += "\n  ";
-                    else                     cmd += bl.text[i];
+                    if( text[i] == '\n' ) cmd += "\n  ";
+                    else                   cmd += text[i];
                 }
                 std::vector<std::string> cl = wrapText_( cmd, width );
 
                 // The permission note, on its own row, marked like a comment so
                 // it cannot be mistaken for the command or for its output.
                 std::vector<std::string> nl;
-                if( !bl.note.empty() )
-                    nl = wrapText_( "  # " + bl.note, width );
+                if( !note.empty() )
+                    nl = wrapText_( "  # " + note, width );
 
                 bool   foldable = cl.size() + nl.size() + rl.size()
                                   > (size_t) kToolRows;
@@ -785,7 +800,7 @@ private:
             {
                 // Render as markdown: headings, emphasis, lists, tables and
                 // syntax-highlighted code blocks become styled spans.
-                std::vector<Line> md = atui::tui::render( bl.text, width );
+                std::vector<Line> md = atui::tui::render( text, width );
                 for( size_t i = 0; i < md.size(); ++i )
                     lines_.push_back(
                         RLine( md[i].spans, (int) b, false, md[i].bg ) );
@@ -801,7 +816,7 @@ private:
                 for( size_t i = 0; i < hw.size(); ++i )
                     lines_.push_back( plainLine( hw[i], rHead, (int) b, true ) );
                 if( bl.expanded )
-                    emitThinking_( bl, (int) b, width );
+                    emitThinking_( text, (int) b, width );
             }
             rowsEnd_.push_back( lines_.size() );
         }
@@ -1934,8 +1949,11 @@ void updateProviderStatus_()
 {
     if( g_statusProvider_ == 0 ) return;
     const atui::net::ProviderSettings &p = atui::net::providerSettings();
-    const std::string text = " " + menuText_( p.name, 16 ) + " | " +
-                             menuText_( p.model, 24 ) + " ";
+    // The model id usually comes from the server's /models, and a server that writes
+    // UTF-8 should not be able to put a broken glyph in the one place that is always
+    // on screen.
+    const std::string text = atui::tui::foldForTerminal(
+        " " + menuText_( p.name, 16 ) + " | " + menuText_( p.model, 24 ) + " " );
     delete[] g_statusProvider_->text;
     g_statusProvider_->text = newStr( text.c_str() );
     if( TProgram::statusLine ) TProgram::statusLine->drawView();
@@ -2214,7 +2232,7 @@ void ProvidersDialog::loadModelList()
         for( std::vector<std::string>::const_iterator it = p.models.begin();
              it != p.models.end(); ++it )
         {
-            coll->insert( dupStr_( *it ) );
+            coll->insert( dupStr_( atui::tui::foldForTerminal( *it ) ) );
         }
     }
     modelList->newList( coll );
@@ -2229,7 +2247,8 @@ void ProvidersDialog::setStatus( const std::string &text )
         destroy( status );
         status = 0;
     }
-    status = new TStaticText( statusRect, text.c_str() );
+    const std::string shown = atui::tui::foldForTerminal( text );
+    status = new TStaticText( statusRect, shown.c_str() );
     insert( status );
     status->drawView();
 }
