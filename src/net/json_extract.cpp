@@ -179,7 +179,8 @@ std::string jsonEscape( const std::string &s )
     out.reserve( s.size() + 8 );
     for( std::size_t i = 0; i < s.size(); ++i )
     {
-        switch( s[i] )
+        const unsigned char c = static_cast< unsigned char >( s[i] );
+        switch( c )
         {
             case '"':  out += "\\\"";   break;
             case '\\': out += "\\\\";   break;
@@ -188,7 +189,29 @@ std::string jsonEscape( const std::string &s )
             case '\t': out += "\\t";    break;
             case '\b': out += "\\b";    break;
             case '\f': out += "\\f";    break;
-            default:   out += s[i];    break;
+            default:
+                // RFC 8259: every code point below U+0020 has to be escaped, and the
+                // six above are the only ones with a short form.  Letting the rest
+                // through raw is not a matter of style -- measured against a real
+                // llama.cpp endpoint, a body carrying 0x1B is answered
+                //     500 {"message":"[json.exception.parse_error.101] ...
+                //          invalid string: control character U+001B (ESC) must be escaped"}
+                // and every layer above reports a server error, which is true and
+                // useless: what happened is that the encoder failed.  Two ordinary
+                // paths put control characters in here -- a terminal that hands the
+                // input line its escape sequences as text (measured on the OS/2
+                // target, where Home arrives as characters) and a tool's output,
+                // which is routinely full of colour escapes.
+                if( c < 0x20 )
+                {
+                    static const char kHex[] = "0123456789abcdef";
+                    out += "\\u00";
+                    out += kHex[ ( c >> 4 ) & 0x0f ];
+                    out += kHex[ c & 0x0f ];
+                }
+                else
+                    out += s[i];
+                break;
         }
     }
     return out;

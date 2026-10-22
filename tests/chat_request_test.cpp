@@ -15,7 +15,10 @@
 #include "net/sse.h"
 
 #include <chrono>
+#include <thread>
 #include <cstdio>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string>
 #include <vector>
 
@@ -173,14 +176,15 @@ struct Recorder : public ChatRequest::Sink
 };
 
 bool start( ChatRequest &request, atui_test::ScriptedHttp &server,
-            Recorder &sink, const std::string &model = "test-model" )
+            Recorder &sink, const std::string &model = "test-model",
+            const std::string &content = "hi" )
 {
     OaiRequest req;
     req.model = model;
     req.stream = true;
     OaiMessage m;
     m.role = "user";
-    m.content = "hi";
+    m.content = content;
     req.messages.push_back( m );
 
     const std::string base = "http://127.0.0.1:" + std::to_string( server.port() ) + "/v1";
@@ -237,6 +241,60 @@ int test_chat_request_on_the_wire()
         return -7;
     if( sent.find( "\"content\":\"hi\"" ) == std::string::npos )
         return -8;
+    return 0;
+}
+
+// Control characters in the body have to arrive escaped, and this asserts on the
+// bytes the peer received rather than on a string built beside them.
+//
+// Not hypothetical, twice over: the OS/2 target's terminal hands the input line its
+// escape sequences as text (a Home key arrives as characters), and a tool's output is
+// routinely full of colour escapes.  Raw, the body is not JSON, and a real llama.cpp
+// endpoint answers
+//     500 {"message":"[json.exception.parse_error.101] ... invalid string:
+//          control character U+001B (ESC) must be escaped"}
+// which every layer above faithfully reports as a server problem -- true, and
+// useless, because the encoder is what failed.  RFC 8259 wants every code point below
+// U+0020 escaped; the six with short forms keep them.
+int test_chat_escapes_control_characters_in_the_body()
+{
+    atui_test::ScriptedHttp server;
+    if( !server.start() )
+        return -1;
+    server.enqueueResponse( sseResponse( sseBody( "x" ) ) );
+
+    Recorder sink;
+    ChatRequest request;
+    const std::string awkward = std::string( "a" ) + char( 0x1B ) + char( 0x01 )
+                              + char( 0x09 ) + char( 0x07 ) + char( 0x0C )
+                              + char( 0x0A ) + char( 0x22 ) + "b";
+    if( !start( request, server, sink, "m", awkward ) )
+        return -2;
+    if( !Recorder::drive( request ) )
+        return -3;
+
+    const std::string sent = server.lastRequest();
+    // What the body must contain. The seven characters JSON gives short forms to keep
+    // them -- this is not a hex-everything encoder -- and everything else below 0x20
+    // arrives as \u00XX. Spelled out rather than inline because a literal of that
+    // shape in C++ is a universal character name, and the compiler rightly refuses
+    // a control character in the source when the point of the test is that byte in a
+    // request body.
+    const std::string want = "a\\u001b\\u0001\\t\\u0007\\f\\n\\\"b";
+    if( sent.find( want ) == std::string::npos )
+        return -4;
+
+    // The stronger statement, and the one the server actually checks: after the
+    // headers the body is one line, so no control byte at all may appear in it.
+    const std::size_t bodyAt = sent.find( "\r\n\r\n" );
+    if( bodyAt == std::string::npos )
+        return -5;
+    for( std::size_t i = bodyAt + 4; i < sent.size(); ++i )
+    {
+        const unsigned char c = static_cast< unsigned char >( sent[ i ] );
+        if( c < 0x20 )
+            return -6;
+    }
     return 0;
 }
 
@@ -503,6 +561,8 @@ void init_chat_request_tests()
                    &test_chat_done_ends_it_without_the_close );
     register_test( "chat: a peer that hangs up mid-send is an error",
                    &test_chat_a_peer_that_hangs_up_mid_send_is_an_error );
+    register_test( "chat: control characters are escaped in the body",
+                   &test_chat_escapes_control_characters_in_the_body );
     register_test( "chat: bad url is refused before connecting",
                    &test_chat_bad_url_is_refused_before_connecting );
 }
