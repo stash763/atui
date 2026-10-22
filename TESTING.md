@@ -17,7 +17,13 @@ permission model is in `PERMISSIONS.md`.
 Env vars read by the app (see `src/net/oai_chat_model.cpp`, `src/tui/theme.cpp`,
 `src/settings/settings.cpp`, `src/core/journal.cpp`):
 
-- `ATUI_MODEL`, `ATUI_BASE_URL`, `ATUI_API_KEY`, `ATUI_TEMPERATURE`
+- `ATUI_MODEL`, `ATUI_BASE_URL`, `ATUI_API_KEY`, `ATUI_TEMPERATURE` -- **only when
+  there is no config file.** A config file that exists replaces the store, so on a machine
+  where atui has been configured, pointing a test at a different server with these variables
+  does nothing and the program talks to the configured provider (measured: two attempts
+  against a fake localhost server reached the lab endpoint instead). For a test that needs
+  its own server, write a scratch ini and set `ATUI_CONFIG=/tmp/atui_flaky.ini`. Which
+  server is in use is on the status line as `provider | model`, which is how to tell.
 - `ATUI_THINKING_RESEND` — `1`/`y`/`t` to replay an assistant turn's thinking
   to the model on later turns (default off; also a Providers-dialog checkbox).
 - `ATUI_THEME` — `dark` (default) or `classic`; also switchable at runtime via
