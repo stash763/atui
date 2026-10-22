@@ -3438,7 +3438,7 @@ action, not a polite exit. OS/2 and Windows compile the handlers out -- OS/2 has
 SIGTERM or SIGHUP to install -- so nothing changes on the target, and the module is two
 no-op functions and a `false` there.
 
-Three tests, 162 total: that SIGTERM asks and the process is still there to notice (the
+Three tests then, 162 total: that SIGTERM asks and the process is still there to notice (the
 only way that can be asserted is by reaching the next line), that SIGHUP and SIGINT do
 the same, and that the default action really has been replaced.
 
@@ -3447,6 +3447,42 @@ to fall into again: a probe that waits for the exit *without reading the pty* re
 `NEEDS KILL` for all three cases above, including the two that stop in under half a
 second. Every stop-waiting loop in every harness for this program has to have an
 `os.read()` in it.
+
+### The stop request had to reach past the tick
+
+Those measurements all had a tool *not* running. With a command actually executing, the
+answer was wrong: SIGTERM into a turn whose `run_command` child was `sleep 40` produced an
+exit **40.2 seconds** later -- the command's runtime, not an interruption. The flag was
+set. Nothing between the handler and the loop waiting on the child's pipe was looking at
+it.
+
+Two changes, and the second was the one that mattered:
+
+* The child-wait loop checks the flag between `poll()`s and takes the exit the timeout
+  already takes -- group kill plus the non-blocking drain, which is what stops a command
+  that left the group on its own from holding atui open. That `poll` is also capped at
+  200ms instead of sleeping to the deadline, since the deadline is the wrong thing to wait
+  for once the user has changed their mind. Five wakeups a second while a tool runs is
+  what "prompt" costs here.
+* The tick **stopped clearing the flag once it acted on it**. It did clear it, on the way
+  to `endModal( cmQuit )`, on the theory that a request served is a request consumed. But
+  leaving is not instantaneous: the `TApp` destructor joins the worker, and the worker was
+  the thing that needed to read the flag. So the tick forgave the request, and the child
+  loop polled a flag that had already been forgiven -- 40.2s again, with the check in
+  place. Found with prints at both ends rather than guessed, and the guess would have been
+  wrong: the tick's line showed the request seen in the same second it arrived, while the
+  loop printed `stop=0` for 199 iterations.
+
+Result: 0.59s to leave with a `sleep 40` running and the command's group gone. The tool's
+record says so in words the model will see -- "stopped before finishing: atui was asked to
+exit, and everything the command started was killed with it" -- which is the difference
+between an interrupted tool and one that silently produced nothing.
+
+The fourth signals test, `signal: a stop request reaches a running command`, holds it:
+`sleep 5` on a thread, SIGTERM, join required back inside 3s *and* the interrupted
+message. Its failure mode is a number -- with the loop's check disabled it reports
+-14708, four and a half seconds of a command that should have been killed. That is the
+only reason to believe the test can fail; it was checked by breaking the code once.
 
 ## An unopened stream is an exit-time crash on Watcom (measured 2026-10-22)
 

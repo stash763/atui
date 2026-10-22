@@ -112,6 +112,11 @@ Checked rather than assumed:
   instruction the signal landed on, and this program has measured the alternative: a
   handler that writes to a terminal nobody is reading never returns. The event loop
   notices the flag on its next tick and quits through the same path Alt-X uses.
+  The flag is *not* cleared when the tick acts on it. Leaving is a process rather than an
+  instruction -- the teardown joins a worker that may be inside a tool's child process or
+  a socket read -- and those waits read the same flag to know they should stop early. A
+  tick that forgave the request on its way out left a `sleep 40` to run to completion,
+  with the check in place and nothing to see.
 
 ## What a threaded host has to guard
 

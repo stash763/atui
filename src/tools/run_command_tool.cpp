@@ -29,6 +29,8 @@
 #define ATUI_PCLOSE( p )         _pclose( ( p ) )
 #endif
 
+#include "core/signals.h"
+
 #if ATUI_SPAWN_WITH_DEADLINE
 #include <cerrno>
 #include <csignal>
@@ -76,13 +78,14 @@ struct ChildResult
     bool truncated;
     bool started;
     bool timedOut;
+    bool stopRequested;   // atui was asked to leave while this was running
     bool signalled;
     int signal;
     int code;
 
     ChildResult()
         : truncated( false ), started( true ), timedOut( false ),
-          signalled( false ), signal( 0 ), code( -1 ) {}
+          stopRequested( false ), signalled( false ), signal( 0 ), code( -1 ) {}
 };
 
 void appendCapped( ChildResult &r, const char *data, std::size_t n )
@@ -168,17 +171,36 @@ ChildResult runCaptured( const std::string &shellCmd,
     const std::chrono::steady_clock::time_point deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds( timeoutSeconds );
 
+    // How long a stop request is allowed to go unnoticed while a command runs.  The
+    // wait below would rather sleep until the deadline, which is a reasonable way to
+    // wait for a command and an unreasonable one to wait for the user to change their
+    // mind: measured with `sleep 40` running, SIGTERM took 40.2s to produce an exit --
+    // the command's own runtime -- because nothing in the path between the signal and
+    // this loop could interrupt it.  A fifth of a second is 5 wakeups a second while a
+    // tool runs, which is what "prompt" costs here.
+    const int kStopCheckMs = 200;
+
     char buf[ 4096 ];
     for( ;; )
     {
-        int waitMs = -1;    // -1: wait as long as it takes
+        // Asked to leave: the group goes with us.  This is the same kill the timeout
+        // below uses, for the same reason -- the command may have started things of
+        // its own, and leaving them running because atui is on its way out is not a
+        // decision anybody agreed to.
+        if( atui::core::shutdownRequested() )
+        {
+            r.stopRequested = true;
+            break;      // the kill and the drain below are the timeout path's job
+        }
+
+        int waitMs = kStopCheckMs;
         if( timeoutSeconds > 0 )
         {
             const long long remaining =
                 std::chrono::duration_cast< std::chrono::milliseconds >(
                     deadline - std::chrono::steady_clock::now() ).count();
             if( remaining <= 0 ) { r.timedOut = true; break; }
-            waitMs = (int) remaining;
+            if( remaining < waitMs ) waitMs = (int) remaining;
         }
 
         struct pollfd pfd;
@@ -191,7 +213,7 @@ ChildResult runCaptured( const std::string &shellCmd,
             if( errno == EINTR ) continue;
             break;                    // the pipe is broken; take what waitpid says
         }
-        if( ready == 0 ) { r.timedOut = true; break; }
+        if( ready == 0 ) continue;    // our own check coming due, not the deadline
 
         const ssize_t n = ::read( fds[0], buf, sizeof buf );
         if( n > 0 ) appendCapped( r, buf, (std::size_t) n );
@@ -199,10 +221,13 @@ ChildResult runCaptured( const std::string &shellCmd,
         else if( errno != EINTR ) break;
     }
 
-    if( r.timedOut )
+    if( r.timedOut || r.stopRequested )
     {
         // Negative pid: the whole group, so whatever the command started goes with
-        // it. That is the entire reason this path exists.
+        // it. That is the entire reason this path exists, and it is why a stop request
+        // ends up here instead of doing its own kill: the drain underneath is what
+        // stops a command that left the group on its own from holding atui open while
+        // it is trying to leave.
         ::kill( -pid, SIGKILL );
 
         // One last look at what the command printed before it was stopped, since
@@ -370,7 +395,12 @@ std::string RunCommandTool::execute( const std::string &argumentsJson )
         return "run_command: failed to start '" + oneLineClip( command, 80 ) + "'";
 
     core::Fmt r;
-    if( result.timedOut )
+    if( result.stopRequested )
+    {
+        r << "stopped before finishing: atui was asked to exit, and everything the "
+             "command started was killed with it";
+    }
+    else if( result.timedOut )
     {
         r << "timed out after " << timeoutSeconds
           << "s and was killed, along with everything it started";

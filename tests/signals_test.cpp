@@ -10,13 +10,20 @@
 // line.
 #include "harness.h"
 #include "core/signals.h"
+#include "core/thread.h"
+#include "tools/run_command_tool.h"
 
 #if !defined( __OS2__ ) && !defined( __DOS__ ) && !defined( _WIN32 )
 #  define ATUI_TEST_SIGNALS 1
 #endif
 
 #if defined( ATUI_TEST_SIGNALS )
+// `waited` is measured on the wall clock: std::clock() counts CPU, and while a child
+// process sleeps the program uses none, so it would report a fast exit either way.
+#  include <chrono>
 #  include <csignal>
+#  include <string>
+#  include <unistd.h>          // usleep, for the one wait below
 #endif
 
 namespace atui_test {
@@ -105,6 +112,71 @@ int test_the_default_action_is_replaced()
     return wasOurs ? 0 : -1;
 }
 
+// The flag exists so that code a long way from the handler can read it.  The distance
+// that matters is a tool's child process: waiting for one is the longest thing atui does
+// on the user's behalf, and a stop request has to reach the loop holding the pipe open
+// or "asked to leave" quietly becomes "waited for the command to finish".  Measured with
+// `sleep 40` running: 40.2s to exit before the loop checked, 0.59s after, and 40.2s
+// again after the tick went back to clearing the flag it had just acted on -- which is
+// how a design mistake in one place turns into a wait in another.
+class LongCommand : public atui::core::Task
+{
+public:
+    virtual void run()
+    {
+        result_ = atui::tools::g_runCommandTool.execute( "{\"command\":\"sleep 5\"}" );
+    }
+
+    const std::string &result() const { return result_; }
+
+private:
+    std::string result_;
+};
+
+int test_a_stop_request_reaches_a_running_command()
+{
+    if( !atui::core::threadsAvailable() )
+        return 0;                           // with no second stack the command is on
+                                            // the thread that has to be left, and
+                                            // there is nothing across from it
+
+    SavedHandlers saved;
+    atui::core::installShutdownHandlers();
+    atui::core::clearShutdownRequest();
+
+    LongCommand work;
+    atui::core::Thread thread;
+    std::string reason;
+    if( !thread.start( work, &reason ) )
+        return -1;
+
+    // Letting the command start is a sleep rather than a wait on a predicate, because
+    // the tool owns the only evidence that it has. It is also not load-bearing: with
+    // the flag already set the loop stops on its first pass, and with it set later it
+    // stops on the next, so either timing has to produce what is checked below.
+    usleep( 300 * 1000 );
+
+    const std::chrono::steady_clock::time_point asked =
+        std::chrono::steady_clock::now();
+    if( std::raise( SIGTERM ) != 0 )
+    {
+        thread.join();                      // never leave a thread running behind a
+        return -2;                          // test that could not start the check
+    }
+    thread.join();
+    const long waitedMs = (long) std::chrono::duration_cast< std::chrono::milliseconds >(
+        std::chrono::steady_clock::now() - asked ).count();
+
+    atui::core::clearShutdownRequest();     // here the test is the consumer, which is
+                                            // exactly what the app's tick is not
+    if( waitedMs > 3000 )
+        return (int) ( -10000 - waitedMs ); // it sat out the command: the number is
+                                            // the `sleep 5` saying it was not stopped
+    if( work.result().find( "stopped before finishing" ) == std::string::npos )
+        return -3;
+    return 0;
+}
+
 #endif // ATUI_TEST_SIGNALS
 
 } // anonymous namespace
@@ -116,6 +188,8 @@ void init_signals_tests()
     register_test( "signal: a stop request asks and survives", &test_sigterm_asks_and_survives );
     register_test( "signal: hangup and interrupt ask too", &test_hangup_and_interrupt_ask_too );
     register_test( "signal: the default action is replaced", &test_the_default_action_is_replaced );
+    register_test( "signal: a stop request reaches a running command",
+                   &test_a_stop_request_reaches_a_running_command );
 #endif
 }
 

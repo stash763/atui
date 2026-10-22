@@ -1306,7 +1306,14 @@ public:
             // status 0 and the tool never run).
             if( atui::core::shutdownRequested() )
             {
-                atui::core::clearShutdownRequest();
+                // Not cleared.  Nothing here is done with the request yet: leaving
+                // runs the TApp destructor, which waits for a worker that may be
+                // sitting in a tool's child process or a socket read, and those
+                // checks are what makes the difference between leaving and waiting
+                // for the command.  Clearing it here once cost 40s of waiting for a
+                // `sleep 40` whose kill should have been immediate (measured: the
+                // tick saw the flag, cleared it, and the worker polled a flag that
+                // had already been forgiven).
                 turnDebug_( "stop", 0, 0 );
                 clearEvent( event );
                 endModal( cmQuit );
