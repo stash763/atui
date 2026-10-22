@@ -1,12 +1,26 @@
 // OS/2 threads with Open Watcom: `_beginthread` for the thread, and an event
 // semaphore for the join, because the C runtime gives you no way to wait.
 //
-// Requires `-bm` (and therefore `ATUI_HAVE_OS2_THREADS`, which the header turns into
-// `ATUI_HAVE_THREADS`): `_beginthread` against the single-threaded runtime creates
-// something that runs but shares the heap's bookkeeping with the thread that made it.
-// Measured on the target with `tools/os2/probe_thread.cpp` (TESTING.md has the
-// numbers): with `-bm`, two threads and the parent all run, `malloc`/`free` in a child
-// works, `printf` works, and a socket opened in a child talks to the network.
+// Needs `ATUI_HAVE_OS2_THREADS` (which the header turns into `ATUI_HAVE_THREADS`), and
+// **not** `-bm`, which is what an earlier version of this comment claimed. Measured on
+// the target with `tools/os2/probe_thread.cpp`, both ways, same workload: two threads
+// and the parent running, 100,000 `new`/`delete` pairs across the two children with a
+// flat footprint, `printf` from both, clean finish -- identical results with and without
+// `-bm`, and `__MT__` is defined by neither.
+//
+// The Open Watcom source says why the flag has nothing to do with it: the OS/2 32-bit
+// C library is built once, with the threading machinery in it, and the heap, file and
+// stdio guards are *function pointers* that `__InitMultipleThread()` replaces with the
+// semaphore-backed versions. `__CBeginThread` calls that initialiser on the first
+// `_beginthread`, so the process becomes multithreaded when the first thread starts
+// rather than when it was linked. What `-bm` would cost is a rebuilt tvision -- 177
+// objects, and every one of them has to agree about the runtime -- for nothing measured.
+//
+// What has to be true for this to stay correct: the first `_beginthread` is the UI
+// thread's, from `Thread::start()`, before any other thread exists. Two threads racing
+// to be first is the one window the lazy upgrade does not cover, and atui has no second
+// caller of `start()` -- tools, the queue and the transport all run on stacks this call
+// made.
 //
 // Why not `DosCreateThread`, which also measured working: it is the kernel's call and
 // knows nothing about the C runtime's per-thread start-up, so the child gets a heap

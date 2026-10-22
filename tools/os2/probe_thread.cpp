@@ -1,158 +1,158 @@
-// Can atui have threads on OS/2, and what do they cost?  Run on the target:
-//
-//     build.cmd thread probe_thread.cpp pthead.exe
-//
-// The question is not academic: the UI must not block while an HTTP response
-// arrives or while a tool runs a command, and on this platform waiting for a child
-// process has no non-blocking form at all, so "does not block" means "is not this
-// thread".  The state machines (HttpStream, ChatRequest, ChatTurn) do not care who
-// steps them -- see PORTING.md -- so what has to be known is whether a thread exists
-// to step them on, and whether the things they touch work from one:
-//
-//   1. Does the Watcom C runtime start threads at all, and only with -mt?  (_beginthread)
-//   2. Are they really concurrent, or is this a single-threaded runtime pretending?
-//      (two children counting while the parent counts)
-//   3. Does the C heap survive a free() from a child?  (a single-threaded heap shared
-//      by two threads corrupts, and it corrupts later, somewhere else)
-//   4. Does printf work from a child?  (stdio has its own lock or it has none)
-//   5. THE ONE THAT DECIDES HTTP: does the TCP/IP stack let a secondary thread open a
-//      socket and talk?  (sock_init + socket + connect + close from a child)
-//   6. Is the kernel's own DosCreateThread usable as an alternative to the C runtime's?
-//
-// Written in C with printf, not in atui's C++ with the TUI: a probe that needs the
-// library under test cannot tell the difference between its own bug and the
-// platform's.
-#include <os2.h>
+/* Does this target's C run time have threads? Answer before depending on it.
+ *
+ * PORTING.md says OS/2 threading goes through `_beginthread` rather than
+ * `DosCreateThread`, because the run time has per-thread state -- a thread-data block,
+ * the signal/handler chain, the FPU state -- that only the C runtime's own starter
+ * installs.  Open Watcom's source agrees (`clib/mthread/c/thredo32.c`: DosCreateThread,
+ * then `__alloca( __ThreadDataSize )`, `__OS2AddThread`, `_fpreset`, `__sig_init_rtn`),
+ * but that file carries a 2017 copyright and the compiler on the box is 1.9.  Whether
+ * 1.9 shipped it for `-bt=os2v2`, and whether `-bm` is what selects it, is a question
+ * about the libraries on this machine, so this asks the machine.
+ *
+ * Four things, in the order they would hurt:
+ *
+ *   1. `_beginthread` compiles and links -- header and library, not just header.
+ *   2. Two threads run at the same time (if they were cooperative fakes, or the call
+ *      silently failed, the counts say so).
+ *   3. The heap survives two threads allocating -- what atui's worker actually does, a
+ *      turn being made of std::string and std::vector.  The run time protects the heap
+ *      through function pointers (`_AccessFHeap` et al.) that `__InitMultipleThread()`
+ *      installs when the first `_beginthread` happens, so the question is whether that
+ *      machinery is in the library this compiler shipped and does what the source says.
+ *   4. What the compiler was told: `__MT__`, which the run time uses to compile its own
+ *      locking in, versus ATUI_HAVE_OS2_THREADS, which the build uses to decide to call
+ *      `_beginthread` at all.  Measured here: `-bm` does not define `__MT__`.
+ *
+ * Two things it deliberately does not do, both learned the hard way.  It does not
+ * accumulate: an earlier version kept every chunk in a vector, so 20,000 chunks per
+ * thread was really a test of how much memory the box has, and it died in ways that
+ * looked exactly like heap corruption.  Blocks are allocated, used, and released, so
+ * the footprint is flat and the only thing under test is the allocator under
+ * contention.  And it does not go quietly: a line every so often says how far it got,
+ * because a probe that dies without a last word leaves the reader with two theories and
+ * no way to choose.
+ *
+ * Build and run:
+ *
+ *   build.cmd thrprobe probe_thread.cpp pthr.exe           plain runtime
+ *   build.cmd thrmt   probe_thread.cpp pthr.exe            with -bm
+ *   pthr.exe                          paced, quick
+ *   pthr.exe 20000 hammer             contend hard
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <process.h>
+#include <time.h>
+#include <process.h>            // _beginthread: the question this probe asks
 
-#include <types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+#include <string>
+#include <vector>
 
-// tcpip32.lib exports these and no Watcom header declares them (measured, and
-// written up in TESTING.md), so say so here rather than through src/net/sock.h --
-// the probe has to compile even if that header does not.
-// Declared by <sys/socket.h>: socket(), connect(), and the rest.  Repeating them
-// here is E617 "cannot overload extern C functions" (measured), so only the three
-// that no Watcom header declares at all are spelled out.
-extern "C" {
-    int  sock_init( void );
-    int  sock_errno( void );
-    // No soclose(): declared in atui's own sock_os2.cpp it links, and from this
-    // probe, compiled -bm, the reference comes out `soclose_` and tcpip32.lib has
-    // no such export.  Leaving the probe's socket open at exit costs one descriptor
-    // in a program that then exits, and the question under test is whether the
-    // stack answers a socket() and connect() from a secondary thread at all.
-}
+extern "C" unsigned long _System DosSleep( unsigned long msec );
 
-volatile unsigned long g_parent = 0;      // parent's count while children run
-volatile unsigned long g_childA = 0;
-volatile unsigned long g_childB = 0;
-int                    g_sockA = -1;      // socket opened by child A
-int                    g_sockA_errno = 0;
-int                    g_connectA = -1;
-int                    g_heapA = -1;      // bytes of a buffer freed by child A
+#ifndef ATUI_STACK
+#define ATUI_STACK 65536
+#endif
 
-void childA( void * /*arg*/ )
+namespace {
+
+volatile long g_counter = 0;
+volatile long g_running = 0;
+volatile long g_reached = 0;        // how far the last thread got: the last word
+long g_chunksPerThread = 400;
+bool g_hammer = false;              // no sleeps: make the allocator contend
+
+/* One worker: allocate and release, keep a few strings alive across a sleep so a block
+ * is demonstrably this thread's, and say how far it got every so often. */
+void worker( void *arg )
 {
-    // 3. heap: allocate, fill, free, and report the byte count so the parent can
-    // tell "did nothing" from "did it and survived".
-    char *buf = (char *) malloc( 4096 );
-    if( buf ) {
-        memset( buf, 'a', 4096 );
-        g_heapA = (int) buf[ 17 ];
-        free( buf );
+    const int id = (int) (long) arg;
+    std::string held, twice;
+    std::vector< std::string > keep;
+    keep.resize( 8 );
+
+    for( long i = 0; i < g_chunksPerThread; ++i )
+    {
+        char buf[64];
+        std::sprintf( buf, "thread %d chunk %ld padding padding padding", id, i );
+        held = buf;                       // allocate
+        twice = held + held;              // allocate again, bigger
+        keep[ (size_t) ( i & 7 ) ] = twice;   // replace: free and allocate
+        ++g_counter;
+        g_reached = i;
+        if( !g_hammer )
+        {
+            if( ( i & 7 ) == 0 )
+                DosSleep( 1 );
+        }
+        else if( ( i & 2047 ) == 0 )
+        {
+            printf( "  thread %d at %ld\n", id, i );
+            fflush( stdout );
+        }
     }
-
-    // 5. sockets from a secondary thread.  Connect to a port on this machine that
-    // will refuse (7, echo, is refused rather than filtered on a LAN box); the
-    // point is not success but whether the stack answers the call at all: -1 with
-    // 10061 (refused) means the stack works from here, -1 with something else is a
-    // story about threads and stacks, and a hang would be the worst answer.
-    g_sockA_errno = sock_init();
-    g_sockA = socket( AF_INET, SOCK_STREAM, 0 );
-    if( g_sockA >= 0 ) {
-        struct sockaddr_in a;
-        memset( &a, 0, sizeof a );
-        a.sin_family = AF_INET;
-        a.sin_port = htons( 7 );
-        a.sin_addr.s_addr = inet_addr( "127.0.0.1" );
-        g_connectA = connect( g_sockA, (struct sockaddr *) &a, sizeof a );
-        if( g_connectA != 0 )
-            g_connectA = -sock_errno();
-    }
-
-    // 2. concurrency: count while the parent counts.  If the children only run when
-    // the parent sleeps, g_parent stays tiny; with real threads all three grow.
-    for( unsigned long i = 0; i < 200000UL; ++i )
-        g_childA = i;
-}
-
-void childB( void * /*arg*/ )
-{
-    for( unsigned long i = 0; i < 200000UL; ++i )
-        g_childB = i;
-    printf( "[probe] child B printf works\n" );
+    printf( "  thread %d done at %ld (kept %d bytes)\n", id, g_reached,
+            (int) keep.size() + (int) twice.size() );
     fflush( stdout );
+    --g_running;
 }
 
-// 6. the kernel's own thread API, which needs no C runtime cooperation and so is
-// the fallback if the multithreaded runtime turns out not to be usable with the
-// libraries atui links.  Signature from the toolkit's h/bsedos.h:
-//     typedef VOID APIENTRY FNTHREAD( ULONG );   typedef FNTHREAD *PFNTHREAD;
-//     APIRET APIENTRY DosCreateThread( PTID, PFNTHREAD, ULONG param,
-//                                      ULONG flag, ULONG cbStack );
-// so the child takes a ULONG and returns VOID -- not a pointer argument, and not
-// 42.  flag is not a priority: 0 is the default class.
-VOID APIENTRY kernelChild( ULONG /*param*/ )
-{
-    printf( "[probe] DosCreateThread child runs\n" );
-    fflush( stdout );
-}
+} // anonymous namespace
 
 int main( int argc, char **argv )
 {
-    // Whether the compiler thinks this is a multithreaded build at all: the C
-    // library headers test __MT__ to decide whether _beginthread and friends exist,
-    // so print what the macro says rather than guessing at the switch.  -bm is what
-    // sets it (-mt is not an option this compiler has: E068).
-#ifdef __MT__
-    printf( "[probe] __MT__ is defined as %d\n", __MT__ );
+    printf( "probe_thread: __MT__=%s ATUI_HAVE_OS2_THREADS=%s __WATCOMC__=%ld\n",
+#if defined( __MT__ )
+            "defined",
 #else
-    // Measured with -bm: this line is what prints.  `__MT__` is NOT set by -bm, and
-    // yet _beginthread creates threads that run (see the counts at the end), so the
-    // macro is not the thing to test for "can this build thread" -- -bm plus a run
-    // is.  (Watcom's own headers test it, which is where the W869 warning came from
-    // before -bm was on the command line.)
-    printf( "[probe] __MT__ is NOT defined (and -bm still gives working threads)\n" );
+            "not defined",
 #endif
-    printf( "[probe] %s\n", argc > 0 ? argv[ 0 ] : "probe_thread" );
+#if defined( ATUI_HAVE_OS2_THREADS )
+            "defined",
+#else
+            "not defined",
+#endif
+            (long) __WATCOMC__ );
 
-    unsigned long tidA = 0, tidB = 0;
-    int hA = _beginthread( childA, 0, 64 * 1024, NULL );
-    int hB = _beginthread( childB, 0, 64 * 1024, NULL );
-    printf( "[probe] _beginthread -> %d and %d (0 means it refused)\n", hA, hB );
+    if( argc > 1 )
+        g_chunksPerThread = atol( argv[ 1 ] );
+    if( argc > 2 && strcmp( argv[ 2 ], "hammer" ) == 0 )
+        g_hammer = true;
+    printf( "  chunks/thread=%ld %s\n", g_chunksPerThread, g_hammer ? "hammer" : "paced" );
+    fflush( stdout );
 
-    ULONG ktid = 0;
-    APIRET krc = DosCreateThread( (PTID) &ktid, (PFNTHREAD) kernelChild, 0UL, 0UL,
-                                  32UL * 1024UL );
-    printf( "[probe] DosCreateThread rc=%lu tid=%lu\n", (unsigned long) krc,
-            (unsigned long) ktid );
+    int started = 0;
+    g_running = 2;
+    for( int i = 0; i < 2; ++i )
+    {
+        const int rc = _beginthread( worker, NULL, ATUI_STACK, (void *) (long) i );
+        printf( "  _beginthread -> %d%s\n", rc, rc == -1 ? " (FAILED)" : "" );
+        if( rc != -1 )
+            ++started;
+    }
+    fflush( stdout );
 
-    for( unsigned long i = 0; i < 200UL; ++i ) {
-        DosSleep( 10 );
-        ++g_parent;
+    if( started == 0 )
+    {
+        printf( "RESULT: no threads available\n" );
+        return 1;
     }
 
-    printf( "[probe] parent=%lu childA=%lu childB=%lu (all three grown means real concurrency)\n",
-            g_parent, g_childA, g_childB );
-    printf( "[probe] child heap byte=%d  sock_init=%d socket=%d connect=%d (connect -10061 is refused: stack works)\n",
-            g_heapA, g_sockA_errno, g_sockA, g_connectA );
+    // Generous, and generous for a reason: with `hammer` on a slow box the work is real
+    // work, and a watchdog that fires first would report "threads do not work" for a
+    // machine that is merely slow -- the worst kind of wrong answer from a probe.
+    const time_t until = time( NULL ) + 600;
+    while( g_running > 0 && time( NULL ) < until )
+        DosSleep( 20 );
+
+    const bool timedOut = g_running > 0;
+    printf( "threads started=%d counter=%ld (want %ld) reached=%ld running=%d%s\n",
+            started, (long) g_counter, 2L * g_chunksPerThread, g_reached,
+            (int) g_running, timedOut ? " -- WATCHDOG" : "" );
     fflush( stdout );
-    DosSleep( 200 );
-    return 0;
+
+    const bool ok = started == 2 && g_counter >= 2L * g_chunksPerThread && !timedOut;
+    printf( "RESULT: %s\n", ok ? "threads work" : "threads do not work" );
+    fflush( stdout );
+    return ok ? 0 : 1;
 }

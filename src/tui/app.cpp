@@ -149,14 +149,23 @@ namespace {
 #endif
 }
 
-// ATUI_TURN_DEBUG=1 writes one line per pump to stderr.  It exists because on a target
-// whose terminal eats keystrokes the screen cannot be asked the only two questions that
-// matter when a turn appears to hang: *is the pump running at all*, and *is the turn
-// advancing*.  On the OS/2 box both were possible and looked identical -- a request that
-// never leaves the machine and a screen that never ticks look the same from the outside,
-// and each has a different fix.  Written to stderr because that is where
-// `atui.exe 2>turn.dbg` puts it, and the file comes off the box over FTP without
-// touching the console.  The timestamp is whole seconds: enough to see a rate.
+// ATUI_TURN_DEBUG=1 writes one line per interesting event to stderr, with four kinds:
+// `ask` (a question was accepted), `drive` (the state machine was stepped, from
+// whichever stack owns it in this build), `tick` (tvision delivered a timer event) and
+// `pump` (the drain-and-draw pass ran, with the two guards reported as extra numbers
+// rather than silently returning early).  It exists because on a target whose terminal
+// eats keystrokes the screen cannot be asked the questions that matter when a turn
+// appears to hang: *is the pump running at all*, *is the turn advancing*, and -- since
+// a worker thread made those two independent -- *is the UI being woken*.  Each
+// combination has a different fix, and on the OS/2 box the answers were the whole
+// diagnosis: 129 drives in the first eight seconds and no tick for 317, which is a
+// waiting UI thread rather than a stalled network.
+//
+// Written to stderr because that is where `atui.exe 2>turn.dbg` puts it, and the file
+// comes off the box over FTP without touching the console.  Fetch it after the process
+// exits: HPFS reports a file's last committed size, so a mid-run fetch sees a prefix no
+// matter how often the log is flushed.  The timestamp is whole seconds: enough to see a
+// rate.
 static void turnDebug_( const char *what, long a, long b )
 {
     static const char *on = std::getenv( "ATUI_TURN_DEBUG" );
@@ -1096,6 +1105,8 @@ public:
         // it also self-heals after a terminal resize).
         if( event.what == evBroadcast && event.message.command == cmTimerExpired )
         {
+            turnDebug_( "tick", 0, 0 );   // before anything can swallow it, so a
+                                          // quiet pump can be told from a quiet timer
             // First thing: if the last run died with a file half written, that is
             // more urgent than anything the model is about to say. Runs once.
             maybeRecoverInterruptedWrites_();
@@ -1535,10 +1546,11 @@ void showRecord_( const atui::net::TurnQueue::Record &rec )
 void pumpChat_()
 {
 #ifdef ATUI_HAVE_NETWORK
+    turnDebug_( "pump", ( g_turn_ != 0 && g_turn_->busy() ) ? 1 : 0,
+                g_transcript_ == 0 ? -1 : ( g_inStep_ ? 1 : 0 ) );
     if( g_transcript_ == 0 || g_inStep_ ) return;
 
     g_inStep_ = true;
-    turnDebug_( "pump", ( g_turn_ != 0 && g_turn_->busy() ) ? 1 : 0, 0 );
 
     // Who steps the turn depends on the build; nothing below this line can tell, and
     // that is the design: a record that came from a worker's stack and one that came

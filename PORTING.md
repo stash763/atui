@@ -15,7 +15,7 @@ give up.
 |---|---|---|
 | Linux, FreeBSD | pthreads | pumped, not threaded |
 | Windows | Win32 threads (`_beginthreadex`), CRT threaded runtime | pumped, not threaded |
-| OS/2 | **measured working**: `_beginthread` and `DosCreateThread` both create running threads under Watcom with `-bm`, and so do the C heap, `printf` and TCP/IP from a child (see `TESTING.md`) | pumped today; a thread is a build-configuration decision (`-bm`) rather than a language one |
+| OS/2 | **in use**: `_beginthread` creates real threads, and `-bm` is not what enables it -- the OS/2 32-bit C library carries the threading machinery already and installs its heap/file locks when the first thread starts (measured both ways in `TESTING.md`) | **threaded**: a turn runs on a worker thread, the UI drains the queue |
 | DOS | no preemptive threads | one stack, several tasks, cooperatively -- which is what the pump is |
 
 So: **no platform atui targets forbids threads, and two of them have nothing else to
@@ -29,13 +29,11 @@ the program needs over the kernel's own primitives: `mutex` is OS/2 mutex semaph
 `condition_variable` is an OS/2 event semaphore built to avoid the lost wakeup, and
 `chrono` is there too.
 
-`<thread>` and `<atomic>` are **not** supplied, and that is a gap in atui's compat
-layer rather than a limit of the platform: threads themselves were measured working on
-the target (`_beginthread` and `DosCreateThread` with `-bm`, heap and `printf` and
-TCP/IP all fine from a child -- the table is in `TESTING.md`). Threading the OS/2 port
-means writing those two headers over `DosCreateThread` and deciding what `-bm` does to
-the objects every mode links, and the shape below is what makes that an addition
-instead of a restructuring.
+`<thread>` and `<atomic>` are **not** supplied, and in the end that cost nothing: the
+seam below is what atui uses, so the platforms differ in one `.cpp` file and the
+language level never changes. The OS/2 target is threaded now, with `_beginthread`, and
+without `-bm` -- `TESTING.md` has the measurement and the reason the flag was never the
+gate.
 
 `tools/gate98.py` is what keeps the language level honest; the compat directory is
 what keeps the library level honest.
@@ -173,7 +171,7 @@ distinction matters, because the thing this restructure spent a week deleting wa
 ### The order to do it in
 
 1. ~~`core/thread.{h,cpp}`~~ **done**: `core/thread.h` with `thread_posix.cpp`,
-   `thread_os2.cpp` (`_beginthread` plus an event semaphore for the join, `-bm`),
+   `thread_os2.cpp` (`_beginthread` plus an event semaphore for the join),
    `thread_win.cpp` (compiles; not yet run on Windows, and the file says so) and
    `thread_none.cpp`, which is what makes "no threads" a configuration that works
    rather than a link error. No `<atomic>` anywhere: sharing is a mutex and a queue,
@@ -197,8 +195,20 @@ distinction matters, because the thing this restructure spent a week deleting wa
    the boundary and pass values, which `ChatTurn::start()` already does for the
    endpoint. The list it has to cover is above under "What a threaded host has to
    guard"; the plan cache is the one that already raced in the old threaded model.
-5. Decide `-bm` as a build configuration for the OS/2 modes, not for one file -- it
-   changes the C runtime every object links against.
+5. ~~Decide `-bm` as a build configuration~~ **Decided against, by measurement.** The
+   OS/2 build defines `ATUI_HAVE_OS2_THREADS` and does not pass `-bm`: with and without
+   it, two children ran 100,000 concurrent `new`/`delete` pairs and finished clean, and
+   `__MT__` is defined by neither. The flag would cost a rebuilt tvision -- 177 objects
+   that all have to agree about the run time -- for nothing measured.
+6. **The next gap is the wake-up, and it is now measurable** (`TESTING.md`, "A turn
+   runs on a thread on the box"): with the worker stepping, the UI thread sat in
+   tvision's input wait for 317 seconds without one timer event, and drew everything in
+   a burst once the wait returned. On OS/2 the reason is specific and local --
+   `kbhit()` is `KbdPeek()`, the physical keyboard call, and the stream path's stdin is
+   a pipe. Whatever the platform mechanism is (POSIX: a self-pipe into the input wait;
+   OS/2: a reader thread over the stream, since `KbdPeek` cannot see it), the rule is
+   the same: **the UI never sleeps past the point where it has been told**, and
+   `pumpUntilDone()` never runs on the UI thread.
 
 `-DATUI_HAVE_THREADS` is the only place the platforms differ, and the state machines
 never test it. That is the test the design has to pass: a machine that can be stepped

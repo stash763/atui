@@ -2775,7 +2775,7 @@ Measured on the P4 box with Open Watcom 1.9, `wpp386 -bt=os2 -bm`:
 | Does the compiler have `-mt`? | **No** — E068 "invalid option", with N746 naming the switch. The switch is **`-bm`**. |
 | Does `_beginthread` create threads? | Yes: `_beginthread -> 2 and 3`, both ran. |
 | Is `DosCreateThread` usable instead? | Yes: `rc=0 tid=2`, child ran. Signature from the toolkit's `h/bsedos.h`: `typedef VOID APIENTRY FNTHREAD(ULONG); ... DosCreateThread(PTID, PFNTHREAD, ULONG param, ULONG flag, ULONG cbStack)` — the child takes a `ULONG` and returns `VOID`; the fourth argument is a flag, not a priority. |
-| Does the C heap survive `malloc`/`free` in a child? | Yes with `-bm` (`child heap byte=97`). |
+| Does the C heap survive `malloc`/`free` in a child? | Yes with `-bm` (`child heap byte=97`), and yes **without** it -- see "Threads without `-bm`" below, which is the configuration atui actually ships. |
 | Does `printf` work from a child? | Yes. |
 | **Does TCP/IP work from a secondary thread?** | **Yes**: `sock_init=0`, `socket=4359` (a real descriptor), `connect=-10061` — refused, which is the stack answering. This is the one that decides whether an HTTP request can be pumped on a worker thread. |
 | Is `__MT__` set by `-bm`? | **No.** It is not the macro to test for "can this build thread" — the W869 warning ("`_beginthread` requires build target to be multi-threaded") is what `-bm` silences, and `__MT__` stays undefined anyway. |
@@ -2791,8 +2791,8 @@ program that exits next.
 So the plan in `PORTING.md` — run a turn on a thread where the platform has them — is
 available on OS/2 too, and the thing to be careful about is not thread creation but
 what the two threads touch at the same time (see "What a threaded host has to guard").
-`-bm` is a build-configuration change, and it changes the C runtime every object is
-linked against, so it belongs to a build mode decision rather than to one file.
+`-bm` looked like the build-configuration decision holding this back; it was not, and
+the measurement that says so is below.
 
 ## The thread seam: three configurations, and breaking it to check the tests
 
@@ -2804,7 +2804,7 @@ that have neither.  One interface, one file per platform, each empty on the othe
 | File | Used by | Notes |
 |---|---|---|
 | `thread_posix.cpp` | Linux, FreeBSD, macOS | `pthread_create`/`pthread_join` |
-| `thread_os2.cpp` | OS/2 (Watcom) | `_beginthread` plus an event semaphore for the join, because `_beginthread` reports no handle to wait on. `-bm` required, and `ATUI_HAVE_OS2_THREADS` says the build chose it |
+| `thread_os2.cpp` | OS/2 (Watcom) | `_beginthread` plus an event semaphore for the join, because `_beginthread` reports no handle to wait on. `ATUI_HAVE_OS2_THREADS` says the build chose it; `-bm` is **not** part of it |
 | `thread_win.cpp` | Windows | `_beginthreadex`/`WaitForSingleObject`; **compiles, not yet run on a Windows machine** |
 | `thread_none.cpp` | DOS, and `-DATUI_NO_THREADS=ON` | Refuses, with a reason. It exists so "no threads" is a working configuration rather than a link error |
 
@@ -2827,10 +2827,9 @@ Measured on the target, `build.cmd thread probe_thread.cpp pthead.exe`:
     src\core\thread_os2.cpp: 107 lines, no warnings, no errors   (with -bm -DATUI_HAVE_OS2_THREADS)
     src\core\thread_none.cpp: 39 lines, no warnings, no errors
 
-Compiled there, so the OS/2 implementation is Watcom's language and API.  **Not yet
-linked or run into a threaded atui**: that needs `-bm` on the `atui` mode itself, which
-changes the C runtime every object links against and is deliberately not a change to
-make while other things are moving.
+Compiled there, so the OS/2 implementation is Watcom's language and API.  It is now
+linked and running in the app, without `-bm`; see "Threads without `-bm`" and "A whole
+turn on a thread, in the app" below.
 
 Two controls, because a thread test that cannot fail is worse than none:
 
@@ -2982,3 +2981,102 @@ after compiling nothing), and both were found by accident rather than by the dri
 
 Watcom's `<string>` also has no `compare( pos, len, literal )` overload -- E715 -- which
 is how the request-dump code was first written.  `strncmp` it is.
+
+## Threads without `-bm` (measured 2026-10-21)
+
+The belief up to today was that OS/2 threading needs `-bm`, and that the whole program —
+tvision's 177 objects included — has to be rebuilt with it before a worker thread is
+safe.  That is what `thread_os2.cpp`'s own comment said.  It was wrong, and settling it
+was two builds of one probe:
+
+    build.cmd thrprobe probe_thread.cpp pthrA.exe      # plain runtime
+    build.cmd thrmt   probe_thread.cpp pthrB.exe       # -bm -DATUI_HAVE_OS2_THREADS
+    pthrA.exe 50000 hammer
+    pthrB.exe 10000 hammer
+
+| | plain runtime | `-bm` |
+|---|---|---|
+| compiles, links (`os2386.lib`) | yes | yes |
+| `_beginthread` twice | `-> 2`, `-> 3` | same |
+| 100,000 `new`/`delete` pairs across the two children | `counter=100000`, both finish | same at 20,000 |
+| `__MT__` defined for the user's objects | **no** | **no** |
+| `RESULT` | `threads work` | `threads work` |
+
+The Open Watcom source says why the flag has nothing to do with it.  `heapacc.h` makes
+the heap guards *function pointers* (`_AccessFHeap`, `_ReleaseNHeap`, and the file and
+IOB ones beside them) under `__MT__`, and every OS/2 32-bit library configuration is
+built `mthreaded=1`, so the pointers exist in the shipped `os2386.lib` with no-op
+targets.  `__InitMultipleThread()` — `mthread.c`, the block that reads
+`_AccessFHeap = &__AccessFHeap;` — swaps in the semaphore-backed versions, and
+`__CBeginThread` (in `mthread/c/thredo32.c`, the file that is `_beginthread` for this
+target) calls it on the way to creating the first thread.  The process therefore becomes
+multithreaded when the first thread starts, not when it was linked, and `-bm` has
+nothing left to decide.
+
+Two things worth keeping from how the probe was wrong before it was right.  The first
+version kept every chunk it allocated in a `std::vector`, so "10,000 chunks per thread"
+was really a test of how much memory the box has: it died, the session's command
+processor died with it, and the deaths were spread near-randomly over the two
+configurations.  With a flat footprint — allocate, use, release — the same workload
+passes every time.  A probe that turns into a memory test is worse than no probe,
+because it produces a confident answer to a question nobody asked.  And the second:
+`_beginthread` is declared in `<process.h>`, which the probe forgot, and the box's
+`os2386.lib` is the authority on whether it exists — not this source tree, whose
+`thredo32.c` carries a 2017 copyright against the box's 1.9 compiler.
+
+So `tools/os2/defs.rsp` defines `ATUI_HAVE_OS2_THREADS` and the `atui` mode does not
+pass `-bm`.  The one window the lazy upgrade does not cover is two threads calling
+`_beginthread` simultaneously for the first time, and atui has no second caller:
+`Thread::start()` is only ever reached from the UI thread.
+
+## A whole turn on a thread, in the app (measured 2026-10-21)
+
+What the earlier sections were building toward, seen on the box's screen:
+
+    build.cmd atui - -
+    build.cmd exe - -
+    set ATUI_BASE_URL=http://10.196.88.170:10001/v1&
+    set ATUI_MODEL=Ternary-Bonsai-2-27B-PQ2_0.gguf&
+    set ATUI_TURN_DEBUG=1&
+    atui.exe --ask "what time is it" 2>turn3.dbg
+
+    > what time is it
+    [+] thinking (73 chars)
+    $ get_time
+      2026-10-21 23:22:50 EDT
+    [+] thinking (129 chars)
+    It's October 21, 2026, 11:22 PM EDT (Eastern Daylight Time).
+
+Asked, thought, tool chosen by the model, tool run as a child process on the box, result
+handed back, second round streamed, answer rendered.  On a worker thread, in the app, on
+the platform the port is for.  `ATUI_TURN_DEBUG=1` separates the two stacks in the log:
+
+    ask    n=   1   at +0s
+    drive  n= 129   +0s .. +8s      (the worker stepping the state machine)
+    tick   n= 521   +325s ..       (the UI's timer, 13Hz once it runs)
+    pump   n= 521   same moments
+
+Read the last two lines together, because that is where the next piece of work is: the
+worker was stepping the turn within the same second the question was asked — the
+six-second stall that this whole line of work began with is gone, and the "server closed
+the connection" alternation with it.  But between +8s and +325s the UI thread logged
+nothing at all: **317 seconds in tvision's input wait without one timer event**, and
+then the ticks arrive at ~13Hz, which is roughly the 20Hz `setTimer( 50, 50 )` asked
+for.  The timer is fine.  The wait it lives behind is not.
+
+The reason is in our own fork's OS/2 layer, and it is the same shape as the
+`netstat`/`select` surprises: `hardwvos2.cpp` asks whether input is ready with
+`kbhit()`, and Watcom's `kbhit()` is `KbdPeek()` — the 16-bit physical-keyboard call.
+On the box's own screen that is the right call and it works.  Over telnet, where the
+stream path's stdin is a pipe, it can sit; while it sits, no timer event is dispatched
+and the transcript stops being drawn.  Which is why the app looked alive while I was
+typing at it (every keystroke returns the wait, and everything queued gets drawn then)
+and frozen while I was only watching it.  A redraw of a streaming answer should not
+depend on the user pressing a key.
+
+Two smaller measurements for anyone repeating this.  The debug log cannot be watched
+live over FTP: HPFS reports a file's last committed size, so a fetch mid-run sees the
+first few hundred lines and no more, and no amount of `fflush` changes that — fetch it
+after the process exits.  And `--ask` matters for all of this: over the bridge a typed
+keystroke is itself an event that wakes the UI, so anything measured by typing is not a
+measurement of the thing being tested.

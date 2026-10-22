@@ -7,7 +7,8 @@
 // because the three disagree about everything except this shape:
 //
 //   POSIX    pthread_create / pthread_join          (Linux, FreeBSD, macOS host)
-//   OS/2     _beginthread + an event semaphore      (Watcom, -bm)
+//   OS/2     _beginthread + an event semaphore      (Watcom; -bm not needed, see
+//                                                   thread_os2.cpp and probe_thread)
 //   Windows  _beginthreadex + the thread handle     (MSVC, MinGW, Watcom NT target)
 //
 // and set ATUI_HAVE_POSIX_THREADS / ATUI_HAVE_OS2_THREADS / ATUI_HAVE_WIN_THREADS

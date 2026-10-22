@@ -27,6 +27,10 @@ rem                           compiling anything, which keeps the two questions
 rem                           -- does it compile, does it link -- apart.
 rem      build.cmd size      `atui` again with -os instead of -od, for the size
 rem                           measurement; the :size section says how to ask it.
+rem      build.cmd thrprobe probe_thread.cpp pthr.exe
+rem                           does the C run time have threads?  Compiles and links one
+rem                           probe twice, once plain and once `thrmt` with -bm, so the
+rem                           two can be compared on the same afternoon.
 rem      build.cmd netrun probe_turn.cpp pturn.exe
 rem                           a probe linked against the objects `atui` compiled,
 rem                           minus main.obj -- so it runs the program's own code
@@ -167,6 +171,8 @@ if "%1"=="netlink" goto netlink
 if "%1"=="netprobe" goto netprobe
 if "%1"=="netall" goto netall
 if "%1"=="netrun" goto netrun
+if "%1"=="thrprobe" goto thrprobe
+if "%1"=="thrmt" goto thrmt
 if "%1"=="thread" goto thread
 if "%1"=="size" goto size
 if "%1"=="atui" goto atui
@@ -365,6 +371,45 @@ wlink @link.rsp >> %LOG% 2>&1
 if errorlevel 1 goto one_failed
 dir %3
 echo [netprobe] OK
+goto summary
+
+:thrprobe
+rem Is there a C run time with threads on this target?  Ask the libraries, twice: once
+rem with the plain runtime, once with -bm.  `%THRF%` is always given a value -- an
+rem otherwise meaningless define here -- because this command processor expands an
+rem undefined variable as its own name, which is how %NET% once handed the compiler a
+rem file called "%NET%".
+set THRF=-DATUI_THREAD_PROBE_PLAIN
+set THROBJ=obj\nt1
+set THRTAG=plain runtime
+goto thrbuild
+
+:thrmt
+set THRF=-bm -DATUI_HAVE_OS2_THREADS
+set THROBJ=obj\nt2
+set THRTAG=-bm
+goto thrbuild
+
+:thrbuild
+rem %2 the probe source, %3 the executable.  The probe itself says what it checks and
+rem what a failure would mean; tools/os2/probe_thread.cpp.
+echo [thrbuild] %2 to %3 (%THRTAG%)
+if not exist %THROBJ% mkdir %THROBJ%
+if exist %THROBJ%\*.obj del %THROBJ%\*.obj
+echo ---- thrbuild compile %THRTAG% ---- >> %LOG%
+%WPP% %THRF% -fo=%THROBJ%\ %2 >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+if exist link.rsp del link.rsp
+echo system os2v2 > link.rsp
+echo name %3 >> link.rsp
+echo op m >> link.rsp
+echo option stack=256k >> link.rsp
+for %%f in (%THROBJ%\*.obj) do echo file %%f >> link.rsp
+echo library os2386.lib >> link.rsp
+wlink @link.rsp >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+dir %3
+echo [thrbuild] OK %THRTAG%
 goto summary
 
 :size
