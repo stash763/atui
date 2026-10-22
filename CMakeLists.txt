@@ -202,7 +202,13 @@ install(TARGETS atui
     RUNTIME DESTINATION bin
 )
 
+# Test registration.  `add_test` without `enable_testing` is silently ignored, which is
+# how the suite could be built, installed and complete while `ctest` answered "No tests
+# were found!!!" -- the failure of a test registration is invisible, and the command it
+# fails to provide is the first one anybody types.  After the tvision subdirectory on
+# purpose: a submodule's own test declarations are not ours to inherit.
 if(ATUI_BUILD_TESTS)
+    enable_testing()
     add_test(NAME selftest
              COMMAND ${CMAKE_BINARY_DIR}/atui --self-test)
 endif()

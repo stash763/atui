@@ -3504,7 +3504,7 @@ only reason to believe the test can fail; it was checked by breaking the code on
 
 ## An unopened stream is an exit-time crash on Watcom (measured 2026-10-22)
 
-    [<P4>-D:tui]atui.exe --judge-check "sudo ls"
+    [<P4>-D:\atui]atui.exe --judge-check "sudo ls"
     ask  sudo ls                   rung 6   too indirect to check automatically - it uses sudo
     SYS1808:
     The process has stopped.  The software diagnostic code (exception code) is  0005.
@@ -3587,10 +3587,10 @@ Two ways out now, and both were verified on eComStation:
 Alt-x` does nothing at all), but tvision's stream driver reads `ESC` `x` as Alt-X, and the
 program quits properly:
 
-    [<P4>-D:tui]atui.exe
+    [<P4>-D:\atui]atui.exe
     ... screen ...
     ESC, x
-    [<P4>-D:tui]                     <- prompt back, no SYS1808, RC 0
+    [<P4>-D:\atui]                     <- prompt back, no SYS1808, and `&& echo` fires
 
 `key press Enter` also crosses the bridge, which matters for the same reason in reverse:
 the approval dialog's decline path -- Enter, the safe default -- is remotely testable, so
@@ -3604,9 +3604,9 @@ with nobody at the far end, and it is read once at startup (`quitAfterMs_()` in
 
 | on the box, with | result |
 |---|---|
-| `ATUI_QUIT_AFTER_MS=3000`, idle | exited, RC 0, no trap, prompt clean |
-| `ATUI_QUIT_AFTER_MS=15000`, a turn in flight (`--ask` a count-to-thirty) | exited, RC 0 -- so a turn in mid-stream was cancelled and its worker waited for |
-| `ATUI_QUIT_AFTER_MS=20000`, an **approval dialog open** | **still waiting at 50s**; `key press Enter` declined it and the app then exited RC 0 |
+| `ATUI_QUIT_AFTER_MS=3000`, idle | exited, `&& echo EXITED_CLEAN` printed, no trap, prompt clean |
+| `ATUI_QUIT_AFTER_MS=15000`, a turn in flight (`--ask` a count-to-thirty) | `MIDTURN_CLEAN` -- so a turn in mid-stream was cancelled and its worker waited for |
+| `ATUI_QUIT_AFTER_MS=20000`, an **approval dialog open** | **still waiting at 50s**; `key press Enter` declined it and the app then printed `DIALOG_CLEAN` |
 
 That third row is a platform difference and the interesting find. On the host, timers keep
 running behind a modal dialog -- an instrumented dialog sees tvision's own broadcasts every
@@ -3628,13 +3628,28 @@ does not have this limitation, and the code that closes the dialog on a stop req
 (`ApprovalDialog`) is host-only by effect: on OS/2 there is no signal to notice, and the
 flag is never set.
 
-One OS/2 batch-file trap that briefly hid all of this: `%RC%` is expanded when the line is
-*parsed*, so
+**`%RC%` does not exist on the box, which quietly invalidated a method.** The note here
+used to warn that `%RC%` expands when the line is parsed rather than when it runs. The
+deeper truth, found while checking something else, is that the box's shell does not expand
+it at all:
 
-    atui.exe --judge-check x& echo A=%RC%& atui.exe --judge-check y& echo B=%RC%
+    [<P4>-D:\atui]echo RCVAR=%RC% DOLLARQ=$?
+    RCVAR=%RC% DOLLARQ=$?
 
-prints the same number twice, whatever the programs did. Ask for the return code on the
-line after, or read what the program printed.
+Neither spelling expands, so `echo QUIT=%RC%` printing `QUIT=0` -- several claims in this
+file were resting on exactly that -- means nothing: it would have printed `0` for a program
+that had just trapped. Ask for the status with control flow, which the shell *does*
+implement:
+
+    atui.exe --bogus || echo NONZERO_BOGUS        <- prints NONZERO_BOGUS
+    atui.exe --version || echo NONZERO_VERSION    <- prints nothing
+    atui.exe && echo EXITED_CLEAN || echo EXITED_DIRTY
+
+That is how the exit codes in this section should be read, and they were re-taken that way
+after the footnote turned out to be the wrong lesson: idle, mid-turn and dialog-open all
+come back `EXITED_CLEAN`, and a `--bogus` argument comes back non-zero. `build.cmd` printing
+its own `ATUI-BUILD-RC=` verdict is the same trick from the other side -- a script that
+announces its own conclusion cannot be misread by the shell around it.
 
 **The heartbeat had been switched on by the wrong question.** Making the scripted exit
 work on the box needed one more change, and the hole it closed was found by trying the same
@@ -3658,7 +3673,7 @@ X". The no-transport build is the one this project tests most (it is the configu
 self-test suite runs in), and it had been shipping a program that ignores `SIGTERM`.
 
 Re-verified on the box after the change: scripted exit `HEARTBEAT_QUIT=0`, a turn
-(`--ask`) answers, and `ESC` `x` leaves with `LASTRC=0`.
+(`--ask`) answers, and `ESC` `x` leaves it the same way (`&& echo EXITED_CLEAN`).
 
 ## What a long session costs (measured 2026-10-22)
 
@@ -3803,3 +3818,88 @@ surprise: with the server not listening at all, the transcript says
 as a blank screen.
 
 Counts after this: 164 with network and threads, 109 without network, 164 without threads.
+
+## The command line refused to refuse: `--help`, junk arguments, and no terminal (measured 2026-10-22)
+
+`atui --help` hung. Not dramatically: it printed screen codes into whatever was attached to
+stdout, waited for a keystroke, and sat there. So did plain `atui`, and so did
+`atui --bogus`. Three facts were involved, and only one of them was a missing feature.
+
+* There was no `--help`. The options were in the documentation and in `main()`.
+* **An unrecognised argument was ignored.** `--bogus` was not an option, so nothing
+  happened, so the program started the chat as though nothing had been said. A mistyped flag
+  produced a working-looking program that had not taken the flag, which is the worst kind of
+  silence: it is indistinguishable from success.
+* **A terminal program with no terminal is a hang.** tvision will write escape sequences
+  into a pipe and then block reading input that can never arrive. From outside, "waiting for
+  a key" and "wedged forever" look identical, and stdout says nothing to tell them apart.
+
+Now:
+
+    $ ./build/atui --help
+    atui 0.0.0 -- a terminal AI chat client, over plain HTTP
+      ...
+    $ ./build/atui --bogus ; echo $?
+    atui: '--bogus' is not an option atui takes
+    2
+    $ ./build/atui < /dev/null ; echo $?
+    atui draws on a terminal, and there is not one here: it needs a keyboard on
+    standard input, so it is not starting and sitting there waiting for a key.
+    --version, --self-test and --judge-check work without a terminal; --help
+    lists them.
+    2
+
+The refusal covers the chat only. `--version`, `--self-test` and `--judge-check` are
+answered before it, so they keep working with their output in a file, which is what makes
+atui usable from a script -- a terminal check that also blocked the scriptable modes would
+have been worse than the hang it replaced.
+
+Two small things fell out of the same loop. `--root` used to work only as the first argument
+while `--ask` was scanned anywhere, so `atui --ask "..." --root /tmp` quietly set no root;
+both are scanned now, in either order, and a question beginning with a dash still works
+because each option's value is taken before the next token is examined. And a mode in the
+wrong place is called what it is -- `'--version' is a mode of its own and has to be the
+first argument` -- instead of being reported as not an option.
+
+**`tools/cli_check.py` keeps all of this.** Eleven cases: help exits 0, `--version` exits 0,
+junk and missing values exit non-zero with a sentence, the misplaced mode says so, and no
+arguments with no terminal refuses rather than running. Both configurations pass it. Its
+harness has two rules worth stealing, both written after being wrong first: output goes to a
+file, because a killed child whose stdout is a pipe can leave the parent blocked in
+`communicate()` after the timeout has fired and the kill has landed; and every case runs in
+its own process group and is cleaned up by group, because a check that can leave a process
+behind eventually runs against a build that spawns one.
+
+On the target, where this had to be measured rather than assumed: Watcom spells the header
+`<io.h>` and has `isatty` and `fileno` (compiles warning-free); `atui.exe --help` prints the
+usage; `atui.exe > out.txt 2>&1` refuses with a non-zero status -- `REDIR_REFUSED`, not a
+file full of screen codes and a process that never ends; and the ordinary run in the telnet
+stream still starts and answers a turn. `isatty` tells the truth on that driver.
+
+### `ctest` was reporting "No tests were found!!!"
+
+`add_test(NAME selftest ...)` has been in `CMakeLists.txt` for a long time. `add_test`
+without `enable_testing()` is silently ignored, so `ctest` found no tests in a tree whose
+suite passes 164. That is a registration failure whose only symptom is the absence of the
+thing it was supposed to run -- and `ctest` is the first command anybody types when they
+want to know whether the tests pass.
+
+`enable_testing()` is there now, after `add_subdirectory(tvision)` so a submodule's own test
+declarations are not inherited. All three build directories report
+`1/1 Test #1: selftest ... Passed` (7.2s, 2.6s, 6.6s), and the suite needs no terminal,
+which is what lets it run under ctest at all -- the same reason the refusal had to leave the
+modes alone.
+
+### A document of your own can carry control characters
+
+While writing the sections above, a Windows path in a non-raw Python string turned into `D:`
++ BEL + `atui`: an invisible byte in a markdown file, three of them, shown by no editor, and
+they silently broke the text at that point. Any document written by script is worth a check:
+
+    python3 - <<'EOF'
+    s = open('TESTING.md').read()
+    print(sum(1 for c in s if ord(c) < 32 and c not in '\n\t'))
+    EOF
+
+and write text containing Windows paths as a raw string.
+

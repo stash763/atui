@@ -18,6 +18,17 @@
 #include <string>
 #include <vector>
 
+// isatty and fileno, for the "is there a terminal here" check before the UI is started.
+// POSIX spells the header one thing and everything else Open Watcom targets spells it
+// another; Win32 wants the underscored function as well (see terminalHere()).
+#if defined( _WIN32 )
+#  include <io.h>
+#elif defined( __unix__ ) || defined( __APPLE__ ) || defined( __linux__ ) || defined( __FreeBSD__ )
+#  include <unistd.h>
+#else
+#  include <io.h>
+#endif
+
 #include "core/lines.h"      // readLine: Watcom has no std::getline
 #include "core/paths.h"
 #include "settings/settings.h"
@@ -266,6 +277,65 @@ int judgeCheck( int argc, char **argv )
 
 } // anonymous namespace
 
+namespace {
+
+// The command line.  On stdout for --help, on stderr when something has to be explained
+// before refusing.
+//
+// Short, and only ever things that are true of this build: a mistyped option used to be
+// ignored, so the help is the place a person looks after the program did nothing with
+// what they typed.  The environment variables atui reads are listed in TESTING.md rather
+// than here -- help text that duplicates a document is two things that can disagree.
+void usage( std::FILE *out )
+{
+    std::fprintf( out,
+        "atui %s -- a terminal AI chat client, over plain HTTP\n"
+        "\n"
+        "  atui                    start the chat\n"
+        "  atui --ask \"question\"   start the chat and ask this as the first message\n"
+        "  atui --root DIR         the project the tools work in: inside it a tool runs\n"
+        "                          without asking, outside it nothing does\n"
+        "  atui --version          print the version and exit\n"
+        "  atui --self-test        run the built-in test suite\n"
+        "  atui --judge-check ...  say what the permission policy makes of a command,\n"
+        "                          and which rule said so:\n"
+        "                            --judge-check \"sudo ls\"\n"
+        "                            --judge-check cases.txt   lines of \"run|ask <command>\"\n"
+        "                            --judge-check -           commands from stdin\n"
+        "                          add --json for machine-readable output\n"
+        "  atui --help             this text\n"
+        "\n"
+        "Plain HTTP only: an https:// server is refused, not downgraded.\n",
+        ATUI_VERSION );
+}
+
+// An option nobody recognised, or one of the two that need a value arriving without it.
+// Before this, both were ignored and atui started the chat -- so `atui --help` on a
+// machine printed screen codes into a terminal that was not there and waited for a
+// keystroke that never came, which is a hang to debug rather than a missing feature.
+int usageError( const char *problem )
+{
+    std::fprintf( stderr, "atui: %s\n\n", problem );
+    usage( stderr );
+    return 2;
+}
+
+// Is there a terminal here to draw on?  atui is a terminal program, and pointed at a pipe
+// it paints escape sequences into it and waits for input: measured, `atui` with stdout in
+// a pipe ran until killed, and so did `atui --help` when there was no --help.  The three
+// modes above are answered before this and need no terminal, which is what makes them
+// usable from a script; the chat is not one of those modes.
+bool terminalHere()
+{
+#if defined( _WIN32 )
+    return _isatty( _fileno( stdin ) ) != 0 && _isatty( _fileno( stdout ) ) != 0;
+#else
+    return isatty( fileno( stdin ) ) != 0 && isatty( fileno( stdout ) ) != 0;
+#endif
+}
+
+} // anonymous namespace
+
 int main( int argc, char **argv )
 {
     // First, because "where is atui installed" is answered from it, and that is
@@ -299,26 +369,71 @@ int main( int argc, char **argv )
             return judgeCheck( argc, argv );
     }
 
-    // Captured before the UI starts and before any path is resolved: everything
-    // the permission policy says is relative to this directory.
-    if( argc > 2 && std::strcmp( argv[1], "--root" ) == 0 )
+    // `--root` and `--ask` combine in either order, and a question is allowed to begin
+    // with a dash -- which is why these are scanned rather than read from argv[1], and
+    // why each one's value is taken before the next token is looked at.  Anything else
+    // reaches the end of this loop, and is answered with the usage rather than with a
+    // chat window.
+    for( int i = 1; i < argc; ++i )
     {
-        atui::tools::setProjectRoot( argv[2] );
-        // And the working directory follows it. Otherwise a relative path in a
-        // tool call means one thing to the policy, which resolves it against the
-        // root, and another to the write, which resolves it against the directory
-        // atui happens to be sitting in - and a policy that disagrees with the
-        // filesystem is not a policy.
-        atui::core::setWorkingDirectory( atui::tools::projectRoot() );
+        if( std::strcmp( argv[i], "--root" ) == 0 )
+        {
+            if( ++i >= argc )
+                return usageError( "--root needs a directory" );
+            // Captured before the UI starts and before any path is resolved: everything
+            // the permission policy says is relative to this directory.
+            atui::tools::setProjectRoot( argv[i] );
+            // And the working directory follows it. Otherwise a relative path in a tool
+            // call means one thing to the policy, which resolves it against the root, and
+            // another to the write, which resolves it against the directory atui happens
+            // to be sitting in - and a policy that disagrees with the filesystem is not a
+            // policy.
+            atui::core::setWorkingDirectory( atui::tools::projectRoot() );
+            continue;
+        }
+
+        if( std::strcmp( argv[i], "--ask" ) == 0 )
+        {
+            if( ++i >= argc )
+                return usageError( "--ask needs a question" );
+            // Queued here and asked once the prompt exists.
+            atui::tui::setStartupMessage( argv[i] );
+            continue;
+        }
+
+        if( std::strcmp( argv[i], "--help" ) == 0 ||
+            std::strcmp( argv[i], "-h" ) == 0 )
+        {
+            usage( stdout );
+            return 0;
+        }
+
+        // The three modes are answered above, before this loop, because each replaces
+        // the program: say so rather than calling a real option a made-up one.
+        if( std::strcmp( argv[i], "--self-test" ) == 0 ||
+            std::strcmp( argv[i], "--version" ) == 0 ||
+            std::strcmp( argv[i], "--judge-check" ) == 0 )
+        {
+            std::string why( "'" );
+            why += argv[i];
+            why += "' is a mode of its own and has to be the first argument";
+            return usageError( why.c_str() );
+        }
+
+        std::string why( "'" );
+        why += argv[i];
+        why += "' is not an option atui takes";
+        return usageError( why.c_str() );
     }
 
-    // `--ask`: queued here and asked once the prompt exists. Scanned rather than read
-    // from argv[1] because it combines with --root, with nothing, and with a question
-    // that starts with a dash.
-    for( int i = 1; i + 1 < argc; ++i )
+    if( !terminalHere() )
     {
-        if( std::strcmp( argv[i], "--ask" ) == 0 )
-            atui::tui::setStartupMessage( argv[i + 1] );
+        std::fprintf( stderr,
+            "atui draws on a terminal, and there is not one here: it needs a keyboard on\n"
+            "standard input, so it is not starting and sitting there waiting for a key.\n"
+            "--version, --self-test and --judge-check work without a terminal; --help\n"
+            "lists them.\n" );
+        return 2;
     }
 
     return atui::tui::run_app();
