@@ -44,6 +44,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <algorithm>
 #include <fstream>
 #include <sstream>
@@ -100,6 +101,11 @@ namespace {
     PromptInput *g_prompt_ = 0;
     TScrollBar *g_vBar_ = 0;
     atui::core::ChatModelStub *g_stub_ = 0;
+
+    // `--ask`: the first message, submitted once the prompt exists. Consumed in
+    // run_app(), before the loop starts, and then emptied so a restart of the desk
+    // cannot ask twice.
+    std::string g_startupMessage;
     String g_history_;
 
     // Desktop rect (saved so the transcript + prompt can reflow together).
@@ -141,6 +147,25 @@ namespace {
 #ifdef ATUI_DEBUG_KEYS
     std::ofstream g_keylog;
 #endif
+}
+
+// ATUI_TURN_DEBUG=1 writes one line per pump to stderr.  It exists because on a target
+// whose terminal eats keystrokes the screen cannot be asked the only two questions that
+// matter when a turn appears to hang: *is the pump running at all*, and *is the turn
+// advancing*.  On the OS/2 box both were possible and looked identical -- a request that
+// never leaves the machine and a screen that never ticks look the same from the outside,
+// and each has a different fix.  Written to stderr because that is where
+// `atui.exe 2>turn.dbg` puts it, and the file comes off the box over FTP without
+// touching the console.  The timestamp is whole seconds: enough to see a rate.
+static void turnDebug_( const char *what, long a, long b )
+{
+    static const char *on = std::getenv( "ATUI_TURN_DEBUG" );
+    if( !on || !*on || *on == '0' )
+        return;
+    static long n = 0;
+    std::fprintf( stderr, "[turn %ld] %s busy=%ld n=%ld (t+%ld)\n",
+                  (long) ++n, what, a, b, (long) std::time( 0 ) );
+    std::fflush( stderr );
 }
 
 // --- text helpers -------------------------------------------------------------
@@ -1444,8 +1469,17 @@ public:
             turn_->answerApproval( allow, session );
             queue_->clearQuestion();
         }
-        if( turn_->busy() && !queue_->waitIfWaiting() )
-            turn_->step( 50 );
+        const bool waiting = queue_->waitIfWaiting();
+        turnDebug_( "drive", turn_->busy() ? 1 : 0, waiting ? 1 : 0 );
+        if( turn_->busy() && !waiting )
+            turn_->step( waitMs );
+        // Not `step( 50 )`, which is what this line used to say: the parameter arrived
+        // here and was dropped on the floor, so the timer path -- the build with no
+        // threads, where the comment above `drive()` explains at length why the wait
+        // must be zero -- was waiting 50 ms inside select() on every tick, with a
+        // keystroke queued behind it. Written as one body of logic for both callers,
+        // ignored as one body of logic ignores it: a parameter that is not used is a
+        // comment, and a comment that contradicts the code is worse than none.
     }
 
     // The timer's entry point, and the only one that checks the pointers: the turn may
@@ -1504,6 +1538,7 @@ void pumpChat_()
     if( g_transcript_ == 0 || g_inStep_ ) return;
 
     g_inStep_ = true;
+    turnDebug_( "pump", ( g_turn_ != 0 && g_turn_->busy() ) ? 1 : 0, 0 );
 
     // Who steps the turn depends on the build; nothing below this line can tell, and
     // that is the design: a record that came from a worker's stack and one that came
@@ -1595,6 +1630,7 @@ void processMessage_()
     std::string why;
     const bool threaded = atui::core::threadsAvailable()
                           && g_turnThread_.start( g_task_, &why );
+    turnDebug_( "ask", (long) message.size(), threaded ? 1 : 0 );
     if( !threaded && !g_turn_->start( message, &g_queue_ ) )
     {
         g_transcript_->appendStatus( "(busy, try again)" );
@@ -3009,6 +3045,14 @@ void maybeRecoverInterruptedWrites_()
     }
 }
 
+// Declared in app.h; writes the anonymous-namespace global above, which is visible by
+// name from here because an unnamed namespace is used by its enclosing scope in the
+// translation unit that declares it.
+void setStartupMessage( const std::string &text )
+{
+    g_startupMessage = text;
+}
+
 int run_app()
 {
     // Apply persisted settings (theme + provider) before the UI is built,
@@ -3016,6 +3060,22 @@ int run_app()
     atui::settings::loadAll();
 
     TApp app;
+
+    // The desk is built by the constructor above (TProgInit runs the init handlers),
+    // so the prompt is real here. Asking now costs nothing the loop has to wait for:
+    // `processMessage_()` starts the turn and returns, and the turn is stepped by the
+    // timer that starts with `run()`.
+    if( !g_startupMessage.empty() )
+    {
+        if( g_prompt_ != 0 )
+        {
+            g_prompt_->setText( g_startupMessage );
+            g_prompt_->drawView();
+            processMessage_();
+        }
+        g_startupMessage.clear();
+    }
+
     app.run();
     return 0;
 }

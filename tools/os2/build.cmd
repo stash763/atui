@@ -27,6 +27,11 @@ rem                           compiling anything, which keeps the two questions
 rem                           -- does it compile, does it link -- apart.
 rem      build.cmd size      `atui` again with -os instead of -od, for the size
 rem                           measurement; the :size section says how to ask it.
+rem      build.cmd netrun probe_turn.cpp pturn.exe
+rem                           a probe linked against the objects `atui` compiled,
+rem                           minus main.obj -- so it runs the program's own code
+rem                           path from the shell, with no terminal to type at.
+rem                           The :netrun section says why that is worth having.
 rem      build.cmd atunon    `atui` with ATUI_HAVE_NETWORK absent: the
 rem                           configuration for a machine with no TCP/IP stack, and
 rem                           the one that proves the agent-mode code stayed inside
@@ -161,6 +166,7 @@ if "%1"=="exe" goto exe
 if "%1"=="netlink" goto netlink
 if "%1"=="netprobe" goto netprobe
 if "%1"=="netall" goto netall
+if "%1"=="netrun" goto netrun
 if "%1"=="thread" goto thread
 if "%1"=="size" goto size
 if "%1"=="atui" goto atui
@@ -478,6 +484,40 @@ dir %3
 echo [thread] OK
 goto summary
 
+
+:netrun
+rem A probe against the program's own objects.  `netprobe` builds a probe out of three
+rem transport files, which is right for asking whether the stack works; this answers a
+rem different question -- why the *application's* request failed -- and to answer that
+rem honestly the probe has to use the application's request builder, settings snapshot,
+rem system prompt and tool list.  Copying those into a probe would produce a second
+rem implementation, which is the thing this port keeps trying to get rid of.
+rem
+rem So: link obj\at (what `atui` compiled), except main.obj, because that is where
+rem main() lives and two of them is one too many.  It means `atui` must be run first,
+rem and that obj\at is the network build -- the same caveat `exe` carries.
+echo [netrun] %2 to %3
+if not exist obj\nr mkdir obj\nr
+if exist obj\nr\*.obj del obj\nr\*.obj
+echo [netrun] compiling %2
+echo ---- netrun compile ---- >> %LOG%
+%WPP% -DATUI_HAVE_NETWORK -fo=obj\nr\ %2 >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+if exist link.rsp del link.rsp
+echo system os2v2 > link.rsp
+echo name %3 >> link.rsp
+echo op m >> link.rsp
+echo option stack=256k >> link.rsp
+for %%f in (obj\nr\*.obj) do echo file %%f >> link.rsp
+for %%f in (obj\at\*.obj) do if not "%%f"=="obj\at\main.obj" echo file %%f >> link.rsp
+echo library obj\tvision.lib >> link.rsp
+echo library tcpip32.lib >> link.rsp
+echo library os2386.lib >> link.rsp
+wlink @link.rsp >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+dir %3
+echo [netrun] OK
+goto summary
 
 :netall
 echo [netall] compiling the network layer

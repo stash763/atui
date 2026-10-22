@@ -37,6 +37,7 @@ void printUsage()
 {
     std::printf(
         "usage: atui [--root DIR]            run the chat UI\n"
+        "       atui --ask \"question\"         ask it as soon as the interface is up\n"
 #ifdef ATUI_SELFTEST
         "       atui --self-test             run the self-test suite\n"
 #endif
@@ -296,6 +297,15 @@ int main( int argc, char **argv )
         // atui happens to be sitting in - and a policy that disagrees with the
         // filesystem is not a policy.
         atui::core::setWorkingDirectory( atui::tools::projectRoot() );
+    }
+
+    // `--ask`: queued here and asked once the prompt exists. Scanned rather than read
+    // from argv[1] because it combines with --root, with nothing, and with a question
+    // that starts with a dash.
+    for( int i = 1; i + 1 < argc; ++i )
+    {
+        if( std::strcmp( argv[i], "--ask" ) == 0 )
+            atui::tui::setStartupMessage( argv[i + 1] );
     }
 
     return atui::tui::run_app();
