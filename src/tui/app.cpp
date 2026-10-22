@@ -122,6 +122,13 @@ namespace {
     TStatusItem *g_statusProvider_ = 0;
     TStatusItem *g_statusPermission_ = 0;
 
+    // The scripted exit: ATUI_QUIT_AFTER_MS, and the first tick seen, which is what
+    // the deadline is measured from (see quitAfterMs_()).  Outside the network block
+    // below, because leaving is not a network feature -- the configuration that cannot
+    // chat still has to be quittable, and that is what this is for.
+    unsigned long g_quitAfterMs_  = 0;
+    unsigned long g_firstTickMs_  = 0;
+
     // M2 streaming state (only used when ATUI_HAVE_NETWORK).
 #ifdef ATUI_HAVE_NETWORK
     // One chat turn, the queue it reports through, and -- where the platform has
@@ -189,6 +196,27 @@ static void turnDebug_( const char *what, long a, long b )
     std::fflush( stderr );
 }
 
+// A clock that quits the program, so that leaving atui can be scripted.
+//
+// OS/2 has no SIGTERM to catch and Alt-X needs a keyboard wired to the machine, so
+// before this the only way to exit atui on the target was a person sitting in front of
+// it -- which is exactly why its shutdown path (worker joined, terminal restored,
+// statics destroyed in some order) had never been run there.  `--ask` made the first
+// half of a session scriptable; this makes the second half scriptable, and the pair is
+// what lets the whole life of the program be tested from the other side of the world.
+//
+// It quits through the same endModal Alt-X uses, nothing more.  0 means not armed.
+unsigned long quitAfterMs_()
+{
+    static const char *value = std::getenv( "ATUI_QUIT_AFTER_MS" );
+    if( value == 0 || *value == '\0' || *value == '0' )
+        return 0;
+    unsigned long ms = 0;
+    for( const char *p = value; *p >= '0' && *p <= '9'; ++p )
+        ms = ms * 10 + (unsigned long) ( *p - '0' );
+    return ms;
+}
+
 // --- text helpers -------------------------------------------------------------
 
 // Wrapping lives in tui/wrap.{h,cpp}, shared with the reasoning renderer; this
@@ -236,13 +264,6 @@ void maybeRecoverInterruptedWrites_();
 // `make test` forty times asks once and not forty times.
 enum ApprovalAnswer { apNo = 0, apOnce = 1, apSession = 2 };
 
-// Show the confirmation dialog for a pending tool approval. Modal: it runs a
-// nested event loop on this thread.
-//
-// Not stock messageBox() - that sizes itself for about three lines of text and
-// silently clips the rest, which here would hide the one line saying what is
-// actually about to run. This box is laid out around the message instead, and
-// No is the default button, so Enter and Esc both decline.
 // The approval box, with one reflex of its own: if a stop was asked for -- terminal
 // closed, `kill`, Ctrl-C -- close the dialog with cmNo on the next event.
 //
@@ -285,6 +306,13 @@ public:
     }
 };
 
+// Show the confirmation dialog for a pending tool approval. Modal: it runs a
+// nested event loop on this thread.
+//
+// Not stock messageBox() - that sizes itself for about three lines of text and
+// silently clips the rest, which here would hide the one line saying what is
+// actually about to run. This box is laid out around the message instead, and
+// No is the default button, so Enter and Esc both decline.
 int showApprovalDialog_( const atui::tools::ApprovalRef &req )
 {
     // The keys are spelled out because the box is safe by default: Enter and
@@ -1285,6 +1313,20 @@ public:
                 return;
             }
 
+            // The scripted exit, if it was armed (see quitAfterMs_()).
+            if( g_quitAfterMs_ )
+            {
+                if( g_firstTickMs_ == 0 ) g_firstTickMs_ = nowMs_();
+                else if( nowMs_() - g_firstTickMs_ >= g_quitAfterMs_ )
+                {
+                    turnDebug_( "quittimer", (long) g_quitAfterMs_,
+                                (long) ( nowMs_() - g_firstTickMs_ ) );
+                    clearEvent( event );
+                    endModal( cmQuit );
+                    return;
+                }
+            }
+
             // First thing: if the last run died with a file half written, that is
             // more urgent than anything the model is about to say. Runs once.
             maybeRecoverInterruptedWrites_();
@@ -1490,10 +1532,20 @@ TDeskTop *initDeskTop_( TRect r )
     // Size the two panels to each other (prompt starts as separator + 1 row).
     relayoutPanels_();
 
-#ifdef ATUI_HAVE_NETWORK
-    // Periodic poll of the AI token queue (worker thread -> event loop).
+    // The heartbeat, started in every configuration.  It arrived as "poll the token
+    // queue", so it went inside the network block; everything the tick has grown since
+    // -- noticing a stop request (SIGHUP, SIGTERM, Ctrl-C), the scripted exit,
+    // recovering a file the last run left half written, keeping the two panels sized --
+    // has nothing to do with having a server.  While it was gated, the no-transport
+    // build ignored SIGTERM outright: nothing ever read the handler's flag, so the
+    // program sat there until it was killed (measured: needed SIGKILL at 6s with the
+    // timer inside the ifdef, stopped in 0.3s with it outside).  Fifty milliseconds of
+    // a no-op pump is not a cost on any target this runs on.
     if( TProgram::application != 0 )
         TProgram::application->setTimer( 50, 50 );
+
+#ifdef ATUI_HAVE_NETWORK
+    // Periodic poll of the AI token queue (worker thread -> event loop).
     // And the permission agent: a second, cheap model that describes a command
     // the policy cannot settle by itself. It is only ever asked for a
     // description - tools/permissions.cpp decides - and with the mode set to
@@ -3283,6 +3335,10 @@ int run_app()
     // means a stop restores the screen AND sets the flag.  Installed later it would
     // replace tvision's handler, and the terminal would go out wrong.
     atui::core::installShutdownHandlers();
+
+    // Read once, here, rather than from the tick: it never changes, and the tick has
+    // better things to do than parse a string fifty times a second.
+    g_quitAfterMs_ = quitAfterMs_();
 
     TApp app;
 

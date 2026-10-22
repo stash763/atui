@@ -3516,3 +3516,92 @@ Two things to reuse from the method. A staged env-gated ladder costs one build a
 `wd` session over telnet. And `_exit()` is a two-line answer to "is this teardown?", which
 is worth knowing before anything else is tried -- though on its own it is nearly useless,
 since almost everything in a C++ program is teardown.
+
+## Exiting atui on the box, and what the shutdown path had never done (measured 2026-10-22)
+
+The TUI's shutdown path had never run on OS/2. Nothing about it was doubted; it simply had
+never been reached, because Alt-X needs a keyboard attached to the machine and every
+previous session ended by closing the telnet session, which *kills* the app. So the
+worker join, the terminal restore and the static destruction of the shipping configuration
+had run on Linux and not on the platform the program is for -- and after the
+`--judge-check` trap above, "it probably exits fine" was not something I wanted to keep
+assuming.
+
+Two ways out now, and both were verified on eComStation:
+
+**`ESC` then `x`.** Alt itself never arrives over the bridge (re-measured: `key press
+Alt-x` does nothing at all), but tvision's stream driver reads `ESC` `x` as Alt-X, and the
+program quits properly:
+
+    [<P4>-D:tui]atui.exe
+    ... screen ...
+    ESC, x
+    [<P4>-D:tui]                     <- prompt back, no SYS1808, RC 0
+
+`key press Enter` also crosses the bridge, which matters for the same reason in reverse:
+the approval dialog's decline path -- Enter, the safe default -- is remotely testable, so
+a permission flow can be driven end to end from here.
+
+**`ATUI_QUIT_AFTER_MS=n`** quits from a script, through the same `endModal( cmQuit )`
+Alt-X uses, so it is not a special exit path that could pass while the real one fails. It
+was added because a scripted exit is the only exit that can be put in front of a build
+with nobody at the far end, and it is read once at startup (`quitAfterMs_()` in
+`src/tui/app.cpp`), not per tick.
+
+| on the box, with | result |
+|---|---|
+| `ATUI_QUIT_AFTER_MS=3000`, idle | exited, RC 0, no trap, prompt clean |
+| `ATUI_QUIT_AFTER_MS=15000`, a turn in flight (`--ask` a count-to-thirty) | exited, RC 0 -- so a turn in mid-stream was cancelled and its worker waited for |
+| `ATUI_QUIT_AFTER_MS=20000`, an **approval dialog open** | **still waiting at 50s**; `key press Enter` declined it and the app then exited RC 0 |
+
+That third row is a platform difference and the interesting find. On the host, timers keep
+running behind a modal dialog -- an instrumented dialog sees tvision's own broadcasts every
+few hundred milliseconds and the tick log keeps printing -- so a stop request is honoured
+in about 0.3s with a dialog on screen. On OS/2 nothing time-based runs there at all: the
+deadline passed 30 seconds earlier and the dialog sat exactly as it was left. The
+explanation that fits both measurements is that tvision collects expired timers inside
+`idle()`, and its modal wait only reaches `idle()` when the wait times out; the POSIX event
+queue's wait has a timeout, while the OS/2 driver's wait returns when there is input. That
+is an inference about the driver rather than something chased to a line of code, but the
+behaviour on both sides is reproducible.
+
+It is not a safety problem, and it is worth being clear why: while the box's dialog is
+open the program is *waiting for a person by design*, with the worker parked on the answer,
+nothing streaming and no tool allowed to start. What it costs is that a scripted exit waits
+for that person too, which is the right answer for a permission question and an annoying
+one for a test script -- so a scripted exit should not leave an approval pending. The host
+does not have this limitation, and the code that closes the dialog on a stop request
+(`ApprovalDialog`) is host-only by effect: on OS/2 there is no signal to notice, and the
+flag is never set.
+
+One OS/2 batch-file trap that briefly hid all of this: `%RC%` is expanded when the line is
+*parsed*, so
+
+    atui.exe --judge-check x& echo A=%RC%& atui.exe --judge-check y& echo B=%RC%
+
+prints the same number twice, whatever the programs did. Ask for the return code on the
+line after, or read what the program printed.
+
+**The heartbeat had been switched on by the wrong question.** Making the scripted exit
+work on the box needed one more change, and the hole it closed was found by trying the same
+thing in the other configuration: the 50ms timer is what started the token-queue poll, so
+it lived inside `#ifdef ATUI_HAVE_NETWORK`. By now that tick also notices stop requests,
+runs the scripted exit, recovers half-written files and keeps the panels sized -- none of
+which has anything to do with having a server. So the no-transport build, the one that can
+never be busy, could not be stopped:
+
+| configuration | timer | `SIGTERM` |
+|---|---|---|
+| network | inside the ifdef | stopped in 0.26s, status 0 |
+| **no transport** | inside the ifdef | **needed SIGKILL at 6s** |
+| no transport | started unconditionally | stopped in 0.25s, status 0 |
+
+The `#ifdef` was correct the day it was written and stopped being correct the day the tick
+acquired a second job, which is the usual shape of this bug: the guard keeps the shape of
+the reason it was added. Anything a timer does is worth asking about this way, because the
+timer is the one place where "only needed when X" quietly becomes "never happens when not
+X". The no-transport build is the one this project tests most (it is the configuration the
+self-test suite runs in), and it had been shipping a program that ignores `SIGTERM`.
+
+Re-verified on the box after the change: scripted exit `HEARTBEAT_QUIT=0`, a turn
+(`--ask`) answers, and `ESC` `x` leaves with `LASTRC=0`.
