@@ -3360,7 +3360,9 @@ nothing left to complain about:
     == 0 diagnostics in 0 files
 
 Counts after the removal: 159 with network and threads, 105 without network, 159 without
-threads, 163 with the live endpoint. The wire types (`OaiRequest`, `OaiMessage`,
+threads, 163 with the live endpoint. They have moved with every finding since -- each one
+added the test that holds it -- and as of 2026-10-22 they are 163 / 109 / 163, and 167 with
+`ATUI_LIVE_BASE_URL` pointing at a reachable server. The wire types (`OaiRequest`, `OaiMessage`,
 `OaiToolCall`, `OaiResponse`) moved to `net/oai_body.h`, which is the header that builds
 a body out of them; `fetchModels` has its own `net/models.h` instead of being declared in
 a client it has nothing to do with.
@@ -3651,3 +3653,67 @@ self-test suite runs in), and it had been shipping a program that ignores `SIGTE
 
 Re-verified on the box after the change: scripted exit `HEARTBEAT_QUIT=0`, a turn
 (`--ask`) answers, and `ESC` `x` leaves with `LASTRC=0`.
+
+## What a long session costs (measured 2026-10-22)
+
+The project's constraints are about small machines -- 1.5MB was too large a binary for some
+targets, and the RAM on the same machines is not generous -- and nothing had ever measured
+what atui costs over an afternoon of chatting. Every test does one turn. A leak that takes
+twenty turns to matter passes all of them, and so does a per-turn allocation that is freed
+only when the program ends, which is not a leak a detector would name but is exactly the
+thing that fills a small machine.
+
+`tools/tui_soak.py` is the measurement: the real TUI on a pty, N turns with the real
+endpoint, and after each turn two questions asked of the operating system -- resident size,
+and (on macOS) `leaks`, which finds blocks no pointer reaches.
+
+    ATUI_BASE_URL=http://host:port/v1 ATUI_MODEL=name python3 tools/tui_soak.py --turns 10
+
+    turn     RSS kB   leaked
+    1          3856        0
+    2          3888        0
+    3          3904        0
+    4          3920        0
+    5          3920        0
+    ...        3920        0
+    10         3920        0
+    RSS after turn 3: 3904 kB, after turn 10: 3920 kB, growth 16 kB
+    exit: ESC x status 0
+    SOAK OK: 10 turns, 16 kB growth, no unreachable memory
+
+The shape is the answer, not the number: an allocator taking arena is a curve that flattens,
+and this one flattens by turn 4 and stays flat for six more turns with zero unreachable
+bytes at every sample. A leak is a slope. The tool therefore warms up for three turns and
+measures growth from there, because a check that cries wolf at normal allocator behaviour
+is a check that gets ignored; and the default limit, 256kB, is deliberately loose -- the
+point is to notice a trend, not to police the last page.
+
+**Growing is not the same as leaking, and one of them is by design.** The transcript keeps
+the conversation, so a long session with long answers legitimately grows: that memory *is*
+the conversation, and the program has no authority to forget what was said. What this soak
+asks is narrower and harder to see -- whether the per-turn machinery hands its memory back:
+the HTTP stream and its buffers, the SSE framing, the queue between the worker and the
+screen, the tool records, the permission decision. Hence the short replies in the soak
+("remember the token MARIGOLD-n and reply with just ok"): the conversation stays small so
+that the machinery is what is being weighed.
+
+A second measurement, cheaper and worth knowing: `leaks --atExit` on one full turn reports
+
+    Process 99761: 0 leaks for 0 total leaked bytes.
+
+which is the whole transport and screen lifecycle -- start, connect, stream, draw, quit --
+with nothing left unreachable. It is also the reason the scripted exit matters beyond
+testing: `leaks --atExit` and any end-of-run detector needs the program to *run its exit*,
+and until ATUI_QUIT_AFTER_MS there was no way to make atui exit on a machine nobody is
+sitting at.
+
+Two limitations to keep this honest. The leak half is macOS only -- Darwin's AddressSanitizer
+has no LeakSanitizer (`AddressSanitizer: detect_leaks is not supported on this platform`),
+so the Apple tool is the one to ask, and elsewhere the script still measures resident size
+and prints `n/a` in that column. And the box itself is not measured at all: OS/2 has no such
+tool, and resident size on a 486 is a different question from resident size on a Mac. What
+carries over to the target is the *shape* -- nothing in the turn path allocates from a pool
+that only frees at exit, which is what a flat curve over ten turns is evidence for -- and
+what does not is the number, which says atui sits at about 3.9MB on macOS and that is not a
+figure to quote for eComStation.
+
