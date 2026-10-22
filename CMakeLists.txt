@@ -61,6 +61,7 @@ set(ATUI_SOURCES
     "${ATUI_SRC_DIR}/core/paths.cpp"
     "${ATUI_SRC_DIR}/core/childenv.cpp"
     "${ATUI_SRC_DIR}/core/journal.cpp"
+    "${ATUI_SRC_DIR}/core/signals.cpp"
     # Settings persistence: INI helper + glue. Always built so provider/theme
     # settings survive across runs.
     "${ATUI_SRC_DIR}/settings/ini.cpp"
@@ -137,6 +138,7 @@ if(ATUI_BUILD_TESTS)
         "${ATUI_TESTS_DIR}/live_test.cpp"
         "${ATUI_TESTS_DIR}/markdown_test.cpp"
         "${ATUI_TESTS_DIR}/ascii_fold_test.cpp"
+        "${ATUI_TESTS_DIR}/signals_test.cpp"
     )
 endif()
 

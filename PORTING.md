@@ -99,6 +99,13 @@ Checked rather than assumed:
 - **Signals are not installed by the transport**, and the one disposition that had to
   change (SIGPIPE, above) is changed per socket rather than for the process, so a
   thread that did not open a socket is not affected by one that did.
+- **The only handlers in the program are the three that ask it to stop**
+  (`core/signals.h`: SIGHUP, SIGTERM, SIGINT), and a handler sets one
+  `volatile sig_atomic_t` and returns. Nothing else may happen there -- no lock, no
+  allocation, no write to the terminal -- because a handler runs on whatever
+  instruction the signal landed on, and this program has measured the alternative: a
+  handler that writes to a terminal nobody is reading never returns. The event loop
+  notices the flag on its next tick and quits through the same path Alt-X uses.
 
 ## What a threaded host has to guard
 

@@ -58,6 +58,7 @@
 #include "core/ai.h"
 #include "tui/ascii_fold.h"
 #include "core/journal.h"
+#include "core/signals.h"
 #include "core/strutil.h"      // Fmt and toString: Watcom has no std::ostringstream
 #include "tui/theme.h"
 #include "tui/md_style.h"
@@ -242,6 +243,48 @@ enum ApprovalAnswer { apNo = 0, apOnce = 1, apSession = 2 };
 // silently clips the rest, which here would hide the one line saying what is
 // actually about to run. This box is laid out around the message instead, and
 // No is the default button, so Enter and Esc both decline.
+// The approval box, with one reflex of its own: if a stop was asked for -- terminal
+// closed, `kill`, Ctrl-C -- close the dialog with cmNo on the next event.
+//
+// It has to be here rather than on the tick, because the tick is the code that is
+// sitting inside this dialog: `pumpChat_()` opens it from the timer handler and blocks in
+// `execView`, and a second tick cannot walk back into the pump (`g_inStep_` says no) --
+// so while the box is up, nothing else in atui is going to look at the flag.  What does
+// arrive is tvision's own traffic to the modal group: measured with an instrumented
+// dialog, broadcasts of `evBroadcast` come through within a few hundred milliseconds of
+// the box opening, which is what makes the check fire without anybody touching a key.
+//
+// cmNo because "the program is ending" is not a yes: nothing that had not already been
+// cleared before the dialog opened is run on the way out.  And the flag stays set -- the
+// tick that runs after this dialog returns finds it and quits through the path that
+// cancels a turn and waits for the worker.
+//
+// Measured against a real endpoint, asked to run `touch /tmp/atui_stop_probe` (outside
+// the project, so it asks) and sent a SIGTERM with the box on screen:
+//
+//     with this class    stopped in 0.3s, status 0, the file never created   (x4)
+//     without it         still waiting at 8s, needed SIGKILL; file never created
+class ApprovalDialog : public TDialog
+{
+public:
+    ApprovalDialog( const TRect &bounds, TStringView title )
+        : TWindowInit( &TDialog::initFrame ),
+          TDialog( bounds, title )
+    {
+    }
+
+    virtual void handleEvent( TEvent &event )
+    {
+        if( event.what != evNothing && atui::core::shutdownRequested() )
+        {
+            clearEvent( event );
+            endModal( cmNo );
+            return;
+        }
+        TDialog::handleEvent( event );
+    }
+};
+
 int showApprovalDialog_( const atui::tools::ApprovalRef &req )
 {
     // The keys are spelled out because the box is safe by default: Enter and
@@ -289,7 +332,7 @@ int showApprovalDialog_( const atui::tools::ApprovalRef &req )
     const short w = (short) ( textW + 6 );
     const short h = (short) ( (short) rows.size() + 5 );
     const std::string title = atui::tui::foldForTerminal( "Confirm - " + req->tool );
-    TDialog *d = new TDialog( TRect( 0, 0, w, h ), title.c_str() );
+    ApprovalDialog *d = new ApprovalDialog( TRect( 0, 0, w, h ), title.c_str() );
     d->options |= ofCentered;
     d->insert( new TStaticText( TRect( 3, 1, (short) ( w - 2 ), (short) ( h - 4 ) ),
                                 text.c_str() ) );
@@ -1222,6 +1265,26 @@ public:
         {
             turnDebug_( "tick", 0, 0 );   // before anything can swallow it, so a
                                           // quiet pump can be told from a quiet timer
+
+            // Asked to stop -- the terminal closed, `kill`, Ctrl-C.  Handled here, on
+            // the tick, because that is as close to the signal as this program can
+            // safely get: the handler that noticed it may set a flag and nothing else
+            // (`core/signals.h`).  Quitting goes through the same endModal Alt-X uses,
+            // so a turn in flight is cancelled and waited for, and the screen is put
+            // back by the code that took it over instead of by a handler halfway
+            // through a write to a terminal nobody is reading.  This runs with a
+            // dialog open too, and `endModal` here ends the program from under it
+            // (measured: an approval question on screen, SIGTERM, gone in 0.3s with
+            // status 0 and the tool never run).
+            if( atui::core::shutdownRequested() )
+            {
+                atui::core::clearShutdownRequest();
+                turnDebug_( "stop", 0, 0 );
+                clearEvent( event );
+                endModal( cmQuit );
+                return;
+            }
+
             // First thing: if the last run died with a file half written, that is
             // more urgent than anything the model is about to say. Runs once.
             maybeRecoverInterruptedWrites_();
@@ -1718,8 +1781,13 @@ void pumpChat_()
     atui::tools::ApprovalRef question;
     if( g_queue_.takeQuestion( question ) )
     {
-        const int answer = showApprovalDialog_( question );
-        g_queue_.answer( answer != apNo, answer == apSession );
+        // Asked to stop, so do not ask: the answer to a permission question that is
+        // not going to be answered is the safe one, and there is no point drawing a
+        // box that the tick below is about to quit from under.
+        const bool stopping = atui::core::shutdownRequested();
+        const int answer = stopping ? apNo : showApprovalDialog_( question );
+        g_queue_.answer( !stopping && answer != apNo,
+                         !stopping && answer == apSession );
     }
 
     g_inStep_ = false;
@@ -3209,6 +3277,12 @@ int run_app()
     // Apply persisted settings (theme + provider) before the UI is built,
     // so the palette and endpoint reflect the saved config.
     atui::settings::loadAll();
+
+    // Before the TApp, on purpose: tvision saves the dispositions in force when it
+    // takes the console over and calls them from its own handler, so installing here
+    // means a stop restores the screen AND sets the flag.  Installed later it would
+    // replace tvision's handler, and the terminal would go out wrong.
+    atui::core::installShutdownHandlers();
 
     TApp app;
 

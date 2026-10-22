@@ -53,7 +53,8 @@ SECOND = 'Later.'
 POKE_AT = 3.0
 
 
-# Filled in by the cleanup: how long SIGTERM took to become an exit, or None.
+# Filled in by the cleanup: (how long SIGTERM took to become an exit, whether SIGTERM
+# was what did it).
 LATENCY = [ None ]
 
 
@@ -121,25 +122,33 @@ def main():
             if t_answer is not None and ( t_busy is not None or poked ):
                 break
     finally:
-        # Term, five seconds, then kill.  The grace period is not tidiness: an earlier
-        # version of this harness hung forever on `wait()`, which turned out to be a real
-        # finding -- atui ignores SIGTERM (measured: an idle instance survived it for six
-        # seconds and needed SIGKILL), so any harness that asks politely waits forever.
-        # That belongs to the terminal layer, not to threading, and is noted in TESTING.md.
+        # Term, five seconds, then kill.  Keep reading the pty throughout, which is the
+        # difference between measuring the program and measuring the harness: tvision's
+        # signal handler restores the screen by writing to the terminal, and a write to
+        # a pty nobody is reading blocks.  A harness that stops reading and then asks
+        # politely waits forever, and reports the program for what its own pipes did --
+        # measured 2026-10-22: an instance at 0% CPU and alive indefinitely, and the
+        # same instance gone in 0.23s once somebody drained the pty.
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         except OSError:
             pass
         killed = time.time()
         while proc.poll() is None and time.time() - killed < 5.0:
-            time.sleep(0.05)
+            try:
+                r, _, _ = select.select( [ master ], [], [], 0.05 )
+                if r:
+                    os.read( master, 65536 )      # drained, and discarded
+            except OSError:
+                pass
+        graceful = proc.poll() is not None
         if proc.poll() is None:
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except OSError:
                 pass
             proc.wait()
-        LATENCY[0] = time.time() - killed
+        LATENCY[0] = (time.time() - killed, graceful)
         try:
             os.close(master)
         except OSError:
@@ -153,8 +162,10 @@ def main():
     def show( v ):
         return '%5.1fs' % v if v is not None else ' never'
     print( '--- liveness: %s ---' % binary )
-    print( '  closed in %5.1fs%s' % ( LATENCY[0], '' if LATENCY[0] < 4.9
-                                      else ' (only after SIGKILL: SIGTERM is ignored)' ) )
+    stopped_with_term = LATENCY[0][1]
+    print( '  closed in %5.1fs%s' % ( LATENCY[0][0],
+                                      '' if stopped_with_term else
+                                      ' (only after SIGKILL: SIGTERM did not stop it)' ) )
     print( '  message sent at %s   poked at %s   busy line at %s   answer at %s'
            % ( show( typed_at ), show( poked_at ), show( t_busy ),
                show( t_answer ) ) )
@@ -168,8 +179,14 @@ def main():
     if t_answer is None:
         print('FAIL: the poke was answered but the first answer never arrived')
         return 1
-    print('OK: the loop ran during the turn, the turn finished, and no second message '
-          'was sent')
+    if not stopped_with_term:
+        # Not decoration: stopping is part of working.  A program that has to be killed
+        # cannot be stopped by a script, a session closing, or Ctrl-C, and it leaves its
+        # terminal in whatever shape the last escape sequence put it in.
+        print('FAIL: SIGTERM did not stop it (needs SIGKILL)')
+        return 1
+    print('OK: the loop ran during the turn, the turn finished, no second message was '
+          'sent, and SIGTERM stopped it')
     return 0
 
 

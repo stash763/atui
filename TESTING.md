@@ -2894,6 +2894,8 @@ for the full six seconds of the probe and needed `SIGKILL`.  Any harness that as
 politely hangs forever (two of them did before this was understood), and it is worth
 fixing in the terminal layer: the durability work means there is state worth flushing on
 the way out.
+    *(Corrected later, and both halves of it: the signal was not being ignored, and the
+    fix turned out not to belong in the terminal layer.  See "Stopping atui" below.)*
 
 Gate state with this change: 167 passed (network, threads), 167 (network, `ATUI_NO_THREADS`),
 94 (neither), `gate98.py` at its one known diagnostic, `watcom-gaps.py` unchanged at 28.
@@ -3250,14 +3252,17 @@ The presence check -- "it uses sudo" -- caught it before the judge was asked any
 which is how that tier is meant to work, and the model behaved correctly afterwards: it
 did not retry, it offered the unprivileged alternative.
 
-One thing to know about reading a tick log across a dialog. The log goes quiet while a
-modal dialog is open -- 65 seconds with no `tick` line in this run -- and that is not a
-freeze. `cmTimerExpired` is a broadcast, and during a modal loop tvision delivers
-broadcasts to the dialog's views rather than to the application behind it, so the main
-view's timer handler does not run. The event loop is running (the dialog is what is
-driving it, and Enter arrived); it is one particular handler that is silent. Records the
-worker queues while a dialog is open wait for it to close, which is right -- there is
-one turn at a time, and the worker is parked on the answer anyway.
+One thing to know about reading a tick log across a dialog: it goes quiet, and that is
+not a freeze. The reason is simply that the tick handler is the code that opened the
+dialog -- `pumpChat_()` calls `showApprovalDialog_()` from the timer handler and blocks
+in `execView` -- so the handler never returns to be ticked again, and a second tick
+walking into the pump is refused by `g_inStep_`. (What I wrote here first -- that tvision
+routes the `cmTimerExpired` broadcast to the dialog's views instead of the application --
+was a guess, and an instrumented dialog disproved it: events reach the dialog group
+fine, including tvision's own broadcasts, roughly every few hundred milliseconds.) The
+event loop is running, because the dialog is what drives it. Records the worker queues
+meanwhile wait for it to close, which is right: one turn at a time, and the worker is
+parked on the answer in any case.
 
 ## Three ways to build the wrong program and hear nothing about it
 
@@ -3359,3 +3364,86 @@ threads, 163 with the live endpoint. The wire types (`OaiRequest`, `OaiMessage`,
 `OaiToolCall`, `OaiResponse`) moved to `net/oai_body.h`, which is the header that builds
 a body out of them; `fetchModels` has its own `net/models.h` instead of being declared in
 a client it has nothing to do with.
+
+## Stopping atui, and what "it ignores SIGTERM" had actually been (measured 2026-10-22)
+
+The liveness harness carried a comment saying atui ignores SIGTERM: an idle instance
+survived it for five seconds and needed SIGKILL. That was true, and the explanation
+attached to it -- something in the terminal layer swallows the signal -- was the wrong
+story, and it had been written down as fact.
+
+Three measurements, in order:
+
+| what | result |
+|---|---|
+| idle TUI, harness stopped reading the pty, SIGTERM | alive at 5 s, needed SIGKILL, **0% CPU** |
+| `atui --self-test`, same signal | gone in 0.64 s (status -15) |
+| idle TUI, **same everything**, but the harness drains the pty while it waits | **gone in 0.23 s** |
+
+0% CPU and alive is a block, not a loop. The block is in tvision's handler: it installs
+one handler for ten signals, and that handler first calls `Platform::signalCallback` to
+restore the screen -- which writes escape sequences to the terminal -- and only then
+re-raises with the disposition it replaced. A write to a pty whose reader has stopped
+blocks. The harness had stopped reading at the moment it decided the run was over, so it
+asked politely into a full pipe and blamed the program for answering slowly.
+
+Two things were wrong and both got fixed.
+
+**The harness has to keep reading while it waits for the exit** (`tui_liveness.py`),
+because otherwise it measures its own pipes and reports them as the program's behaviour.
+Stopping reading is now not available as an option: the drain is inside the wait loop,
+and a SIGTERM that does not stop atui is a `FAIL` rather than a footnote, since needing
+`SIGKILL` means a script cannot stop it and a closed terminal cannot.
+
+**atui now asks to stop rather than being interrupted.** `core/signals.{h,cpp}` installs
+handlers for SIGHUP (the terminal went away), SIGTERM (a script asked) and SIGINT
+(Ctrl-C), each of which sets a `volatile sig_atomic_t` and returns; the 50 ms tick
+notices and calls `endModal( cmQuit )`, the same call the Alt-X menu makes.
+
+Three cases against a real endpoint, each stopped with SIGTERM:
+
+    before:  idle             survived 5s at 0% CPU, needed SIGKILL
+    after:   idle             stopped in 0.42s, status 0
+             mid-turn         stopped in 0.42s, status 0    (worker cancelled, joined)
+             approval dialog  stopped in 0.30s, status 0    (tool never run)
+
+The third case needs its own line, and its own code. An approval dialog is opened *by*
+the tick handler, which then blocks in `execView`, so the tick cannot notice anything
+until the dialog closes -- the flag has to be checked inside the dialog's own event
+handler, which is `ApprovalDialog` in `src/tui/app.cpp`. Measured as an A/B, with atui
+asked to run `touch /tmp/atui_stop_probe` (outside the project root, so the policy asks)
+and sent a SIGTERM with the box on screen:
+
+    with the dialog's check     stopped in 0.3s x4, status 0, file never created
+    without it                  still waiting at 8s, needed SIGKILL, file never created
+
+Nothing dangerous follows from the second row -- the tool does not run either way, which
+is the deny-by-default rule holding -- but a program that cannot be stopped while it is
+asking a question is a program that has to be killed, and killing it is how a terminal
+gets left in the wrong mode.
+
+The handler doing nothing but setting a flag is not laziness -- it is the only thing a
+handler may do -- and where it is installed is a decision worth keeping: it goes in
+*before* the `TApp` is constructed, because tvision saves the dispositions in force when
+it takes the console over and invokes them from its own handler. Installing afterwards
+would replace tvision's handler, and then a stop would be noticed marginally faster (no
+screen-write in the way, so a pty with no reader could not block it) at the cost of
+leaving the terminal in raw mode with the program's screen still on it whenever the
+process dies without running its teardown. Restoring the terminal first is the right
+order even when it can block; the case it blocks in is one where nothing is going to be
+read anyway.
+
+`SIGQUIT` is deliberately not caught: somebody asking for a core dump wants the default
+action, not a polite exit. OS/2 and Windows compile the handlers out -- OS/2 has no
+SIGTERM or SIGHUP to install -- so nothing changes on the target, and the module is two
+no-op functions and a `false` there.
+
+Three tests, 162 total: that SIGTERM asks and the process is still there to notice (the
+only way that can be asserted is by reaching the next line), that SIGHUP and SIGINT do
+the same, and that the default action really has been replaced.
+
+One footnote, because it happened twice while this was being measured. The trap is easy
+to fall into again: a probe that waits for the exit *without reading the pty* reports
+`NEEDS KILL` for all three cases above, including the two that stop in under half a
+second. Every stop-waiting loop in every harness for this program has to have an
+`os.read()` in it.
