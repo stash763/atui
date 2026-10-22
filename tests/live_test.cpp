@@ -1,37 +1,40 @@
 // Opt-in integration tests against a real OpenAI-compatible server.
 //
-// The mock server (tests/oai_mock_test.cpp) covers the protocol shapes; what a
-// mock cannot prove is that a *real* model reasons, calls tools, and uses what
-// they return. These tests do that, and they are registered only when
-// ATUI_LIVE_BASE_URL names a server, so the ordinary self-test stays offline,
-// fast and deterministic.
+// The scripted responder (tests/chat_request_test.cpp, tests/chat_turn_test.cpp)
+// covers the protocol shapes; what a mock cannot prove is that a *real* model
+// reasons, calls tools, and uses what they return. These tests do that, and they are
+// registered only when ATUI_LIVE_BASE_URL names a server, so the ordinary self-test
+// stays offline, fast and deterministic.
 //
 //     ATUI_LIVE_BASE_URL=http://10.196.88.170:10001/v1 ./build/atui --self-test
 //
 // That endpoint is the lab llama.cpp box; its model streams both
-// `reasoning_content` and `tool_calls`, which is what the reasoning and tool
-// tests need. ATUI_LIVE_MODEL pins a different model (default: whatever the
-// server serves first) and ATUI_LIVE_API_KEY sends a bearer token if it needs
-// one. The tests are slow by nature - a 27B model thinks out loud - so each one
-// waits minutes rather than seconds.
+// `reasoning_content` and `tool_calls`, which is what the reasoning and tool tests
+// need. ATUI_LIVE_MODEL pins a different model (default: whatever the server serves
+// first) and ATUI_LIVE_API_KEY sends a bearer token if it needs one. The tests are
+// slow by nature -- a 27B model thinks out loud -- so each one waits minutes rather
+// than seconds.
+//
+// The turn is driven the way the OS/2 build drives it on a worker: `start`, then
+// `step` until it stops being busy. No threads here, which is also what lets this
+// file compile at the language level the target uses -- the version this replaces
+// needed <thread> and lambdas, and so could never run on the box that most needs a
+// live test.
 //
 // Network-only: without ATUI_HAVE_NETWORK the body is empty.
 #include "harness.h"
 
 #ifdef ATUI_HAVE_NETWORK
 
-#include "net/oai_chat_model.h"
-#include "net/oai_client.h"
+#include "net/chat_turn.h"
+#include "net/models.h"
 #include "net/provider.h"
-#include "net/token_queue.h"
 #include "tools/tool.h"
 #include "tools/tool_registry.h"
 
-#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace atui_test {
@@ -115,46 +118,88 @@ struct Streamed
 {
     std::string content, thinking, status;
     std::string tool;    // tool records, marked: "call<...>" / "out<...>"
+    int questions;       // how often the user would have been asked
 };
 
-// Sends `prompt` and keeps draining while the worker streams. Returns false if
-// the request never started or never finished within `timeoutMs`.
-bool askLive( const std::string &prompt, Streamed &out, int timeoutMs )
+// The application, as far as the turn is concerned: everything it says is filed by
+// kind, and an approval question is counted and answered yes -- these tests are
+// asking the server to do the thing, so agreeing to the tool is the point.
+class Recorder : public atui::net::ChatTurn::Sink
 {
-    atui::net::TokenQueue q;
-    atui::net::OaiChatModel model;
-    if( !model.ask( prompt, "", &q ) ) return false;
+public:
+    Streamed *out;
+    int questionsAnswered;
+    bool finished;
+    bool ok;
 
-    // Everything currently queued, sorted by kind.
-    const auto drain = [&]( void )
+    Recorder() : out( 0 ), questionsAnswered( 0 ), finished( false ), ok( false ) {}
+
+    virtual void onText( const std::string &piece, bool isThinking )
     {
-        atui::net::Token t;
-        while( q.pop( t ) )
-        {
-            if( t.kind == atui::net::tkThinking )       out.thinking += t.text;
-            else if( t.kind == atui::net::tkStatus )    out.status   += t.text;
-            else if( t.kind == atui::net::tkTool )      out.tool += "call<" + t.text + ">\n";
-            else if( t.kind == atui::net::tkToolResult ) out.tool += "out<" + t.text + ">\n";
-            else                                        out.content  += t.text;
-        }
-    };
+        if( isThinking ) out->thinking += piece;
+        else             out->content  += piece;
+    }
+    virtual void onStatus( const std::string &line )
+    {
+        out->status += line;
+        out->status += "\n";
+    }
+    virtual void onToolCall( const std::string &preview )
+    {
+        out->tool += "call<" + preview + ">\n";
+    }
+    virtual void onToolNote( const std::string &noteText )
+    {
+        out->tool += "note<" + noteText + ">\n";
+    }
+    virtual void onToolResult( const std::string &result )
+    {
+        out->tool += "out<" + result + ">\n";
+    }
+    virtual void onApprovalNeeded( const atui::tools::ApprovalRef & )
+    {
+        ++out->questions;
+    }
+    virtual void onTurnFinished( bool isOk )
+    {
+        finished = true;
+        ok = isOk;
+    }
+};
+
+// Runs one exchange to the end. `allow` answers whatever the policy asks about,
+// because a live test that declines its own tool call proves nothing.
+bool askLive( const std::string &prompt, Streamed &out, bool allow, int timeoutMs )
+{
+    Recorder rec;
+    rec.out = &out;
+
+    atui::net::ChatTurn turn;
+    if( !turn.start( prompt, &rec ) )
+    {
+        note( "the turn would not start: " + prompt );
+        return false;
+    }
 
     const int stepMs = 100;
-    for( int waited = 0; ; waited += stepMs )
+    for( int waited = 0; turn.busy(); waited += stepMs )
     {
-        drain();
-        // done_ is set by the worker only after its last token, so nothing can
-        // arrive after the final drain below.
-        if( model.isDone() ) break;
+        turn.step( stepMs );
+        // Approval is delivered through the queue in the app; here it is the same
+        // answer given as soon as the question is seen.
+        while( rec.questionsAnswered < out.questions )
+        {
+            turn.answerApproval( allow, false );
+            ++rec.questionsAnswered;
+        }
         if( waited > timeoutMs )
         {
             note( "timed out waiting for the answer to: " + prompt );
+            turn.cancel( "live test timed out" );
             return false;
         }
-        std::this_thread::sleep_for( std::chrono::milliseconds( stepMs ) );
     }
-    drain();
-    return true;
+    return rec.finished;
 }
 
 // --- the tests ----------------------------------------------------------------
@@ -188,11 +233,11 @@ int test_live_chat_stream()
 {
     useLive();
     Streamed got;
-    if( !askLive( "Reply with exactly one word: OK", got, 300000 ) )
+    if( !askLive( "Reply with exactly one word: OK", got, true, 300000 ) )
         return -1;
     if( blank( got.content ) )
     {
-        note( "no content tokens (status: " + got.status + ")" );
+        note( "no content (status: " + got.status + ")" );
         return -2;
     }
     return 0;
@@ -206,7 +251,7 @@ int test_live_reasoning()
     useLive();
     Streamed got;
     if( !askLive( "Think it through step by step: what is 17 times 23? "
-                  "End your answer with the number.", got, 420000 ) )
+                  "End your answer with the number.", got, true, 420000 ) )
         return -1;
     if( blank( got.thinking ) )
     {
@@ -259,20 +304,20 @@ int test_live_tool_round_trip()
     useLive();
     Streamed got;
     if( !askLive( "Call the live_probe tool and then tell me exactly what it "
-                  "returned.", got, 420000 ) )
+                  "returned.", got, true, 420000 ) )
         return -1;
 
     if( probe.calls == 0 )
     {
         note( std::string( "the model never called live_probe (status: " +
-                           got.status + " answer: " + got.content + " )") );
+                           got.status + " answer: " + got.content + " )" ) );
         return -2;
     }
     // The record has to say which tool ran and what it returned: it is the only
     // lasting trace of the call once the (here unnecessary) dialog is gone.
     if( got.tool.find( "call<live_probe" ) == std::string::npos )
     {
-        note( "tool ran but no transcript record was pushed: " + got.tool );
+        note( "tool ran but no transcript record was reported: " + got.tool );
         return -3;
     }
     if( got.tool.find( kProbeResult ) == std::string::npos )
@@ -296,9 +341,9 @@ void init_live_tests()
 {
     if( liveBase().empty() ) return;
 
-    register_test( "live: model list",     &test_live_models );
-    register_test( "live: chat stream",    &test_live_chat_stream );
-    register_test( "live: reasoning",      &test_live_reasoning );
+    register_test( "live: model list",      &test_live_models );
+    register_test( "live: chat stream",     &test_live_chat_stream );
+    register_test( "live: reasoning",       &test_live_reasoning );
     register_test( "live: tool round trip", &test_live_tool_round_trip );
 }
 

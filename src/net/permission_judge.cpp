@@ -3,7 +3,7 @@
 
 #include "chat_request.h"
 #include "http_simple.h"      // pumpUntilDone
-#include "oai_client.h"
+#include "oai_body.h"
 #include "provider.h"
 #include "tools/permissions.h"
 

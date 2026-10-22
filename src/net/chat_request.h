@@ -14,12 +14,12 @@
 // What it adds over the transport underneath:
 //
 //   * building the body and the URL, so the caller thinks in requests, not strings;
-//   * SSE framing and the OpenAI-shaped extraction from it (shared with the curl
-//     client through oai_body.cpp, so the two transports cannot disagree about what
-//     the model said);
+//   * SSE framing and the OpenAI-shaped extraction from it, both shared with the
+//     body builder through oai_body.cpp, so the two halves of a conversation cannot
+//     disagree about what the model said;
 //   * a status that is not 2xx becoming an error *with the server's words in it*.
-//     The curl path did not look at the status at all, so a 401 arrived as a
-//     perfectly successful empty answer -- the single most confusing failure this
+//     The client this replaced did not look at the status at all, so a 401 arrived as
+//     a perfectly successful empty answer -- the single most confusing failure this
 //     program produced, because it was indistinguishable from a model that had
 //     nothing to say.
 //
@@ -30,8 +30,7 @@
 #define ATUI_NET_CHAT_REQUEST_H
 
 #include "http.h"
-#include "oai_body.h"      // DeltaSink
-#include "oai_client.h"    // OaiRequest, OaiResponse
+#include "oai_body.h"      // DeltaSink, OaiRequest, OaiResponse
 #include "sse.h"
 
 #include <string>

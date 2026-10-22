@@ -3,8 +3,9 @@
 // The hand-rolled transport sends with plain `send(..., 0)`.  On a POSIX socket that
 // raises SIGPIPE, whose default disposition is to terminate the process -- so a
 // server that hangs up at the wrong moment would not be an error message in atui, it
-// would be atui gone.  curl was managing this (see the comment in
-// `oai_client.cpp`), and `SIG_IGN` at startup is not available as an answer here:
+// would be atui gone.  A transport built on libcurl was given this for free by
+// `CURLOPT_NOSIGNAL`, so the question was never asked there.  `SIG_IGN` at startup is
+// not available as an answer here:
 // an ignored SIGPIPE is inherited by every command atui runs through the shell.
 //
 // Run it three ways and compare:

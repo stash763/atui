@@ -73,6 +73,7 @@
 #include "net/chat_turn.h"
 #include "net/turn_queue.h"
 #include "core/thread.h"
+#include "net/models.h"
 #include "net/permission_judge.h"
 #include "tools/approval.h"
 #endif

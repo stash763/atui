@@ -11,9 +11,10 @@ endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Feature gates.
-#  Network (libcurl + SSE) is enabled for v1 Linux but the code is added
-#  in milestone M2; the gate is wired up now so the build stays clean.
-option(ATUI_HAVE_NETWORK "Use libcurl for the network transport" OFF)
+#  Network is the hand-rolled HTTP/SSE transport in src/net -- sockets, our own
+#  framing, no third-party HTTP library.  The build without it is the test harness:
+#  atui needs a server, so that configuration does not offer a chat at all.
+option(ATUI_HAVE_NETWORK "Enable the network transport (plain HTTP to an OpenAI-compatible server)" OFF)
 
 option(ATUI_BUILD_TESTS "Build the self-test suite" ON)
 option(ATUI_DEBUG_KEYS "Log key events to /tmp/atui_keylog.txt" OFF)
@@ -77,8 +78,9 @@ set(ATUI_SOURCES
     "${ATUI_SRC_DIR}/tools/time_tool.cpp"
     "${ATUI_SRC_DIR}/tools/edit_file_tool.cpp"
     "${ATUI_SRC_DIR}/tools/run_command_tool.cpp"
-    # Provider settings singleton: no libcurl dependency, always built so the
-    # Options > Providers dialog works regardless of the network transport.
+    # Provider settings singleton: it holds strings and reads a file, so it has no
+    # transport dependency and is always built -- which is what lets the endpoint
+    # field be validated before anything tries to connect.
     # The endpoint splitter goes with it: the dialog has to be able to say "that
     # is not a URL" about the line being typed, which is the same question the
     # transport asks before opening a socket.
@@ -111,23 +113,20 @@ if(ATUI_HAVE_NETWORK)
         "${ATUI_SRC_DIR}/net/sock_posix.cpp"
         "${ATUI_SRC_DIR}/net/sock_os2.cpp"
         "${ATUI_SRC_DIR}/net/sock_win.cpp"
-        "${ATUI_SRC_DIR}/net/oai_client.cpp"
-        "${ATUI_SRC_DIR}/net/oai_chat_model.cpp"
         "${ATUI_SRC_DIR}/net/permission_judge.cpp"
         "${ATUI_SRC_DIR}/net/json_extract.cpp"
-        "${ATUI_SRC_DIR}/net/token_queue.cpp"
         "${ATUI_SRC_DIR}/net/dbg.cpp"
     )
     add_compile_definitions(ATUI_HAVE_NETWORK=1)
-    # NOTE: libcurl is still linked, because OaiClient still uses it.  The state
-    # machine above is what replaces it, and this line goes away when the chat
-    # model is driven by it (the OS/2 build has never had curl and never will).
+    # And nothing is linked for it: the transport is sockets and string handling,
+    # the same code the Open Watcom build compiles.  An HTTP library would be one
+    # more dependency to find on every platform, and the reason it was worth it --
+    # TLS -- is the one thing atui does not do.
 endif()
 if(ATUI_BUILD_TESTS)
     list(APPEND ATUI_SOURCES
         "${ATUI_TESTS_DIR}/runner.cpp"
         "${ATUI_TESTS_DIR}/selftest.cpp"
-        "${ATUI_TESTS_DIR}/oai_mock_test.cpp"
         "${ATUI_TESTS_DIR}/http_test.cpp"
         "${ATUI_TESTS_DIR}/chat_request_test.cpp"
         "${ATUI_TESTS_DIR}/chat_turn_test.cpp"
@@ -135,7 +134,7 @@ if(ATUI_BUILD_TESTS)
         "${ATUI_TESTS_DIR}/url_test.cpp"
         "${ATUI_TESTS_DIR}/thread_test.cpp"
         "${ATUI_TESTS_DIR}/turn_queue_test.cpp"
-        "${ATUI_TESTS_DIR}/oai_live_test.cpp"
+        "${ATUI_TESTS_DIR}/live_test.cpp"
         "${ATUI_TESTS_DIR}/markdown_test.cpp"
         "${ATUI_TESTS_DIR}/ascii_fold_test.cpp"
     )
@@ -175,11 +174,6 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "OS2")
 endif()
 
 if(ATUI_HAVE_NETWORK)
-    find_package(CURL REQUIRED)
-    target_link_libraries(atui
-        PRIVATE
-            CURL::libcurl
-    )
     if(WIN32)
         # The other platforms have sockets in the C library; Windows keeps them in
         # ws2_32, and net/sock_win.cpp is the only thing that wants it.

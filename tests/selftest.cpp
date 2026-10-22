@@ -3,7 +3,7 @@
 #include "tui/theme.h"
 #include "net/provider.h"
 #include "net/json_extract.h"
-#include "net/oai_client.h"
+#include "net/oai_body.h"
 #include "tools/tool_registry.h"
 #include "tools/tool.h"
 #include "tools/time_tool.h"
@@ -39,8 +39,6 @@
 
 namespace atui_test {
 
-// Defined in tests/oai_mock_test.cpp (network builds only).
-void init_network_tests();
 // Defined in tests/http_test.cpp (network builds only): the event-loop HTTP
 // transport, against a scripted responder on localhost.
 void init_http_transport_tests();
@@ -2900,10 +2898,8 @@ void init()
     register_test( "finish_reason: parse", &test_finish_reason );
     register_test( "tool: call frags split", &test_tool_call_frags_split );
     register_test( "tool: args with braces", &test_tool_call_args_with_braces );
-    // Socket-backed OpenAI client + chat-model integration tests (defined in
-    // tests/oai_mock_test.cpp).
-    init_network_tests();
-    // The transport underneath them (tests/http_test.cpp).
+    // The transport first (tests/http_test.cpp): the request, the response, the
+    // failures. Everything below is built on it.
     init_http_transport_tests();
     // The layer above it: SSE framing and one streaming completion
     // (tests/chat_request_test.cpp).

@@ -13,7 +13,7 @@
 
 #include <string>
 
-#include "oai_client.h"      // OaiRequest, OaiResponse
+#include "oai_body.h"        // OaiRequest, OaiResponse
 #include "tools/judge.h"
 
 namespace atui {

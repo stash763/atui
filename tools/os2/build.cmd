@@ -242,16 +242,17 @@ if not exist obj\at mkdir obj\at
 del obj\at\*.obj >> %LOG% 2>&1
 for %%f in (src\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% %NET% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
 for %%f in (src\core\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% %NET% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
-rem The transport: atui's own HTTP over BSD sockets.  Listed in atui_net.rsp rather
-rem than by wildcard because three files in that directory cannot be built here --
-rem oai_client.cpp and oai_chat_model.cpp want libcurl, which Open Watcom does not
-rem have, and token_queue.cpp is the hand-off the state machines replace.  Wildcards
-rem work on this command processor; `call :label` subroutines do not, so the
-rem exclusions live in the list where a person can read them (see netall).
-echo [at] atui_net.rsp
-echo ---- atui_net.rsp ---- >> %LOG%
-%WPP% %NET% -fo=obj\at\ @atui_net.rsp >> %LOG% 2>&1
-if errorlevel 1 set RC=1
+rem The transport: atui's own HTTP over BSD sockets, the same 15 files every other
+rem platform compiles.  This used to be `@atui_net.rsp`, a hand-written list, because
+rem three files in the directory could not be built here at all (the libcurl client
+rem and the worker-thread hand-off it left behind).  They are gone, so the list is
+rem gone with them: a list of files that happens to equal the directory is a way of
+rem forgetting a file, and a source file that is not compiled on this target is a
+rem bug that only appears as a link error -- or, worse, as an older object that still
+rem works.  A `for` over a wildcard needs no `call :label` here (netall documents why
+rem that combination does not work when skipping is required), so this is the plain
+rem loop the other directories use.
+for %%f in (src\net\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% %NET% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
 for %%f in (src\settings\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% %NET% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
 for %%f in (src\tools\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% %NET% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
 for %%f in (src\tui\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% %NET% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
@@ -498,11 +499,11 @@ rem so far has been that a file which compiles under gcc's C++98 mode does not
 rem necessarily compile here, and the failures are cheap in isolation and expensive
 rem in a link of 200 objects.
 rem
-rem Three files are skipped: oai_client.cpp and oai_chat_model.cpp (libcurl, which
-rem this platform does not have) and token_queue.cpp (the worker-thread handoff the
-rem state machines replace).  The ATUI_HAVE_NETWORK define is what the CMake build
-rem sets for the same sources, so the conditional code being compiled is the code the
-rem other platforms ship.
+rem Nothing in src\net is skipped any more: the libcurl client and the worker-thread
+rem hand-off that could not be built here were deleted once the TUI stopped using
+rem them.  The ATUI_HAVE_NETWORK define is what the CMake build sets for the same
+rem sources, so the conditional code being compiled is the code the other platforms
+rem ship.
 rem ---------------------------------------------------------------------------
 rem thread: the thread-capability probe.  %2 the probe source in the root, %3 the
 rem executable.  Compiled -bm (multithreaded C runtime): without it two threads
@@ -588,10 +589,8 @@ rem OK.  A success that means "nothing happened" is the worst thing a build driv
 rem can do, so the exclusions live in the list instead of in skip logic, and the
 rem object count is echoed because it is the evidence that files went in.
 rem
-rem netall.rsp is every net/core/tools source except the three that cannot be built
-rem here -- oai_client.cpp and oai_chat_model.cpp (libcurl, which this platform does
-rem not have) and token_queue.cpp (the worker-thread handoff the state machines
-rem replace) -- plus main.cpp, which is not wanted until the TUI is rewired.  The
+rem netall.rsp is every net/core/tools source, minus main.cpp, which is not wanted in
+rem a compile-only pass because it would drag the TUI in with it.
 rem The three sock_*.cpp files are all listed on purpose: each is empty unless its
 rem own platform macro is set, so compiling all three is also a check that those
 rem guards hold.  Keep the list in step with CMakeLists.txt.

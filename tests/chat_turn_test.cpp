@@ -510,6 +510,71 @@ int test_turn_stops_at_the_tool_round_limit()
     return 0;
 }
 
+// Whether the model's own reasoning goes back to it on the next turn.
+//
+// Off by default: replaying a chain of thought costs the tokens twice and most
+// servers ignore it. On, it goes out as `reasoning_content`, the spelling the
+// reasoning-capable servers agree on. Both directions are asserted on the request
+// rather than on the object, because the failure that matters is a server that
+// either never sees the reasoning it asked for or sees a transcript nobody meant to
+// send. These two are the tests the old client had; a feature with no test on the
+// path that runs is a feature that has already gone.
+int runTwoTurnsWithThinking( bool resend, std::string &wireOut )
+{
+    TurnFixture f;
+    if( !f.ok ) return -1;
+    atui_test::ScriptedHttp server;
+    if( !server.start() ) return -2;
+    useServer( server.port() );
+    atui::net::providerSettings().thinkingResend = resend;
+    atui::tools::permissionMode() = atui::tools::pmAskAll;
+
+    server.enqueueResponse( sseResponse(
+        deltaJson( "reasoning_content", "think about it" ) +
+        deltaJson( "content", "first answer", "stop" ) + "data: [DONE]\n\n" ) );
+
+    Recorder one;
+    ChatTurn turn;
+    if( !turn.start( "q one", &one ) ) return -3;
+    if( driveTurn( turn, one ) != 0 ) return -4;
+    if( one.thinking != "think about it" ) return -5;   // it did reach the app
+    if( one.text != "first answer" ) return -6;
+
+    server.enqueueResponse( sseResponse( sseAnswer( "second" ) ) );
+    Recorder two;
+    if( !turn.start( "q two", &two ) ) return -7;
+    if( driveTurn( turn, two ) != 0 ) return -8;
+
+    wireOut = server.lastRequest();
+    return 0;
+}
+
+int test_turn_thinking_is_not_replayed_by_default()
+{
+    std::string wire;
+    int rc = runTwoTurnsWithThinking( false, wire );
+    if( rc != 0 ) return rc;
+    if( wire.find( "first answer" ) == std::string::npos )
+        return -6;                     // the answer itself is always carried
+    if( wire.find( "reasoning_content" ) != std::string::npos )
+        return -7;
+    if( wire.find( "think about it" ) != std::string::npos )
+        return -8;
+    return 0;
+}
+
+int test_turn_replays_thinking_when_the_provider_asks()
+{
+    std::string wire;
+    int rc = runTwoTurnsWithThinking( true, wire );
+    if( rc != 0 ) return rc;
+    if( wire.find( "reasoning_content" ) == std::string::npos )
+        return -7;
+    if( wire.find( "think about it" ) == std::string::npos )
+        return -8;
+    return 0;
+}
+
 } // anonymous namespace
 
 void init_chat_turn_tests()
@@ -530,6 +595,10 @@ void init_chat_turn_tests()
                    &test_turn_refuses_a_second_message );
     register_test( "turn: an unreadable judgement asks instead of running",
                    &test_turn_asks_when_the_judgement_is_unreadable );
+    register_test( "turn: thinking is not replayed by default",
+                   &test_turn_thinking_is_not_replayed_by_default );
+    register_test( "turn: thinking is replayed when the provider asks",
+                   &test_turn_replays_thinking_when_the_provider_asks );
     register_test( "turn: the tool round limit stops and says so",
                    &test_turn_stops_at_the_tool_round_limit );
 }

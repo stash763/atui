@@ -177,11 +177,13 @@ struct Recorder : public ChatRequest::Sink
 
 bool start( ChatRequest &request, atui_test::ScriptedHttp &server,
             Recorder &sink, const std::string &model = "test-model",
-            const std::string &content = "hi" )
+            const std::string &content = "hi",
+            const std::string &toolsJson = std::string() )
 {
     OaiRequest req;
     req.model = model;
     req.stream = true;
+    req.toolsJson = toolsJson;
     OaiMessage m;
     m.role = "user";
     m.content = content;
@@ -409,7 +411,8 @@ int test_chat_merges_tool_call_fragments()
 }
 
 // A status that is not 2xx has to arrive as an error carrying the server's words:
-// the curl path ignored the status, and an expired key looked like an empty answer.
+// the client this transport replaced ignored the status, and an expired key looked
+// like an empty answer.
 int test_chat_error_status_carries_the_body()
 {
     atui_test::ScriptedHttp server;
@@ -579,6 +582,55 @@ int test_chat_bad_url_is_refused_before_connecting()
     return 0;
 }
 
+// The tool catalogue, on the wire.
+//
+// A client that drops the catalogue still holds a perfectly good conversation --
+// about nothing -- and the model's failure to call a tool looks exactly like a model
+// that does not want to. So this is asserted on the bytes, not through a turn. It is
+// also asserted in both directions: some servers reject a request whose "tools" key is
+// present but empty, which is why an empty catalogue means no key at all.
+int test_chat_the_tool_catalogue_goes_on_the_wire()
+{
+    atui_test::ScriptedHttp server;
+    if( !server.start() )
+        return -1;
+    server.enqueueResponse( sseResponse( sseBody( "x" ) ) );
+
+    const std::string tools =
+        "[{\"type\":\"function\",\"function\":{\"name\":\"get_time\","
+        "\"parameters\":{\"type\":\"object\",\"properties\":{}}}}]";
+
+    Recorder sink;
+    ChatRequest request;
+    if( !start( request, server, sink, "m", "hi", tools ) )
+        return -2;
+    if( !Recorder::drive( request ) )
+        return -3;
+
+    const std::string sent = server.lastRequest();
+    if( sent.find( "\"tools\":[" ) == std::string::npos )
+        return -4;
+    if( sent.find( "\"tool_choice\":\"auto\"" ) == std::string::npos )
+        return -5;
+    if( sent.find( "\"name\":\"get_time\"" ) == std::string::npos )
+        return -6;
+
+    // And with nothing to offer, the key is absent rather than empty.
+    server.enqueueResponse( sseResponse( sseBody( "y" ) ) );
+    Recorder sink2;
+    ChatRequest bare;
+    if( !start( bare, server, sink2, "m" ) )
+        return -7;
+    if( !Recorder::drive( bare ) )
+        return -8;
+    const std::string bareSent = server.lastRequest();
+    if( bareSent.find( "\"tools\":" ) != std::string::npos )
+        return -9;
+    if( bareSent.find( "tool_choice" ) != std::string::npos )
+        return -10;
+    return 0;
+}
+
 } // anonymous namespace
 
 void init_chat_request_tests()
@@ -611,6 +663,8 @@ void init_chat_request_tests()
                    &test_chat_escapes_control_characters_in_the_body );
     register_test( "chat: bad url is refused before connecting",
                    &test_chat_bad_url_is_refused_before_connecting );
+    register_test( "chat: the tool catalogue goes on the wire",
+                   &test_chat_the_tool_catalogue_goes_on_the_wire );
 }
 
 } // namespace atui_test

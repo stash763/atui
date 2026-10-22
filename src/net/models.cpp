@@ -1,12 +1,5 @@
-// The model list: `GET /models`, and the ids inside it.
-//
-// The Providers dialog asks for this while it is being edited, which is a caller with
-// no event loop to step -- so it goes through the blocking face of the transport
-// (`httpGet`) rather than the state machine the chat path uses.  Same framing, same
-// deadlines, same rule about `https`.
-//
-// Declaration stays in `oai_client.h`, where its callers already find it.
-#include "oai_client.h"
+// The model list.  Declarations and the reason it blocks are in `models.h`.
+#include "models.h"
 
 #include "http_simple.h"
 #include "json_extract.h"

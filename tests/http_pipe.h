@@ -1,9 +1,7 @@
 // A scripted raw HTTP responder, for testing the transport as a client.
 //
-// `mock_http.h` is the OpenAI-shaped server: it answers with a 200 and an SSE body
-// and is the right thing to test a client's request-building and SSE parsing
-// against.  Testing the HTTP layer needs the opposite -- a server that is
-// deliberately awkward, because that is where a state machine fails: headers that
+// Testing the HTTP layer needs a server that is deliberately awkward, because that
+// is where a state machine fails: headers that
 // arrive in three pieces, a body with chunk framing, a connection that stops in the
 // middle.  So this one plays exactly the script it is given: for each queued script
 // it accepts one connection, records the request bytes, writes the pieces in order

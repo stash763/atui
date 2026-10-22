@@ -3259,7 +3259,7 @@ driving it, and Enter arrived); it is one particular handler that is silent. Rec
 worker queues while a dialog is open wait for it to close, which is right -- there is
 one turn at a time, and the worker is parked on the answer anyway.
 
-## Two ways to build the wrong program and hear nothing about it
+## Three ways to build the wrong program and hear nothing about it
 
 Found on the same afternoon, both silent, both costing a measurement run.
 
@@ -3281,3 +3281,81 @@ relink" I submitted after starting `atui.exe` went into its chat prompt, and the
 OK` lines I read as their output were the previous commands' leftovers. Two builds were
 not what I thought they were. The check is the prompt on the screen -- `[<P4>-D:\atui]`
 -- before any submit that expects a shell.
+**The target held source the repository no longer had.** `atui-remote sync` uploads what
+changed and has never deleted anything -- deliberately, since `D:\atui` is a working
+directory with probes and logs in it. So after the curl-era transport was deleted from
+the tree, four of its sources were still sitting in `src\net` on the box, and the build
+mode that compiles that directory by wildcard compiled them:
+
+    src\net\oai_chat_model.h(13): Error! E059: col(17) unable to open 'thread'
+    src\net\oai_client.cpp(13): Error! E059: col(22) unable to open 'curl/curl.h'
+
+which reads like a compiler or flags problem, not like a file that is not in `git
+status`. Worth noticing that the previous arrangement -- a hand-written `atui_net.rsp`
+listing the transport sources because three of them could not be built on OS/2 -- was
+what kept this invisible, and that the reason for the list disappeared with the files.
+The list is gone, `src\net` is compiled the way every other directory is, and the
+question "does the target hold something the tree deleted" is now answered at sync time:
+
+    sync: the manifest knows 4 file(s) the tree no longer has; if the target
+          still holds them, a wildcard build compiles them:
+            d:\atui\src\net\oai_client.cpp
+            ...
+          delete them there, or `sync --prune` to delete and forget them
+
+The evidence is the manifest, so the wording says *if*: it records what was sent, not
+what is there now. Detection is scoped to the directories the current `--map`s write to,
+because `tests` used to be mapped and its 14 entries would otherwise raise a warning
+every sync about files no build looks at. Pruning 25 such files off the box (four
+transport sources, seven C++11 header shims from the earlier compat cleanup, and old
+probe scratch) was followed by a full `build.cmd atui` at RC=0, which is the proof that
+nothing still needed them.
+
+## One transport, and the tests moved with it (2026-10-22)
+
+The curl-era client (`oai_client`, `oai_chat_model`, `token_queue`) is deleted. It had
+no caller left -- only its own two test files named it -- and keeping a second transport
+alive for its sake meant every claim about the wire had two answers.
+
+What was not duplicated had to be ported before the deletion, or it would have been lost
+quietly. Three behaviours were covered only by the old suite:
+
+| the old test | what it actually protected | now |
+|---|---|---|
+| `oai: tools serialized` | the tool catalogue reaching the server | `chat: the tool catalogue goes on the wire`, asserted on the request bytes, both directions: `tools` + `tool_choice:auto` when there is a catalogue, and no `tools` key at all when there is not, because some servers reject the empty array |
+| `oai: chat resend off` | reasoning not replayed unless asked for | `turn: thinking is not replayed by default` |
+| `oai: chat resend on` | `reasoning_content` replayed when asked | `turn: thinking is replayed when the provider asks` |
+
+The middle two matter more than they look: `thinking_resend` is a user setting, the
+shared body builder implements it, and `ChatTurn` sets `asst.reasoning` -- so the feature
+was alive on the new path and untested there, which is how a feature goes. Both are
+asserted on the second turn's request body rather than on the object, because what hurts
+is a server that either never sees the reasoning it was given or receives a transcript
+nobody meant to send.
+
+The live suite (`ATUI_LIVE_BASE_URL=...`) was rewritten from `OaiClient` +
+`OaiChatModel` + `TokenQueue` onto `ChatTurn`, which made it smaller and, more usefully,
+dropped its need for `<thread>` and lambdas -- so the live check against the lab endpoint
+is now written at the language level the OS/2 build uses. All four pass against
+`10.196.88.170:10001`:
+
+    self-test PASS live: model list
+    self-test PASS live: chat stream
+    self-test PASS live: reasoning
+    self-test PASS live: tool round trip
+    self-test summary: 163 passed, 0 failed
+
+`libcurl` is out of `CMakeLists.txt` with it: the transport is sockets and string
+handling, the same files the Open Watcom build compiles. An HTTP library would be one
+more dependency to find on every platform, and the one thing it buys -- TLS -- is the
+thing atui refuses. With the last C++11 dependency gone from `src/`, the strict gate has
+nothing left to complain about:
+
+    $ python3 tools/gate98.py
+    == 0 diagnostics in 0 files
+
+Counts after the removal: 159 with network and threads, 105 without network, 159 without
+threads, 163 with the live endpoint. The wire types (`OaiRequest`, `OaiMessage`,
+`OaiToolCall`, `OaiResponse`) moved to `net/oai_body.h`, which is the header that builds
+a body out of them; `fetchModels` has its own `net/models.h` instead of being declared in
+a client it has nothing to do with.

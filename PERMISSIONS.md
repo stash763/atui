@@ -110,11 +110,11 @@ it (`src/core/childenv.{h,cpp}`, `run_command_tool.cpp`):
   to whatever the network library was doing on it. The child's mask is therefore
   emptied before it execs: a command that cannot be interrupted, or that never hears
   that the pipe it was writing to closed, is a bug nobody can reproduce at the
-  shell. For the same reason `curl` is not allowed to ignore `SIGPIPE` or install a
-  `SIGALRM` handler to time a name resolution - `CURLOPT_NOSIGNAL` is set on both
-  handles. An ignored signal is one the command inherits, and a `longjmp` out of a
-  handler curl installed is a crash in the middle of a streamed answer with no
-  reproducible cause.
+  shell. For the same reason the transport does not ignore `SIGPIPE` process-wide:
+  it asks for `SO_NOSIGPIPE` per socket and `MSG_NOSIGNAL` per send, which is the
+  narrow version of the same request. An ignored signal is one every command inherits,
+  and a tool whose output pipe closed should die saying so rather than run on writing
+  into nothing. `tools/probe_sigpipe.cpp` is the measurement behind that choice.
 
 Together these are why "the user approved it" is not the only thing standing between
 a confused model and the machine: the command it runs cannot read the keys out of

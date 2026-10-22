@@ -7,8 +7,8 @@
 // results back and ask again, up to a limit, until the model gives an answer instead
 // of a request.
 //
-// That is the same sequence `oai_chat_model.cpp` runs on a worker thread, written as
-// a state machine instead: `start()` begins it, `step(waitMs)` advances it, and
+// That is the sequence the threaded client used to run, written as a state machine
+// instead: `start()` begins it, `step(waitMs)` advances it, and
 // everything the user sees goes through `Sink`.  Two reasons, one of them permanent.
 // A state machine does not care who pumps it -- the TUI's idle handler, a CLI caller
 // willing to wait, a DOS program doing several things on one stack from a timer hook,
@@ -38,7 +38,7 @@
 #define ATUI_NET_CHAT_TURN_H
 
 #include "chat_request.h"
-#include "oai_client.h"
+#include "oai_body.h"
 
 #include "tools/approval.h"
 

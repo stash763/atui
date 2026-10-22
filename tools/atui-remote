@@ -1518,6 +1518,98 @@ def _load_manifest(path):
     return state
 
 
+def _map_prefixes(maps, root):
+    """Where the maps are allowed to put files: (prefixes, root_is_a_target).
+
+    Needed because the manifest is history and the maps change.  `tests` used to be
+    mapped and no longer is, so the manifest still holds d:\\atui\\tests\\... entries
+    that nothing in the current tree claims -- true statements about the past and
+    useless as warnings, since no build looks at them.  Only entries under a prefix
+    the maps actually write to can be in the way.
+    """
+    prefixes, root_target = [], False
+    for _local, target in maps:
+        target = target.strip().strip("\\").replace("/", "\\")
+        if target in ("", "."):
+            root_target = True
+        else:
+            prefixes.append((root + "\\" + target).lower())
+    return prefixes, root_target
+
+
+def _stale_in_manifest(manifest, plan, maps, root):
+    """Manifest entries for files the tree no longer has, sorted.
+
+    Naming these is the point. Sync adds and updates and has never removed, because
+    the remote root is somebody's working directory with probes and logs in it, and a
+    tool that decides an unfamiliar file is garbage is how work gets thrown away. But
+    a source file the tree deleted and the target kept is not harmless either: a
+    build that compiles a directory by wildcard compiles it too, and the failure
+    arrives as an error about a file nobody can find in the repository -- which reads
+    like a compiler or flags problem, and cost a full build cycle and a log dig to
+    diagnose.  Measured 2026-10-22: four deleted transport sources, still compiled.
+
+    The evidence here is the manifest, not the target: it says what was sent, not what
+    is there now, which is why the message says "may" and why `--prune` exists.
+    """
+    planned = set(remote.lower() for _l, remote, _d in plan)
+    prefixes, root_target = _map_prefixes(maps, root)
+    root_len = len(root) + 1
+    stale = []
+    for path in _load_manifest(manifest)["files"]:
+        if path in planned:
+            continue
+        here = any(path.startswith(pfx + "\\") for pfx in prefixes)
+        if not here and root_target:
+            # The root map lands files directly in the build directory, so "directly
+            # below the root" is as close as this can say "belongs to that map".
+            here = path.startswith(root.lower()) and "\\" not in path[root_len:]
+        if here:
+            stale.append(path)
+    return sorted(stale)
+
+
+def _report_stale(stale):
+    if not stale:
+        return
+    warn("sync: the manifest knows %d file(s) the tree no longer has; if the target"
+         % len(stale))
+    warn("      still holds them, a wildcard build compiles them:")
+    for path in stale[:8]:
+        warn("        " + path)
+    if len(stale) > 8:
+        warn("        ... and %d more" % (len(stale) - 8))
+    warn("      delete them there, or `sync --prune` to delete and forget them")
+
+
+def _prune(args, stale):
+    """Delete the stale files on the target and forget them locally.
+
+    A delete of a file that is already gone is not a failure -- the manifest, not the
+    target, is what is out of date -- so the only thing reported is what was forgotten.
+    """
+    if not stale:
+        print("sync: nothing to prune")
+        return 0
+    ftp = _ftp(args)
+    for path in stale:
+        try:
+            ftp.delete(path)
+        except ftplib.all_errors:
+            pass                      # already gone, or read-only: forget it either way
+    try:
+        ftp.quit()
+    except ftplib.all_errors:
+        pass
+    state = _load_manifest(args.manifest)
+    for path in stale:
+        state["files"].pop(path, None)
+    with open(args.manifest, "w") as f:
+        json.dump(state, f, indent=1, sort_keys=True)
+    print("sync: pruned %d file(s) from the target and the manifest" % len(stale))
+    return 0
+
+
 def _do_sync(args):
     """Mirror the mapped paths onto the target.
 
@@ -1529,10 +1621,15 @@ def _do_sync(args):
     plan = _sync_plan(_parse_maps(args.map), args.remote_root, args.exclude)
     state = _load_manifest(args.manifest)
     recorded = state["files"]
+    maps = _parse_maps(args.map)
+    stale = _stale_in_manifest(args.manifest, plan, maps, args.remote_root)
+    if getattr(args, "prune", False):
+        return _prune(args, stale), 0, 0
     changed = [entry for entry in plan
                if recorded.get(entry[1].lower()) != hashlib.sha256(entry[2]).hexdigest()]
 
     if args.dry_run:
+        _report_stale(stale)
         for _local, remote_path, data in changed:
             print("would send %s (%d bytes)" % (remote_path, len(data)))
         print("sync: %d to send, %d unchanged (dry run)"
@@ -1540,6 +1637,7 @@ def _do_sync(args):
         return len(changed), len(plan) - len(changed), 0
 
     if not changed:
+        _report_stale(stale)          # nothing to send is exactly when stale files matter
         return 0, len(plan), 0
 
     ftp = _ftp(args)
@@ -1563,6 +1661,7 @@ def _do_sync(args):
     except OSError as exc:
         warn("could not write %s: %s (the next sync sends everything again)"
              % (args.manifest, exc))
+    _report_stale(stale)
     return uploaded, len(plan) - len(changed), failed
 
 
@@ -1575,6 +1674,8 @@ def add_sync_options(p):
                    help="record of what the target holds (default %s)" % MANIFEST_NAME)
     p.add_argument("--exclude", action="append", default=[], metavar="GLOB")
     p.add_argument("--dry-run", action="store_true", help="report, do not send")
+    p.add_argument("--prune", action="store_true",
+                   help="also delete files the manifest knows that the tree no longer has")
     p.add_argument("--verbose", action="store_true")
 
 
