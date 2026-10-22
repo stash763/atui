@@ -3447,3 +3447,72 @@ to fall into again: a probe that waits for the exit *without reading the pty* re
 `NEEDS KILL` for all three cases above, including the two that stop in under half a
 second. Every stop-waiting loop in every harness for this program has to have an
 `os.read()` in it.
+
+## An unopened stream is an exit-time crash on Watcom (measured 2026-10-22)
+
+    [<P4>-D:tui]atui.exe --judge-check "sudo ls"
+    ask  sudo ls                   rung 6   too indirect to check automatically - it uses sudo
+    SYS1808:
+    The process has stopped.  The software diagnostic code (exception code) is  0005.
+
+The answer was right. The program died after printing it, so nothing pointed at the
+cause, and `--version` exited cleanly, which said the fault belonged to something
+`--judge-check` builds. It took a ladder of runs to find, and the way they were taken is the
+part worth keeping.
+
+**Probe 1: is it teardown?** Watcom's `_exit()` (from `<process.h>`) leaves without running
+static destructors. Called at the end of `judgeCheck`, the trap disappeared, so the fault
+was in teardown -- which is also the least informative answer this probe can give, because
+by then every interesting line has already run.
+
+**Probe 2: bisect by construction.** An env-gated ladder of early returns, each one
+constructing one more subsystem and then returning *normally*, so that run's statics are
+destroyed the way the real run destroys them. One build, one variable, one command per
+row:
+
+| `ATUI_STAGE` | what was constructed before returning | exit |
+|---|---|---|
+| 0 | settings | clean |
+| 2 | + tool registry and the default tools | clean |
+| 3 | + one `decide()` | clean |
+| 4 | + one `decideWithAgent()` | clean |
+| 5 | + the provider store (`permissionAgentModel()`) | clean |
+| 6 | + the whole loop body: label, escape, decide, report | clean |
+| 7 | an `std::ifstream` that is never opened, never read | clean |
+| 8 | **the same stream, with `readLine()` called on it** | **SYS1808 0005** |
+| (unset) | the real run | **SYS1808 0005** |
+
+Row 8 is the bug, and row 6 says the code that contained it was innocent: `judgeCheck`'s
+loop read its command from `argv`, emptied the list, looped once more, fell past the empty
+`commands` and `useStdin` tests into the corpus branch, and called `readLine( file, line )`
+on an `std::ifstream` that in that mode had never been given a file. Watcom returns 0,
+the loop breaks, the summary prints, the process exits, and somewhere in the C++ runtime's
+stream cleanup the bounds check fires. The host's library does none of this, which is why
+162 tests and every gate said the program was fine.
+
+**The guard that would not have caught it.** `if ( !file ) return` is the reflex, and it
+is correct for a *failed open*, because a failed open sets `failbit`. A stream that was
+never given a file is not in an error state at all: it is merely empty, and `if (file)`
+says true (measured on both Watcom and libstdc++: `never ? 1 : 0` gives 1). So the fix is
+structural rather than defensive -- the loop now ends when it has nothing to read:
+
+```cpp
+        else if( !corpus.empty() )      { ... readLine( file, line ) ... }
+        else                            { break; }        // was: read the unopened file
+```
+
+After it, `--judge-check` with a command, with a corpus file, with a missing corpus file,
+and with `--json` all exit silently on the box. The other five `ifstream` uses in `src/`
+were checked and all of them construct with a path and test the result before reading
+(`settings/ini.cpp`, `core/journal.cpp` x3, `core/paths.cpp`), which is the rule this one
+broke: **construct a stream with its file, or do not read it.**
+
+Exception 0005 is not a page fault (that would be 000E), which is why it reads like an
+assertion rather than memory damage -- consistent with a bounds check inside the stream
+implementation rather than a wild pointer.
+
+Two things to reuse from the method. A staged env-gated ladder costs one build and answers
+"which subsystem's statics" definitively, where a debugger would have needed a working
+`wd` session over telnet. And `_exit()` is a two-line answer to "is this teardown?", which
+is worth knowing before anything else is tried -- though on its own it is nearly useless,
+since almost everything in a C++ program is teardown.

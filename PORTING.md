@@ -99,6 +99,12 @@ Checked rather than assumed:
 - **Signals are not installed by the transport**, and the one disposition that had to
   change (SIGPIPE, above) is changed per socket rather than for the process, so a
   thread that did not open a socket is not affected by one that did.
+- **A stream is constructed with its file or it is not read.** Reading an
+  `std::ifstream` that was never given a file returns failure and looks harmless; on OS/2
+  with Open Watcom it traps during exit, after the program has printed its correct answer
+  (`SYS1808`, exception 0005). `if (!stream)` does not detect it -- an unattached stream
+  is not in an error state -- so it has to be avoided by structure. Measured and written up
+  in TESTING.md, "An unopened stream is an exit-time crash on Watcom".
 - **The only handlers in the program are the three that ask it to stop**
   (`core/signals.h`: SIGHUP, SIGTERM, SIGINT), and a handler sets one
   `volatile sig_atomic_t` and returns. Nothing else may happen there -- no lock, no

@@ -205,7 +205,7 @@ int judgeCheck( int argc, char **argv )
             if( from == std::string::npos ) continue;
             command = line.substr( from );
         }
-        else
+        else if( !corpus.empty() )
         {
             std::string line;
             if( !atui::core::readLine( file, line ) ) break;
@@ -223,6 +223,19 @@ int judgeCheck( int argc, char **argv )
                 continue;
             }
             corpusLine = true;
+        }
+        else
+        {
+            // No queued command, no stdin, no corpus: nothing left to read, so
+            // stop. The loop used to fall through to the corpus branch here and
+            // call readLine() on `file`, which in this branch was never opened --
+            // and `if (!file)` would not have caught it, because a stream that was
+            // never opened is not in an error state, it is merely empty. Watcom's
+            // streams survive the read and take it out behind the bike sheds at
+            // exit: SYS1808, exception 0005, three frames deep in teardown, with
+            // the answer printed correctly first. Measured both ways on P4 and
+            // written up in TESTING.md.
+            break;
         }
 
         if( command.empty() ) continue;
