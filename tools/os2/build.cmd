@@ -14,11 +14,14 @@ rem                           one file, then stop.  The port is being written
 rem                           file by file, and this asks the cheap question --
 rem                           does this file compile -- without waiting on 177
 rem                           others.
-rem      build.cmd tvone tvision\source\tvision\hardwvos2.cpp
+rem      build.cmd tvone tvision\tvision\hardwvos2.cpp
 rem                           one tvision library file, compiled into obj\tv so
 rem                           that `lib` picks it up.  Same question as `one`,
 rem                           other directory, and the fast way to test a driver
 rem                           change: tvone, atui, exe.
+rem      build.cmd exe candidate.exe
+rem                           link the program under another name, so it can be
+rem                           started while atui.exe is running at a screen.
 rem      build.cmd lib       archive the library objects into obj\tvision.lib.
 rem      build.cmd link hello.cpp hello.exe
 rem                           compile one program and link it: %2 is the source,
@@ -446,9 +449,15 @@ rem Watcom does not link the OS/2 kernel by default and compat/'s mutex calls
 rem DosCreateMutexSem out of it.
 echo ================== atui.exe ==================
 if not exist obj\at\main.obj goto one_failed
+rem The image name can be given (`build.cmd exe candidate.exe`) so a candidate can
+rem be linked and started while atui.exe is running at some screen: the linker
+rem cannot write an image that is loaded, and its `Permission denied` reads like a
+rem build failure to anyone going through build.log.
+set EXENAME=atui.exe
+if not "%2"=="" set EXENAME=%2
 if exist link.rsp del link.rsp
 echo system os2v2 > link.rsp
-echo name atui.exe >> link.rsp
+echo name %EXENAME% >> link.rsp
 echo op m >> link.rsp
 echo option stack=256k >> link.rsp
 for %%f in (obj\at\*.obj) do echo file %%f >> link.rsp
@@ -463,7 +472,7 @@ rem no-network configuration above is compile-checked rather than linked here.
 echo library tcpip32.lib >> link.rsp
 wlink @link.rsp >> %LOG% 2>&1
 if errorlevel 1 goto one_failed
-dir atui.exe
+dir %EXENAME%
 echo [exe] OK
 goto summary
 

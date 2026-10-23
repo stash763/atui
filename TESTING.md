@@ -4131,3 +4131,62 @@ in 9 files, `cli_check.py` 11 cases, the pty tests (`tui_smoke`, `tui_liveness`,
 `tty_typing`) pass against the live model, `tui_soak.py --turns 4` reports 0 kB growth, and
 `leaks --atExit` on the self-test reports 0 leaked bytes. The OS/2 build was rebuilt and
 re-run on the box after the change.
+
+## The keyboard under VIO, measured by where the letters land (2026-10-23)
+
+Reported from the box's own screen: menus unclickable, hotkeys unreliable, arrow navigation
+unreliable, and "if you try to open any of the menu functions the program terminates". The
+first three are one cause -- the driver read keys from conio, which gives a byte with no scan
+code and no modifier state -- and the fourth turned out to be that cause as well.
+
+Under VIO the driver asks the keyboard instead (`KbdPeek` for a waiting key, `KbdCharIn` to
+take it), and each key arrives as one record with its scan code and modifier state. Measured
+over the bridge, which is the only instrument here, by typing and looking at the result:
+
+| test | expected | got |
+| --- | --- | --- |
+| `ABCDE` then Left then `X` | caret moves left one, `X` lands mid-word | `ABCXD` |
+| then Right then `Q` | caret back at the end | `ABCDXEQ` |
+| `ABCDE` then Backspace | one character gone | `ABCD` |
+| Escape, then `x` | the letter `x`, and the program alive | `x` in the input line, alive |
+| Escape, then `yz` | `yz` | `xyz` appended, alive |
+
+The last two are the termination. The stream path reads an escape followed by a letter as
+Alt+letter -- the only way to spell a hotkey over a cable that carries no Alt -- and Alt-X is
+Quit. So Escape to dismiss something followed by a key was an exit, which is exactly "I opened
+a menu and it terminated": a menu is where Escape gets pressed. That heuristic is now
+confined to the stream path, where there is nothing else it can be, and it cannot fire at a
+real keyboard, because the real one says `KBDSTF_ALT` when Alt is held.
+
+Two things about the mapping were worth measuring rather than assuming:
+
+*   `KBDSTF_*` and tvision's `controlKeyState` are different bit layouts (OS/2: shift 0x01,
+    ctrl 0x04, alt 0x08; tvision on a flat build uses the Windows console values: alt 0x0002,
+    ctrl 0x0008, shift 0x0010). They are mapped one bit at a time. Assigning one to the other
+    turns Alt into Shift and every hotkey into a wrong key.
+*   An extended key arrives as `chChar = 0xE0` with the real scan code beside it, and views
+    compare against `0x4800` for Up -- so the 0xE0 is a marker and is dropped, not passed on
+    as a character. `bld/vi/os2/biosos2.c` in the Open Watcom tree does the same.
+
+Backspace needed one small correction: a client sends DEL (0x7F) and the session can hand that
+through as the character, where the box's own keyboard answers 0x08 with scan 0x0E. Measured
+before the correction: Backspace did nothing at all. After: `ABCD` from `ABCDE`.
+
+**The mouse cannot be verified from here, and it is worth being exact about why.** The code is
+written against `MouOpen`/`MouSetEventMask`/`MouGetNumQueEl`/`MouReadEventQue` as Open Watcom's
+own OS/2 UI uses them -- including the quirk that a *release* is not an event and arrives as a
+motion with no button bit -- but the only way to cause a mouse event over this bridge would be
+to send the session a mouse report, and the server does not translate them: xterm's SGR
+`\e[<0;3;25M` arrives at the session as the literal text `[<0;3;25M`, escape swallowed, the
+same way `ESC[H` is. So the mouse needs a hand on the box, and that is stated here rather than
+left to be discovered.
+
+One build trap, since it produced a binary that silently was not the code under test:
+`build.cmd tvone <file>` compiles into `obj\tv`, and `build.cmd exe` links `obj\tvision.lib` --
+which is only re-grown from `obj\tv` by `build.cmd lib`. `tvone` then `exe` links the
+*previous* driver and reports OK. The sequence is `tvone`, `lib`, `exe` (`build.cmd atui`
+implies `lib`).
+
+`build.cmd exe candidate.exe` now exists so a candidate can be linked and run while
+`atui.exe` is loaded at a screen -- the linker cannot write an image that is running, and its
+`Permission denied` reads like a compile error to anyone reading build.log from here.

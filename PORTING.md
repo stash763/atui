@@ -296,8 +296,28 @@ they would make the application lie about the screen it has been handed.
 
 VIO is worth what it costs: the size is real, the box's own display works, the caret is the
 session's caret, attributes are the byte tvision already carries, a program can read back
-what it drew, and the repaint flood cannot occur because the server sends what changed. What
-it does not do yet:
+what it drew, and the repaint flood cannot occur because the server sends what changed.
+Input goes the same way as output once the screen does: `KbdPeek` asks whether a key is
+waiting and `KbdCharIn` takes it, which delivers **one record per key carrying the character,
+the scan code and the modifier state**. That is not a refinement:
+
+*   The scan code is what `tkeys.h` and every view compare against. conio answers a byte, so
+    the stream path carries a table of the scan code a character probably came from, and an
+    arrow key is two bytes that can arrive 390 ms apart and be read as two keys.
+*   The modifier state is what an Alt hotkey *is*. There is no byte that says Alt, so on the
+    stream path `kbAltF` cannot be produced at all -- and the heuristic that stands in for it
+    (an escape followed by a letter means Alt+letter) is worse than nothing at a real
+    keyboard, because Escape is a key people press on its own: Escape then `x` quit the
+    program, since Alt-X is Quit. Measured before and after, both over the same session:
+    under the stream path it exits, under VIO the `x` arrives as the letter it was.
+*   `MouOpen`/`MouSetEventMask`/`MouReadEventQue` give the machine's own mouse. Note what the
+    queue does not report: a button release. That arrives as a plain motion with no button
+    bit set, which is why Open Watcom's own UI reads `fs & 0x06` as "button 1 is down" and
+    never looks for an up. tvision wants press and release as separate events, and works it
+    out from the button mask changing between one event and the next, so the driver reports
+    the state it was given and the layer above makes clicks.
+
+What it does not do yet:
 
 *   **Ctrl-C leaves the screen as the program left it.** OS/2 delivers Ctrl-C to a VIO
     process by aborting the console call it is sitting in and cancelling the process at the
@@ -306,9 +326,11 @@ it does not do yet:
     runs, and the saved screen is never written back. `DosSetCtrlCHandler` is the API that
     gives the process the choice instead. Nothing is lost but the operator's patience with
     `cls`: the transcript is flushed with every record.
-*   **The machine's own mouse is not read.** `MouOpen` and `MouGetNumButtons` answer, so the
-    button count is truthful; turning that into events wants a registered queue, and the
-    escape-reported mouse over a session still works.
+*   **The mouse has not been verified from here.** The code is written, it compiles, and the
+    API shapes came from working code rather than from a guess; but this server does not put
+    mouse reports into the session's queue -- sending SGR `\e[<0;3;25M` arrives as the
+    literal text `[<0;3;25M`, with the escape swallowed, the same way `ESC[H` does -- so
+    there is no way to cause a mouse event over a cable. It needs a hand on the box.
 *   **A forced stream in an ANSI-translating session draws garbage.** With VIO present, the
     escapes this driver writes are seen first by the session's own ANSI interpretation
     (`VioGetAnsi` says it is on) and then by the server's translation of the screen, so they
