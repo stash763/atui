@@ -3903,3 +3903,74 @@ they silently broke the text at that point. Any document written by script is wo
 
 and write text containing Windows paths as a raw string.
 
+## The separator that redrew itself forever (measured 2026-10-22)
+
+Reported from the machine: the line between the input panel and the transcript flickers
+constantly, nothing can be typed, and the window does not matter because atui is 80x25 no
+matter what. The last of those is documented above (the size is stated, not discovered).
+The first two were the same bug, and it was ours.
+
+**What it costs to repaint a row 20 times a second.** atui's timer redraws the input panel
+every 50 ms; on the OS/2 driver that draw is written straight to the terminal, so measure
+it. The harness has an idle detector, and it is the cleanest instrument for this:
+
+    tui-test wait idle --session s --timeout 6000
+    wait idle: screen kept changing until timeout      <- atui.exe running
+                                                    (the same session at its shell: returns
+                                                     immediately, which is the control that
+                                                     makes the first result mean something)
+
+And for the number, the per-session verbose log records the raw stream:
+
+    tui-test run -v --session s -- ...        # ~/.tui-test/s.log records all PTY I/O
+    s1=$(wc -c < ~/.tui-test/s.log); sleep 6; s2=$(wc -c < ~/.tui-test/s.log)
+    echo $(( (s2-s1)/6 )) bytes/s             # atui.exe, idle: 6188
+
+6,188 bytes a second at an idle prompt, on a 486, over telnet, in the process that also
+has to read the keyboard. The bytes were visible in the log: row 23 blanked to spaces and
+reprinted with dashes, row 24 blanked and the prompt rewritten, about every 40 ms. So
+"the separator flickers" was not a rendering oddity; it was the separator being erased and
+redrawn 25 times a second. "Cannot type" was the same thing felt from the other side.
+
+**Two ways to fix it, one of which was wrong.** The tempting fix was the application: mark
+the panel dirty and repaint only when it changes. It made idle traffic vanish (measured, 0
+bytes/s) and it was wrong: **a view does not own the screen.** A sibling view painted over
+the input line, the input line declined to repaint because nothing *it* was tracking had
+changed, and what appeared on the box was a separator with no typed characters under it --
+while the transcript proved the program had received and kept every keystroke (`> HEABCDEFG`
+on screen after typing seven characters, which is also the trick for separating an input
+problem from a display problem, and worth remembering: the app shows you its own buffer).
+Reverted. The right place for "nothing changed" is the driver, which is the only component
+that knows what the terminal was last sent.
+
+**So the driver remembers.** `hardwvos2.cpp` keeps a shadow of the screen -- a character
+and an attribute per cell -- and `screenWrite()` sends only the cells that differ, one
+cursor address per run of those. A VT clear sets the shadow to what the clear actually did;
+a size change or an unknown state forgets it, and forgetting means the next write of every
+cell goes out, which is the only direction the doubt can be wrong in that costs bytes and
+not pixels. The caret escapes went the same way: `ESC[?25h` and a cursor address are sent
+when they change, not on every pass, because asking a terminal to show a cursor it is
+already showing is 3 to 8 bytes for no effect.
+
+**And the application stopped drawing the same row twice.** With the shadow in place, idle
+traffic was 685 B/s instead of 0, and the remaining bytes explained themselves: `draw()`
+blanked the text row and then wrote the text over the blank, so each repaint really did
+change the cells twice. Padding each wrapped row out to the panel width instead -- one
+write per row, which also erases correctly when the text shrinks -- is what closed it.
+
+| at the box, idle | before | after |
+|---|---|---|
+| bytes to the terminal | 6,188 /s | 0 /s |
+| `wait idle` with atui running | never idle in 6s | idle |
+| separator row | blanked and redrawn 25x/s | drawn once |
+| typed text | hard to see, hard to type | `TEST` on screen, Backspace erases |
+
+Everything else still works on the target after it: a streamed turn answers (`JUNIPER`), a
+long line wraps inside the panel, and the scripted exit reports `TURN_CLEAN` with
+`&& echo ... || echo ...` -- which is how exit status has to be asked on the box, since
+`%RC%` does not expand there.
+
+**`tools/tty_typing.py` keeps the display half of it** (keystrokes are repainted; Backspace
+is repainted), and it starts by proving its own measurement is not vacuous: if the terminal
+is echoing, a typed character appears whether or not the program drew it, so an echoed 0x7F
+in the output makes the check skip rather than pass.

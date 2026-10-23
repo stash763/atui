@@ -982,10 +982,10 @@ public:
 
     virtual void draw()
     {
-        // Fill everything, then paint row 0 (the separator) and the text rows.
-        for( int r = 0; r < size.y; ++r )
-            writeChar( 0, (short) r, ' ', (uchar) rInput, (ushort) size.x );
-
+        // Row 0 is the separator, rows 1.. are the text.  Neither is blanked first:
+        // every row this view owns is written exactly once, in the pass that gives it
+        // its final content (see the loop below for why that is the whole cost of a
+        // frame).
         if( size.y >= 1 )
             writeChar( 0, 0, '-', (uchar) rInputSep, (ushort) size.x );
 
@@ -1008,15 +1008,25 @@ public:
         if( top_ > maxTop ) top_ = maxTop;
         if( top_ < 0 ) top_ = 0;
 
+        // One write per row, padded to the full width.  The padding is what makes a
+        // single write safe: `text + spaces` covers whatever the previous frame left
+        // there, so a shorter buffer or a narrower panel erases itself instead of needing
+        // a blanking pass first.  Writing each cell at most once per draw is also what
+        // makes a frame cost what changed: the old shape of this function blanked every
+        // row and then wrote the text over the blank, and a terminal driver cannot tell
+        // "spaces then text" from a change, so both halves went out -- 685 bytes a second
+        // at an idle prompt with the separator already fixed, and 6.2 KB a second before
+        // any of this.
         for( int r = 0; r < visRows; ++r )
         {
-            int idx = top_ + r;
-            if( idx >= 0 && idx < (int) rows_.size() )
-            {
-                const std::string &row = rows_[idx];
-                if( !row.empty() )
-                    writeStr( 0, (short)(r + 1), row.c_str(), (uchar) rInput );
-            }
+            const int idx = top_ + r;
+            std::string line = ( idx >= 0 && idx < (int) rows_.size() )
+                                 ? rows_[idx] : std::string();
+            if( (int) line.size() > size.x )
+                line.erase( size.x );         // rewrap() keeps rows within the width
+            while( (int) line.size() < size.x )
+                line += ' ';
+            writeStr( 0, (short)(r + 1), line.c_str(), (uchar) rInput );
         }
 
         if( (state & sfFocused) && cr >= top_ && cr < top_ + visRows )
@@ -1625,8 +1635,17 @@ void relayoutPanels_()
         }
     }
 
-    // Always redraw the prompt (a few rows: cheap, and keeps the caret right).
-    // Only touch the transcript when the split actually moved.
+    // Always redraw the prompt (a few rows: cheap, and keeps the caret right), and
+    // only touch the transcript when the split actually moved.
+    //
+    // "Cheap" was wrong on its own -- this runs from a 50 ms timer, so the panel is
+    // repainted twenty times a second whether anything changed or not -- but the answer
+    // is not to skip the redraw. Skipping was tried: a view in this framework cannot
+    // know that nothing else has painted over it, and the result was an input line that
+    // shows spaces because a sibling view had been drawn over the text (measured on the
+    // target: the separator appeared and the typed characters never did). What has to
+    // change is that a repaint must not *cost* anything when nothing changed, which is
+    // what the driver's shadow is for (tvision/source/tvision/hardwvos2.cpp).
     if( moved ) g_transcript_->reflow();
     g_prompt_->drawView();
 }

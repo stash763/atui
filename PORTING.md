@@ -236,3 +236,54 @@ distinction matters, because the thing this restructure spent a week deleting wa
 `-DATUI_HAVE_THREADS` is the only place the platforms differ, and the state machines
 never test it. That is the test the design has to pass: a machine that can be stepped
 by a thread and by a timer without either one being mentioned in it.
+
+## The screen on OS/2: a VT stream, not VIO, and stated rather than measured
+
+Two rules about the display on the target, both of them consequences of one decision, and
+both of them things a person will otherwise discover as a bug.
+
+**atui talks to the screen with VT escapes on stdout; it does not use VIO.** VIO was tried
+first and measured: every `Vio*` entry point resolves in `os2386.lib` and then fails in a
+process the telnet server started -- `ERROR_VIO_INVALID_HANDLE` (436) -- and `KbdPeek`
+fails with 445. A program whose job is to be reached over the network cannot depend on the
+console the machine owns while somebody is sitting at it. The cost is stated in the driver
+(`tvision/source/tvision/hardwvos2.cpp`) and is not small: **OS/2's own full-screen session
+is not a VT terminal, so on the box's own display atui does not render.** Reading the
+escape sequences scroll past is what that looks like. A VIO driver for the machine's own
+screen is separate port work, and it belongs beside this one rather than replacing it: the
+telnet case is the one the program exists for.
+
+**The size is stated, not discovered.** `ATUI_COLS` and `ATUI_ROWS` are the size, and
+80x25 is what they default to. Nothing asks the terminal -- a stream cannot, and nothing
+tells a stream when its window was resized -- so a window of any other size shows an 80x25
+island in its top-left corner, which is correct behaviour and looks exactly like a bug:
+
+    [<P4>-D:\atui]set ATUI_COLS=100& set ATUI_ROWS=40& atui.exe
+
+fills a 100x40 window (measured: separator across 98 columns, status line on row 40).
+Querying the terminal with `ESC [ 18 t` is the way to stop needing the two variables; it
+has not been done, and it has a cost worth thinking about first -- the reply arrives on
+the same stdin as the keystrokes, so reading it means swallowing bytes that might be a
+key the user already pressed.
+
+## A legacy terminal driver writes every cell it is handed
+
+`tvision/source/tvision/tvwrite.cpp` calls `THardwareInfo::screenWrite()` for the run a
+view just drew, and it does not compare anything first. So on the platforms that use the
+classic layer -- OS/2 and DOS above all, because they cannot build the modern terminal
+code that does its own diffing -- **a repaint is output**. Two rules follow, and both were
+learned by getting them backwards (the measurements are in TESTING.md, "The separator that
+redrew itself forever"):
+
+*   **Draw each cell at most once per pass.** The shape `blank the row, then write the text
+    over it` sends both halves, because nothing downstream can tell that the second write
+    undoes the first. Padding the text out to the width of the row does the same job in one
+    write and erases correctly when the text gets shorter.
+*   **Do not skip a repaint because nothing *you* changed.** A view does not own the screen:
+    a sibling or the desktop can paint over it, and a view that decided it had nothing new
+    to draw leaves a hole. Skipping has to happen where the truth is -- in the driver, which
+    is the only thing that knows what the terminal was last sent. That is what its shadow
+    buffer is for, and its one weakness is worth knowing: the shadow is a claim about the
+    terminal, so anything that changes the screen behind the driver's back (a program
+    sharing the terminal, a window resized) leaves the display wrong until something
+    repaints those cells.
