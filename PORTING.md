@@ -237,34 +237,78 @@ distinction matters, because the thing this restructure spent a week deleting wa
 never test it. That is the test the design has to pass: a machine that can be stepped
 by a thread and by a timer without either one being mentioned in it.
 
-## The screen on OS/2: a VT stream, not VIO, and stated rather than measured
+## The screen on OS/2: VIO, and the session handle is 0
 
-Two rules about the display on the target, both of them consequences of one decision, and
-both of them things a person will otherwise discover as a bug.
+Two rules about the display on the target, both consequences of one decision, and both
+things a person will otherwise discover as a bug.
 
-**atui talks to the screen with VT escapes on stdout; it does not use VIO.** VIO was tried
-first and measured: every `Vio*` entry point resolves in `os2386.lib` and then fails in a
-process the telnet server started -- `ERROR_VIO_INVALID_HANDLE` (436) -- and `KbdPeek`
-fails with 445. A program whose job is to be reached over the network cannot depend on the
-console the machine owns while somebody is sitting at it. The cost is stated in the driver
-(`tvision/source/tvision/hardwvos2.cpp`) and is not small: **OS/2's own full-screen session
-is not a VT terminal, so on the box's own display atui does not render.** Reading the
-escape sequences scroll past is what that looks like. A VIO driver for the machine's own
-screen is separate port work, and it belongs beside this one rather than replacing it: the
-telnet case is the one the program exists for.
+**VIO is the display, and it works in a telnet session as well as at the machine's own
+screen.** It was ruled out here by a mistake of mine, which is worth recording because it
+cost the port its only way of drawing on the box: the session handle passed to every `Vio*`
+call was `1`, which is not a handle but a leftover from the 16-bit guarded-segment era, and
+the answer it produced -- `ERROR_VIO_INVALID_HANDLE` (436) -- looked like a policy of the
+system rather than a bug in the probe. **The handle is 0.** With it, on the box and from a
+telnet session, `VioGetMode` reports the geometry, `VioWrtCellStr` writes, `VioReadCellStr`
+reads back what was written, `VioSetCurPos` moves the cursor, and `KbdPeek` sees the keys.
+The two facts that should have contradicted the 436 are in the same report: `KbdOpen(0)`
+and `MouOpen(0)` both succeeded, and a process with no session does not get a keyboard and
+a mouse. `tools/os2/probe_vio.c` is the probe, and it answers all of this in one run.
 
-**The size is stated, not discovered.** `ATUI_COLS` and `ATUI_ROWS` are the size, and
-80x25 is what they default to. Nothing asks the terminal -- a stream cannot, and nothing
-tells a stream when its window was resized -- so a window of any other size shows an 80x25
-island in its top-left corner, which is correct behaviour and looks exactly like a bug:
+What the API actually looks like in Open Watcom, since it is not the 32-bit shape the
+documentation's summaries suggest: these entry points are `APIRET16 APIENTRY16` and were
+never ported to 32-bit types, so lengths are `USHORT` where a modern reader expects
+`PULONG` (`VioGetBuf`, `VioReadCellStr`, `VioGetAnsi`), and the write call keeps its 1.x
+name, **`VioWrtCellStr`**, not `VioWriteCellStr`. `VIOMODEINFO.row` and `.col` are the
+*count* of rows and columns, so valid coordinates are `0 .. row-1`; asking for row 25 of a
+25-row screen answers 358 (`ERROR_VIO_ROW`). A cell is a character and an attribute byte --
+the same byte the rest of tvision uses, which is why the 16-colour themes need no mapping.
+
+**A telnet server can render this session's screen, provided the client says it is ANSI,
+and it renders it by diffing.** The evidence is the wire itself: a `VioWrtCellStr` of
+`ATUI-VIO-PROBE-OK` at row 24 with attribute 0x1E puts this on the connection --
+
+    ESC [ s   ESC [ ? 7 l   ESC [ 2 5 ; 1 H   ESC [ 0 ; 1 ; 3 3 ; 4 4 m   ATUI-VIO-PROBE-OK   ESC [ u
+
+-- save cursor, stop autowrap, position, colour, text, restore cursor. Intensity becomes
+`1`, so 0x1E is `33;44`; 0x1F is `37;44`. Every row from 0 to 24 can be repainted this way
+(written, held, restored, one after another, all of them visible on the wire), so a
+full-screen application is not restricted to a band at the bottom. And because the server
+diffs against the image it last sent, **repainting whole rows costs nothing that changed
+nothing** -- which is the flood problem solved on the target by the layer that owns the
+answer. What a program writes can also be read back, cell for cell, over the same
+connection: standing in front of the machine and measuring from here are the same
+observation. The client has to mean ANSI -- the Windows telnet client with `/t ansi` and
+Zoc work; answering the terminal-type query with `pcansi` renders nothing, and TeraTerm
+does not do it at all.
+
+**The size is the session's, asked once.** `VioGetMode` on this box answers 80x25, and it
+answers 80x25 to a client whose window is 100x40 at login and 80x25 resized to 100x40: the
+telnet server's session screen is fixed, and OS/2 windows do not resize under a running
+program. So the driver asks once at startup and never polls -- no `ESC [ 18 t`, no
+`VioSavRedrawWait`, no size timer. A full-screen session the operator configured as 132x43
+will answer 132x43, which is the point of asking instead of assuming.
+
+Until the VIO driver exists the program draws with VT escapes on stdout
+(`tvision/source/tvision/hardwvos2.cpp`), and that has the consequence the mistaken 436
+gave it: **on the box's own display the stream driver does not render**, because a full-screen
+OS/2 session is not a VT terminal, and reading escape sequences scroll past is what that
+looks like. The stream path stays as the fallback for a session with no VIO screen, and for
+it the size still has to be stated rather than asked:
 
     [<P4>-D:\atui]set ATUI_COLS=100& set ATUI_ROWS=40& atui.exe
 
 fills a 100x40 window (measured: separator across 98 columns, status line on row 40).
-Querying the terminal with `ESC [ 18 t` is the way to stop needing the two variables; it
-has not been done, and it has a cost worth thinking about first -- the reply arrives on
-the same stdin as the keystrokes, so reading it means swallowing bytes that might be a
-key the user already pressed.
+
+Keys read from a VIO session arrive as BIOS codes, which is more than the stream gives and
+costs nothing to use: letters and digits as their ASCII byte with the scan code beside
+them, arrows as `0xE0` with scan `0x48`/`0x50`/`0x4D`/`0x4B` for up/down/right/left,
+Delete as `0xE0 0x53`, F1 as `0x00 0x3B`, Ctrl-T as `0x14` with shift state `0x0104`. The
+server translates the arrow and Delete sequences and the SS3 forms (`ESC O P` is F1), but
+not `ESC [ H`, `ESC [ F` or `ESC [ 11 ~`: those lose the ESC and arrive as the literal
+characters after it, which is what "hotkeys generally cannot be sent over a telnet" looks
+like in codes. A lone ESC is `0x00 0x00`. `KbdCharIn`'s wait/echo parameter has no named
+constants in these headers; Watcom's own conio calls it with 0, meaning wait and do not
+echo.
 
 ## A legacy terminal driver writes every cell it is handed
 

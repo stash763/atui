@@ -3974,3 +3974,82 @@ long line wraps inside the panel, and the scripted exit reports `TURN_CLEAN` wit
 is repainted), and it starts by proving its own measurement is not vacuous: if the terminal
 is echoing, a typed character appears whether or not the program drew it, so an echoed 0x7F
 in the output makes the check skip rather than pass.
+
+## VIO was there the whole time: the session handle is 0 (measured 2026-10-23)
+
+atui draws nothing useful at the machine's own screen. The reason on record was that VIO
+does not work in a process the telnet server starts, and the reason for *that* was a bug of
+mine. Two mistakes were stacked, each hiding the other:
+
+1. **The probe passed 1 as the session handle.** `VioGetMode(&mode, 1)` answers 436
+   (`ERROR_VIO_INVALID_HANDLE`) because 1 is not a handle; the word "selector" in the old
+   documentation is a 16-bit guarded-segment leftover, not a hint. `0` is the default
+   handle. The report even contained the contradiction: `KbdOpen(0)` and `MouOpen(0)`
+   succeeded in the same run, and a sessionless process does not get a keyboard and a mouse.
+2. **The client answered the terminal-type query with `pcansi`.** With that, this server
+   sends no rendering of the session's screen at all. Declaring `ANSI` -- what Windows
+   telnet does with `/t ansi`, which the user confirms works for VIO programs -- it does.
+
+Both fixed, in a telnet session, from here:
+
+| call | result |
+| --- | --- |
+| `VioGetMode` | rc=0, `rows=25 cols=80 color=4 fbType=1` |
+| `VioGetBuf` | rc=0, logical buffer `0xbc5f0000`, 4000 bytes = 80x25 cells |
+| `VioGetAnsi` | rc=0, session interprets escapes |
+| `VioWrtCellStr` | rc=0 -- 17 characters at row 24, attribute 0x1E |
+| `VioReadCellStr` | rc=0, reads back `ATUI-VIO-PROBE-OK` with attrs `1E 1E 1E ...` |
+| `VioSetCurPos` | rc=0 |
+| `KbdPeek` | rc=0 |
+
+and the marker appears in the telnet window while it is held up, which is the part that
+matters: the display path and the keyboard path both work over the connection, so the VIO
+back end can be developed and verified from here and not only by a person in front of the
+machine.
+
+The recipe, since it is a good one to have:
+
+    build.cmd link probe_vio.c pvio.exe
+    pvio.exe                      # geometry, cursor, buffer, write/read/restore, keys
+    pvio.exe --rowscan            # one row at a time (24, 23, 20, 15, 10, 5, 1, 0)
+    pvio.exe --paint              # a strip of CP437 glyphs, held 6 s
+    pvio.exe --keys               # what keys look like, for 30 s, typed from the client
+
+`--rowscan` prints a mark to stdout at the instant of each write, so the raw log lines up
+writes with whatever the server put on the wire. All eight rows produced an update:
+
+    04:57:03.301 'M23 write (cursor was 15,0)\r\n\e[s\e[?7l\e[24;1H\e[0;1;37;44mROW23-PAINT\e[u'
+    04:57:06.340 'M15 write (cursor was 17,0)\r\n\e[s\e[?7l\e[16;1H\e[0;1;37;44mROW15-PAINT\e[u'
+    04:57:12.386 'M00 write (cursor was 21,0)\r\n\e[s\e[?7l\e[1;1H\e[0;1;37;44mROW00-PAINT\e[u'
+
+Three things follow for the back end, and they are the reason to prefer VIO to the stream:
+
+*   **The server diffs the session screen**, so it emits a positioned, attributed run per
+    change. Repainting whole rows is nearly free on the wire: the restore writes in the
+    same log show the server emitting the *previous* content of each row, and only that,
+    including rows it had not been told about (`password:......` at row 5, `The active
+    codepage for this session is 850.` at row 0). The repaint flood cannot happen in this
+    design, rather than being fixed after the fact.
+*   **Attributes arrive as colours.** VIO 0x1E becomes `ESC[0;1;33;44m` and 0x1F becomes
+    `ESC[0;1;37;44m`: the high-intensity bit becomes `1`, and the low nibbles become the
+    ordinary 3x/4x codes. That attribute byte is the byte tvision already uses.
+*   **What is written can be read back**, cell for cell, from the other side of the world.
+    The screen dump matched the operator's window line for line (the prompt, the build
+    output, a directory listing), so reading the screen is equivalent to standing at it.
+
+Two limits, both of them facts rather than problems to solve:
+
+*   **The size belongs to the session and is settled at login.** `VioGetMode` answered
+    80x25 for a client whose window was 100x40 at login and again for an 80x25 session
+    resized to 100x40 while the program ran. So the driver asks once and never polls;
+    `ATUI_COLS`/`ATUI_ROWS` stay as the override for the stream path.
+*   **Some keys do not exist over a connection.** Arrows arrive as `0xE0` with scan
+    `0x48`/`0x50`/`0x4D`/`0x4B`, Delete as `0xE0 0x53`, F1 as `0x00 0x3B` from `ESC O P`,
+    Ctrl-T as `0x14` with shift state `0x0104`, and ordinary characters as themselves. But
+    `ESC [ H`, `ESC [ F` and `ESC [ 11 ~` are not translated: the ESC is swallowed and
+    `[`, `H`, `1`, `~` arrive as typed text. A lone ESC is `0x00 0x00`.
+
+And one API detail that cost a build each: the write call is `VioWrtCellStr`, the 1.x name,
+and these entry points take `USHORT` sizes (`VioGetBuf`, `VioReadCellStr`, `VioGetAnsi`),
+while `VIOMODEINFO.row`/`.col` count rows and columns rather than naming the last index --
+asking for row 25 of a 25-row screen answers 358, `ERROR_VIO_ROW`.
