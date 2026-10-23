@@ -137,6 +137,25 @@ int test_string_copy_assign()
     v.clear();
     if( s.size() != 7 || std::strcmp( s.c_str(), "copy me" ) != 0 )
         return -1;
+
+    /* And longer than the class's minimum capacity of 16, which is the case that
+       matters.  Under it a copy whose terminator was never written still printed
+       correctly, because the byte after the text belonged to the same allocation
+       and happened to be zero; over it, c_str() hands printf a block with no end
+       and the read walks off the heap.  The length has to be in the test, not just
+       in the ASan run that happens to be watching. */
+    const char *text = "0123456789012345678901234567890123456789";
+    atui::core::String wide( text );
+    atui::core::String copied( wide );
+    if( copied.size() != 40 || std::strcmp( copied.c_str(), text ) != 0 )
+        return -2;
+
+    // Assigned over something longer still, so the buffer is reused and not merely
+    // freshly taken: the case where an assignment lost the block it was given.
+    atui::core::String assigned( "the string being replaced here is longer than what replaces it" );
+    assigned = wide;
+    if( assigned.size() != 40 || std::strcmp( assigned.c_str(), text ) != 0 )
+        return -3;
     return 0;
 }
 
@@ -158,6 +177,15 @@ int test_string_truncate()
     atui::core::String sub4 = s.substr( 15 );
     if( sub4.size() != 0 )
         return -1;
+
+    // Longer than the minimum capacity: a result of 28 characters needs 29 bytes,
+    // and the byte at data_[28] is exactly where this used to write when the
+    // allocation was the 28 it was asked for.
+    atui::core::String wide( "012345678901234567890123456789" );
+    atui::core::String tail = wide.substr( 2 );
+    if( tail.size() != 28
+        || std::strcmp( tail.c_str(), "2345678901234567890123456789" ) != 0 )
+        return -2;
     return 0;
 }
 
@@ -176,6 +204,16 @@ int test_string_indexOf()
         return -1;
     if( s.indexOf( "" ) != 0 )
         return -1;
+
+    /* Two answers that used to be 0, which every caller reads as "found it here":
+       a needle that is not there at all, and a needle in an empty string. */
+    atui::core::String empty;
+    if( empty.indexOf( "x" ) != -1 )
+        return -2;
+    if( empty.indexOf( "" ) != 0 )
+        return -3;
+    if( s.indexOf( 0 ) != -1 )
+        return -4;
     return 0;
 }
 

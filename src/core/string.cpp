@@ -22,26 +22,35 @@ String::String( const String &o )
     if( o.size_ > 0 ) {
         ensure( o.size_ );
         std::memcpy( data_, o.data_, o.size_ );
+        size_ = o.size_;
+        /* Terminated here rather than left to ensure(), which had already run and
+           put its NUL at data_[0] while the string was still empty -- where the
+           memcpy above then wrote over it.  c_str() hands back this block to
+           printf and strcmp, so an unterminated copy is not a cosmetic defect: it
+           is a read past the allocation the first time anybody prints the string. */
+        data_[ size_ ] = 0;
     }
-    size_ = o.size_;
 }
 
 String::~String()
 {
-    delete data_;
+    // delete[] , because ensure grew it with new char[].
+    delete[] data_;
 }
 
 String &String::operator=( const String &o )
 {
     if( this != &o ) {
-        data_ = 0;
-        size_ = 0;
-        cap_ = 0;
+        /* clear() keeps the block and resets the length; setting data_ to zero
+           instead lost the block, so every assignment leaked whatever the string
+           had been holding. */
+        clear();
         if( o.size_ > 0 ) {
             ensure( o.size_ );
             std::memcpy( data_, o.data_, o.size_ );
+            size_ = o.size_;
+            data_[ size_ ] = 0;
         }
-        size_ = o.size_;
     }
     return *this;
 }
@@ -122,13 +131,16 @@ int String::indexOf( const char *needle ) const
 
 int String::indexOf( const char *needle, int from ) const
 {
-    if( !needle || !data_ )
-        return ( needle ) ? 0 : -1;
+    /* Both questions used to be answered with 0 -- a null needle, and a needle in
+       an empty string -- and 0 is what a caller reads as "found it here".  A null
+       needle is not found; an empty string holds no needle that is not empty. */
+    if( !needle )
+        return -1;
 
     int n = ( int )std::strlen( needle );
     if( n == 0 )
-        return ( from <= size_ ) ? from : size_;
-    if( from > size_ )
+        return ( from <= size_ ) ? ( ( from > 0 ) ? from : 0 ) : size_;
+    if( !data_ || from > size_ )
         return -1;
 
     int i = ( from > 0 ) ? from : 0;
@@ -199,22 +211,28 @@ void String::ensure( int n )
 {
     if( n <= 0 )
         return;
-    int alloc = ( n < kMinCap ) ? kMinCap : n;
+
+    /* The invariant, which every writer in this file depends on and one of them
+       once did not: cap_ is the bytes of storage held, and a string of cap_-1
+       characters still needs one byte for the terminator.  So the allocation is
+       one more than the caller asked for.  Without that, a caller asking for room
+       for n characters cannot put the NUL at data_[n] -- substr did exactly that
+       and wrote one byte past the block for any text longer than kMinCap, where
+       the minimum capacity happened to hide it. */
+    int need = n + 1;
+    int alloc = ( need < kMinCap ) ? kMinCap : need;
     if( alloc <= cap_ )
         return;
 
     char *nd = new char[ alloc ];
-    if( !nd )
-        return;
 
     if( data_ && size_ > 0 )
         std::memcpy( nd, data_, size_ );
-    delete data_;
+    delete[] data_;
 
     data_ = nd;
     cap_ = alloc;
-    if( data_ )
-        data_[ size_ ] = 0;
+    data_[ size_ ] = 0;
 }
 
 } // namespace atui::core

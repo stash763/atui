@@ -4098,3 +4098,36 @@ Three things learned while measuring it, each of which will mislead the next per
 in about a minute and a half instead of 177 in four and a half. It exists because that loop
 was run eleven times.
 
+## The ASan configuration had been aborting before it got to the interesting failure
+
+`ctest` in `build-asan` reported one failure and the run stopped at an AddressSanitizer
+report, which reads as a single defect. It was two, and the second was the real one:
+
+*   The test helper `feed()` in `tests/chat_request_test.cpp` handed `SseStream::feed` a
+    fixed `chunk` length without clamping it to what was left, so
+    `feed( "data: one\n\ndata: two\n\n", 4096 )` read 4096 bytes out of a 24-byte temporary.
+    The framing code was never at fault; the test was walking off the end of its own input,
+    and every framing test runs through that helper.
+*   Behind it, `atui::core::String` had four defects, found by writing the repro the abort
+    implied rather than by reading the report: the copy constructor copied the bytes and
+    never wrote the terminator, so `c_str()` handed `printf` a block with no end
+    (`heap-buffer-overflow`, and the reason the self-test failed once the abort moved out of
+    the way); `operator=` set `data_` to zero before reusing it, losing the block on every
+    assignment; the destructor and `ensure()` used `delete` on memory grown with
+    `new char[]`; and `ensure()` reserved exactly what it was asked for while every writer
+    in the file terminates at `data_[size_]` -- so `substr` of anything longer than the
+    minimum capacity of 16 wrote one byte past the block, which the minimum capacity itself
+    had been hiding for strings of the length the tests happened to use.
+
+The lesson that is worth keeping is about the gate rather than the string class: **an ASan
+abort is a bad place to stop reading, because the tests after it never ran.** The fix list
+was empty until the first defect was removed, and the tests were extended to the case that
+matters -- copies and substrings longer than `kMinCap`, which is where the off-by-one
+actually appears -- so the next reader inherits the check rather than the accident.
+
+Confirmed after the fixes: three configurations build and pass (`build`, `build-off`,
+`build-asan`), `gate98.py` reports 0 diagnostics, `watcom-gaps.py` is unchanged at 28 hits
+in 9 files, `cli_check.py` 11 cases, the pty tests (`tui_smoke`, `tui_liveness`,
+`tty_typing`) pass against the live model, `tui_soak.py --turns 4` reports 0 kB growth, and
+`leaks --atExit` on the self-test reports 0 leaked bytes. The OS/2 build was rebuilt and
+re-run on the box after the change.

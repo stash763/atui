@@ -75,7 +75,15 @@ static PayloadSink feed( const std::string &text, std::size_t chunk )
     SseStream sse;
     for( std::size_t at = 0; at < text.size(); at += chunk )
     {
-        sse.feed( text.c_str() + at, chunk, sink );
+        /* The last piece is shorter than `chunk`, and the stream reads exactly
+           the length it is given, so the remainder has to be computed rather than
+           assumed: feeding 4096 of a 23-byte string walks off the end of it, which
+           is what ASan caught here -- a bug in the helper that every framing test
+           below runs through, and one that only shows when the bytes past the end
+           happen to belong to something ASan is watching. */
+        const std::size_t n = ( text.size() - at < chunk ) ? text.size() - at
+                                                           : chunk;
+        sse.feed( text.c_str() + at, n, sink );
         if( sse.done() )
             break;
     }
