@@ -14,6 +14,11 @@ rem                           one file, then stop.  The port is being written
 rem                           file by file, and this asks the cheap question --
 rem                           does this file compile -- without waiting on 177
 rem                           others.
+rem      build.cmd tvone tvision\source\tvision\hardwvos2.cpp
+rem                           one tvision library file, compiled into obj\tv so
+rem                           that `lib` picks it up.  Same question as `one`,
+rem                           other directory, and the fast way to test a driver
+rem                           change: tvone, atui, exe.
 rem      build.cmd lib       archive the library objects into obj\tvision.lib.
 rem      build.cmd link hello.cpp hello.exe
 rem                           compile one program and link it: %2 is the source,
@@ -164,6 +169,7 @@ set WPP=wpp386 @defs.rsp
 set RC=0
 
 if "%1"=="one" goto one
+if "%1"=="tvone" goto tvone
 if "%1"=="lib" goto lib
 if "%1"=="link" goto link
 if "%1"=="exe" goto exe
@@ -486,6 +492,28 @@ goto summary
 :one_failed
 set RC=1
 echo [one] FAILED
+goto summary
+
+:tvone
+rem One tvision library source, compiled into obj\tv where `lib` will find it.
+rem `one` is the app's mode and puts its object in obj\at; a library file needs the
+rem other directory or the archive keeps the previous object and the link reports
+rem the last build's behaviour.  No network define: none of tvision reads it, and
+rem `tvision` compiles this directory without it.
+rem
+rem What it is for: one file of 177 in a five minute library build.  The sequence
+rem after changing a single library source is tvone, atui, exe -- about a minute
+rem and a half, against four and a half for the whole library.
+echo [tvone] %2
+echo ---- %2 ---- >> %LOG%
+if not exist obj\tv mkdir obj\tv
+%WPP% -fo=obj\tv\ %2 >> %LOG% 2>&1
+if errorlevel 1 goto tvone_failed
+echo [tvone] OK
+goto summary
+:tvone_failed
+set RC=1
+echo [tvone] FAILED
 goto summary
 
 rem ---------------------------------------------------------------------------

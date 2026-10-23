@@ -4053,3 +4053,48 @@ And one API detail that cost a build each: the write call is `VioWrtCellStr`, th
 and these entry points take `USHORT` sizes (`VioGetBuf`, `VioReadCellStr`, `VioGetAnsi`),
 while `VIOMODEINFO.row`/`.col` count rows and columns rather than naming the last index --
 asking for row 25 of a 25-row screen answers 358, `ERROR_VIO_ROW`.
+
+## The VIO back end, drawn on the box and watched from here (measured 2026-10-23)
+
+`tvision/source/tvision/hardwvos2.cpp` asks `VioGetMode( &mode, 0 )` in its constructor and
+draws with cells when a session answers. What that bought, measured over the bridge with
+`--ttype ansi`, with `atui.exe` built from the same sources as everything else:
+
+| | |
+| --- | --- |
+| first frame | menu bar, transcript with its scrollbar, separator, status line -- drawn |
+| typing | `HELLO VIO` appears in the input row |
+| submitting | `> reply with the single word JUNIPER` in the transcript, `[+] thinking`, then `JUNIPER` |
+| idle wire | **0 bytes/s** (from 6,188 B/s before the repaint work; the flood is now impossible rather than avoided) |
+| exit | the operator's screen comes back exactly: a marker echoed before the run was still on its row afterwards |
+| geometry | `VioGetMode` said 80x25 for an 80x25 client *and* for a 100x40 client -- the session's size, settled at login |
+
+The exit line is the one the escape driver could never manage. There is no alternate screen
+here to ask for; there is a screen, and it is read at `setUpConsole` and written back at
+`restoreConsole`, which is why a marker from before the run is proof rather than
+appearance.
+
+Three things learned while measuring it, each of which will mislead the next person:
+
+*   **Ctrl-C does not exit this program, it cancels it.** Measured: the screen keeps what
+    atui drew, the prompt resumes under it, and the box prints `The external process was
+    cancelled by a Ctrl+Break or another process.` OS/2 aborts the console call the process
+    is waiting in rather than delivering SIGINT, so neither the handler in
+    `src/core/signals.cpp` nor `~THardwareInfo` runs. The scripted exit
+    (`ATUI_QUIT_AFTER_MS`) and `SIGTERM` both take the clean path, so this is a gap in the
+    Ctrl-C handling (`DosSetCtrlCHandler`), not in the save and restore.
+*   **A message typed and a Return sent in the same burst do not submit; the Return sent on
+    its own does.** Reproduced on both back ends, so it belongs to the input loop rather
+    than to VIO. A person at a keyboard presses Return some milliseconds after typing, which
+    is why nobody has seen it, and why `tui-test submit "text"` -- one write, one
+    newline -- needs a second submit to send anything.
+*   **Forcing the stream path (`ATUI_OS2_STREAM=1`) in a session that renders ANSI draws
+    doubled:** the escapes reach the session's own ANSI interpretation (`VioGetAnsi`
+    measures it on) and then the server's translation of the result, so the menu bar came
+    out `A¢¢¢¢...`. The fallback is for a session with no VIO screen, and no session on this
+    box is one.
+
+`build.cmd tvone tvision\source\tvision\hardwvos2.cpp` then `atui`, `exe`: one library file
+in about a minute and a half instead of 177 in four and a half. It exists because that loop
+was run eleven times.
+

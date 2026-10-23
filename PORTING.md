@@ -288,12 +288,35 @@ program. So the driver asks once at startup and never polls -- no `ESC [ 18 t`, 
 `VioSavRedrawWait`, no size timer. A full-screen session the operator configured as 132x43
 will answer 132x43, which is the point of asking instead of assuming.
 
-Until the VIO driver exists the program draws with VT escapes on stdout
-(`tvision/source/tvision/hardwvos2.cpp`), and that has the consequence the mistaken 436
-gave it: **on the box's own display the stream driver does not render**, because a full-screen
-OS/2 session is not a VT terminal, and reading escape sequences scroll past is what that
-looks like. The stream path stays as the fallback for a session with no VIO screen, and for
-it the size still has to be stated rather than asked:
+**Which display is in use is asked once, at construction, and never again.** The driver
+calls `VioGetMode( &mode, 0 )`: a session that answers has a screen and gets VIO, one that
+does not gets the escape stream. `ATUI_OS2_STREAM=1` declines VIO deliberately, for a client
+that cannot render it. `ATUI_COLS`/`ATUI_ROWS` are read only on the stream path -- under VIO
+they would make the application lie about the screen it has been handed.
+
+VIO is worth what it costs: the size is real, the box's own display works, the caret is the
+session's caret, attributes are the byte tvision already carries, a program can read back
+what it drew, and the repaint flood cannot occur because the server sends what changed. What
+it does not do yet:
+
+*   **Ctrl-C leaves the screen as the program left it.** OS/2 delivers Ctrl-C to a VIO
+    process by aborting the console call it is sitting in and cancelling the process at the
+    DOS level -- measured, with the message `The external process was cancelled by a Ctrl+Break
+    or another process.` -- so the C-level SIGINT handler never runs, the destructor never
+    runs, and the saved screen is never written back. `DosSetCtrlCHandler` is the API that
+    gives the process the choice instead. Nothing is lost but the operator's patience with
+    `cls`: the transcript is flushed with every record.
+*   **The machine's own mouse is not read.** `MouOpen` and `MouGetNumButtons` answer, so the
+    button count is truthful; turning that into events wants a registered queue, and the
+    escape-reported mouse over a session still works.
+*   **A forced stream in an ANSI-translating session draws garbage.** With VIO present, the
+    escapes this driver writes are seen first by the session's own ANSI interpretation
+    (`VioGetAnsi` says it is on) and then by the server's translation of the screen, so they
+    arrive doubled: measured, the menu bar came out `A¢¢¢¢...`. That is the fallback seen in
+    a configuration it was not meant for, not a fault in it -- and its own configuration, a
+    session that answers 436 to `VioGetMode`, has not been produced on this box at all.
+
+For the stream path the size still has to be stated rather than asked:
 
     [<P4>-D:\atui]set ATUI_COLS=100& set ATUI_ROWS=40& atui.exe
 
