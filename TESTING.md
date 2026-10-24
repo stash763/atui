@@ -4271,3 +4271,54 @@ soak's typing now does too, after a gap. And the soak's own exit path crashed wi
 `ProcessLookupError` killing a process group that had already left: `poll()` reports what
 it has reaped, not what has exited, so the `killpg` needs the same `OSError` guard every
 other tool here already had.
+
+## The response area flashed once for every character of an answer (measured 2026-10-24)
+
+Reported from the box's own screen, one report after the menus and the second-prompt fix
+had landed: "the response area is being cleared and redrawn every time a new character is
+added". It is not the transcript redrawing too often -- it is what a redraw *looks* like
+when the two halves of it reach the screen separately.
+
+A view cannot know what is underneath it, so `TView::draw()` fills its rows with their
+background and writes the text over the fill. That is correct view code. The driver was
+sending both halves as they were handed over: the shadow buffer made each write cheap, but
+cheap or not, the screen saw the blank row and then the text row, and an answer arriving
+token by token therefore flashed the whole area once per token. Nothing about this is
+visible in a byte count on its own, which is why the earlier "0 B/s idle" measurement said
+nothing about it: at idle nothing is redrawn, and the flicker only exists while something
+is.
+
+The driver now coalesces. `screenWrite()` records what each cell is meant to become, and
+`flushScreen()` -- called from `waitForEvents()`, once per turn of the event loop, before
+it blocks -- sends the difference between the last frame and this one. A cell written twice
+in one frame is sent once, with the value it ended on, and the fill that the text covers up
+never reaches the screen at all. That is the same arrangement `source/platform/hardware.cpp`
+has always had on the platforms with a modern driver: "flush the screen once for every time
+all events have been processed, only when blocking for events."
+
+Measured by asking for the same long answer twice, same endpoint, same session size, and
+counting what the bridge put on the wire (the VIO session translates every cell write into
+escapes, so the stream is a faithful record of what the screen was handed):
+
+| one streamed answer | before | after |
+| --- | --- | --- |
+| bytes on the wire | 243,380 | 165,944 |
+| VIO write calls | 7,858 | 4,556 |
+| writes whose payload was only blanks (15 cells or more) | **321** | **25** |
+| idle screen | 0 B/s | 0 B/s |
+
+321 blank fills of a response area is the flicker, and it is 25 of them now -- those 25 are
+real, rows that genuinely lose their text. The 6.9 kB/s that remains is mostly legitimate
+content, and the largest single piece of it is the `[+] thinking (N chars)` row: its
+character count changes with every token, so a 50-cell row is rewritten every time the
+answer grows by one word. Trimming that is the obvious next saving; it is not the flicker.
+
+Verified unchanged, because a driver that defers output can also withhold it: the answer
+arrives, typed text appears, Backspace repaints, Escape leaves the program running, and
+`ATUI_QUIT_AFTER_MS` still exits by itself with the shell's screen put back the way
+`VioReadCellStr` had saved it. The idle 0 B/s is the check that the dirty map is not being
+flushed wastefully; the blank-write count is the check that it is being flushed usefully.
+
+One measurement note, since it cost a detour: the bridge's raw log writes escapes as the
+two characters `\` and `e`, not as byte 0x1B, so counting `\x1b` in it finds nothing and
+looks exactly like a driver that has stopped drawing.

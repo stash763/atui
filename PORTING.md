@@ -374,10 +374,13 @@ code that does its own diffing -- **a repaint is output**. Two rules follow, and
 learned by getting them backwards (the measurements are in TESTING.md, "The separator that
 redrew itself forever"):
 
-*   **Draw each cell at most once per pass.** The shape `blank the row, then write the text
-    over it` sends both halves, because nothing downstream can tell that the second write
-    undoes the first. Padding the text out to the width of the row does the same job in one
-    write and erases correctly when the text gets shorter.
+*   **Draw each cell at most once per pass, and let the driver coalesce what it cannot
+    avoid.** The shape `blank the row, then write the text over it` sends both halves if
+    writes go out as they are made. Views cannot always avoid it -- a view does not know
+    what is under it, and `TView::draw()` filling its rows first is the correct thing for
+    a view to do -- so the driver is the place it gets fixed, by the frame coalescing in
+    the third bullet. Padding text out to the width of the row (what atui's prompt does)
+    is still worth doing: it keeps the *change set* small, which is what costs on a wire.
 *   **Do not skip a repaint because nothing *you* changed.** A view does not own the screen:
     a sibling or the desktop can paint over it, and a view that decided it had nothing new
     to draw leaves a hole. Skipping has to happen where the truth is -- in the driver, which
@@ -386,3 +389,18 @@ redrew itself forever"):
     terminal, so anything that changes the screen behind the driver's back (a program
     sharing the terminal, a window resized) leaves the display wrong until something
     repaints those cells.
+*   **The frame is the unit of output, not the write.** A shadow that compares per cell
+    still shows the blank between a view's fill and its text, because the fill reaches the
+    screen as a state of its own -- which is what a streamed answer looked like, flashing
+    the whole response area once per character. The OS/2 driver therefore *defers*:
+    `screenWrite()` only records what each cell should become, and `flushScreen()` --
+    called from `waitForEvents()`, once per turn of the event loop, before it blocks --
+    sends the difference between the last frame and this one. A cell written twice in one
+    frame is sent once, with the value it ended on. `source/platform/hardware.cpp` defers
+    for the same reason, in those words.
+
+    The consequence for a porter is one rule about where output can be waited for: a frame
+    appears when the application next goes looking for an event, so code that draws and
+    then blocks on something *else* -- a child process, a sleep, a socket of its own --
+    is not showing anything while it does. That is normal, and it is why every wait in
+    atui goes through the event loop.
