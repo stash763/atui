@@ -24,8 +24,18 @@ stops -- which is what a real run does -- is not reported as a leak.
 
 Exit 0 clean, 1 a leak or steady growth, 2 the program could not be started or died.
 
+And since a measurement of nothing is worth nothing, each turn is checked for having
+happened: the token has to appear on the screen (a message typed but never submitted is
+not a turn), and the app must never answer "(busy, try again)" (a turn that ends without
+its thread being taken back refuses every prompt after it).  Both of these were added
+after the fact.  The script's first baseline was taken over ten "turns" of which the
+script could not have told whether any was answered, and the second-turn bug it now
+catches was found by a person at a keyboard instead.  Whether the *answer* is right is
+tui_smoke.py's job: it asks arithmetic whose result is not in the question, twice.
+
 Baseline, measured 2026-10-22 on macOS against the llama.cpp endpoint, ten turns of
-"remember the token MARIGOLD-n", each answered:
+"remember the token MARIGOLD-n", each answered as far as the script of the day could
+tell:
 
     turn   RSS kB     leaked
     1        3632          0
@@ -67,24 +77,50 @@ def open_pty():
     return master, slave
 
 
+ANSI = re.compile(rb'\x1b\[[0-9;?]*[a-zA-Z]|\x1b[()][B0]|\x1b[=>]')
+
+
+def strip(buf):
+    return ANSI.sub(b'', buf).decode('latin-1', 'replace')
+
+
+# The app's own words for "I will not take this message".  Seeing them is not a
+# slow turn or a hiccup: it means a previous turn is still held open, and every
+# turn after it is refused the same way.  A soak that only measures memory sits
+# through forty refused prompts and reports a flat, healthy line.
+BUSY = '(busy, try again)'
+
+
 def drain(master, seconds):
-    """Read the pty for a while.  Reading is not optional: the buffer fills, the
-    program blocks writing its screen, and a turn that was fine looks hung."""
+    """Read the pty for a while, returning (alive, bytes read).
+
+    Reading is not optional: the buffer fills, the program blocks writing its
+    screen, and a turn that was fine looks hung.
+    """
     end = time.time() + seconds
+    data = b''
     while time.time() < end:
         ready, _, _ = select.select([master], [], [], 0.1)
         if ready:
             try:
-                os.read(master, 65536)
+                chunk = os.read(master, 65536)
             except OSError:
-                return False
-    return True
+                return False, data
+            if not chunk:
+                return False, data
+            data += chunk
+    return True, data
 
 
 def type_line(master, text):
     for ch in text:
         os.write(master, ch.encode())
         time.sleep(0.01)
+    # Enter on its own, after a gap.  Sent in the same burst as the text it can be
+    # swallowed by whatever the terminal library is still negotiating, and the
+    # message then sits in the prompt line unsubmitted -- which a memory-only soak
+    # cannot tell from an answer.
+    time.sleep(0.3)
     os.write(master, b'\r')
 
 
@@ -123,7 +159,7 @@ def main():
     process = subprocess.Popen([args.binary], stdin=slave, stdout=slave,
                                stderr=slave, preexec_fn=os.setsid)
     os.close(slave)
-    drain(master, 2.0)
+    screen = drain(master, 2.0)[1]
 
     print('%-6s %8s %8s' % ('turn', 'RSS kB', 'leaked'))
     rows = []
@@ -132,8 +168,27 @@ def main():
             sys.stderr.write('atui died in turn %d (status %d)\n'
                              % (i, process.returncode))
             return 2
-        type_line(master, 'Remember the token MARIGOLD-%02d and reply with just ok.' % i)
-        drain(master, args.answer_wait)
+        token = 'MARIGOLD-%02d' % i
+        type_line(master, 'Remember the token %s and reply with just ok.' % token)
+        alive, chunk = drain(master, args.answer_wait)
+        screen += chunk
+        text = strip(screen)
+
+        # Two things this checks besides memory, both of which it checked not at
+        # all while it was only measuring RSS: that the message got in (an Enter
+        # lost in a burst means the "turn" was silence), and that the app did not
+        # refuse it as busy (a finished turn whose thread was never taken back).
+        if token not in text:
+            sys.stderr.write('turn %d: the prompt never reached the transcript; the '
+                             'message was typed and not submitted\n' % i)
+            return 1
+        if BUSY in text:
+            sys.stderr.write('turn %d: %s -- a finished turn is holding the app '
+                             'open; every later prompt is refused\n' % (i, BUSY))
+            return 1
+        if not alive:
+            sys.stderr.write('atui closed the screen in turn %d\n' % i)
+            return 2
 
         leak = leaked_bytes(process.pid)
         rows.append((i, resident_kb(process.pid), -1 if leak is None else leak[1]))
@@ -147,7 +202,13 @@ def main():
     drain(master, 3.0)
     forced = process.poll() is None
     if forced:
-        os.killpg(os.getpgid(process.pid), 9)
+        # The child can leave between `poll()` reporting nothing and the signal
+        # arriving -- poll() only reports what it has reaped.  A process that closed
+        # the screen and then exited on its own is the good outcome, not a crash.
+        try:
+            os.killpg(os.getpgid(process.pid), 9)
+        except ProcessLookupError:
+            forced = False
     status = process.wait()
     os.close(master)
 

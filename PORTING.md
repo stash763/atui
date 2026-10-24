@@ -154,6 +154,16 @@ thread should not have to find these by hand:
 - `run_command` uses `system()` / `_popen` with a copy of the environment: it inherits
   the process's cwd and environment, and two of them at once is a decision to make
   deliberately, not accidentally.
+- **A finished turn has to have its thread taken back, every turn.** `Thread` reports
+  `running()` from `start()` until `join()` -- that is the whole of what it reports --
+  and the join is what makes the task safe to destroy. A program that joins only at exit
+  therefore cannot tell a turn that finished an hour ago from one in flight, and if "is
+  a turn in flight" is what gates the next prompt, the first answer of a session is also
+  the last one. `retireTurnThread_()` in `tui/app.cpp` is the one place that answers it,
+  and it joins only when `ChatTurn::busy()` says the turn is over: joining a *running*
+  turn would leave `running()` false with the worker still stepping it, and the pump
+  would then step the same HTTP stream from the UI stack as well. (`TESTING.md`, "The
+  second question in a session was never answered".)
 
 ## Where the work runs: a thread where the platform has one, a timer where it does not
 

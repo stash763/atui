@@ -236,6 +236,7 @@ void processMessage_();
 void focusInput_();
 void relayoutPanels_();
 void pumpChat_();
+void retireTurnThread_();
 TMenu *buildSwitchModelMenu_();
 void refreshSwitchModelMenu_();
 void updateProviderStatus_();
@@ -1799,6 +1800,41 @@ void showRecord_( const atui::net::TurnQueue::Record &rec )
 
 #endif // ATUI_HAVE_NETWORK
 
+// Take back the thread of a turn that is over.
+//
+// `Thread` reports itself running from start() until join() -- that is the whole of
+// its reporting, and the join is what makes the task safe to destroy -- and until
+// now the only join in the program was the one in the destructor.  So the first
+// answer of a session was also the last: every prompt after it was refused with
+// "(busy, try again)" by a program whose model call had finished some time before.
+// Found on the box's own screen, where a second question goes unanswered is a
+// broken program rather than a failing test.
+//
+// Only a turn that is genuinely over is retired, and `busy()` is what says so:
+// joining a running turn would leave `running()` false with the worker still
+// stepping it, and the pump below would then step the same turn from this stack
+// too.  Two stacks on one HTTP stream is a much worse bug than the one here.
+//
+// The wait is short by construction.  The worker posts its last record before
+// returning, so what is left to wait for is a stack unwinding rather than the
+// model -- and if that is ever not true, it is worth the tick pausing on it,
+// because the alternative is a turn nobody owns.
+void retireTurnThread_()
+{
+#ifdef ATUI_HAVE_NETWORK
+    if( !g_turnThread_.running() )
+        return;
+    if( g_turn_ != 0 && g_turn_->busy() )
+        return;
+    g_turnThread_.join();
+#else
+    // No threads and no turn in flight, so nothing to take back.  The body is empty
+    // rather than the function absent, because the two call sites are inside their
+    // own `ATUI_HAVE_NETWORK` and the declaration is not: an ifdef around each call
+    // would be two places to forget.
+#endif
+}
+
 void pumpChat_()
 {
 #ifdef ATUI_HAVE_NETWORK
@@ -1868,6 +1904,11 @@ void pumpChat_()
                          !stopping && answer == apSession );
     }
 
+    // Done with this turn's thread if the turn is done: the next prompt asks
+    // `running()` whether a turn is in flight, and an unjoined finished one
+    // answers yes forever.
+    retireTurnThread_();
+
     g_inStep_ = false;
 
     const long pumpMs = (long) ( nowMs_() - tPump0 );
@@ -1887,6 +1928,11 @@ void processMessage_()
 #ifdef ATUI_HAVE_NETWORK
     if( !g_turn_ )
         g_turn_ = new atui::net::ChatTurn();
+
+    // Ask about the thread of a finished turn first: `running()` is true until it is
+    // joined, and a prompt arriving between the answer and the next tick would
+    // otherwise be refused as busy by a program that is nothing but idle.
+    retireTurnThread_();
 
     if( g_turnThread_.running() )
     {

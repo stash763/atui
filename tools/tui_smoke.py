@@ -58,16 +58,61 @@ def strip(buf):
     return ANSI.sub(b'', buf).decode('latin-1', 'replace')
 
 
+def drive(fd, pid, out, message, marker, budget, type_after):
+    """Type `message`, read until `marker` is on the screen.
+
+    Returns (found, dead, out).  Reading does not stop while waiting: the pty
+    buffer fills, the program blocks writing its screen, and a turn that was
+    fine looks hung."""
+    start = time.time()
+    typed = False
+    while time.time() - start < budget:
+        if not typed and time.time() - start > type_after:
+            # Character by character, with a gap.  Written as one burst the text
+            # arrived with its spaces missing and the Enter never reached the app,
+            # which is what a terminal library that is still waiting for a query
+            # response does with bytes that turn up mid-negotiation.
+            for ch in message:
+                os.write(fd, ch.encode('latin-1'))
+                time.sleep(0.05)
+            time.sleep(0.3)
+            os.write(fd, b'\r')
+            typed = True
+        r, _, _ = select.select([fd], [], [], 0.2)
+        if r:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                return False, True, out
+            if not chunk:
+                return False, True, out
+            out += chunk
+            if marker in strip(out):
+                return True, False, out
+        else:
+            pid_done, _ = os.waitpid(pid, os.WNOHANG)
+            if pid_done:
+                return False, True, out
+    return False, False, out
+
+
 def main():
     # The marker cannot be a string the message itself contains, because the message
     # is drawn on screen the moment it is sent: an instruction like "reply with
     # exactly: PTY-OK" would be answered by its own echo.  So the check is something
     # the program has to work out: 8042 is nowhere in the question.
-    marker = '8042'
-    message = sys.argv[1] if len(sys.argv) > 1 else \
-        'What is 4021 plus 4021? Reply with just the number.'
-    if len(sys.argv) > 2:
-        marker = sys.argv[2]
+    #
+    # TWO turns, and that second one is the reason this is not one.  A turn that
+    # finishes without its thread being taken back leaves the program answering
+    # "(busy, try again)" to every prompt after the first -- which is invisible to a
+    # test that stops at the first answer, and was invisible for exactly that long:
+    # the box's user found it as "my second question never answers".
+    turns = [
+        ('What is 4021 plus 4021? Reply with just the number.', '8042'),
+        ('What is 4573 plus 4573? Reply with just the number.', '9146'),
+    ]
+    if len(sys.argv) > 1:                             # one turn, asked for by hand
+        turns = [(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else '8042')]
     binary = os.environ.get('ATUI', './build/atui')
     budget = float(os.environ.get('ATUI_SMOKE_SECONDS', '60'))
     # How long before the message is typed: the app has to have drawn its prompt.
@@ -96,39 +141,18 @@ def main():
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 25, 80, 0, 0))
 
     out = b''
-    start = time.time()
-    typed = False
     dead = False
-    while time.time() - start < budget:
-        if not typed and time.time() - start > type_after:
-            # Character by character, with a gap.  Written as one burst the text
-            # arrived with its spaces missing and the Enter never reached the app,
-            # which is what a terminal library that is still waiting for a query
-            # response does with bytes that turn up mid-negotiation.
-            for ch in message:
-                os.write(fd, ch.encode('latin-1'))
-                time.sleep(0.05)
-            time.sleep(0.3)
-            os.write(fd, b'\r')
-            typed = True
-        r, _, _ = select.select([fd], [], [], 0.2)
-        if r:
-            try:
-                chunk = os.read(fd, 65536)
-            except OSError:
-                dead = True
-                break
-            if not chunk:
-                dead = True
-                break
-            out += chunk
-            if marker in strip(out):
-                break
-        else:
-            pid_done, _ = os.waitpid(pid, os.WNOHANG)
-            if pid_done:
-                dead = True
-                break
+    answered = []
+    start = time.time()
+    for n, (message, marker) in enumerate(turns, 1):
+        # The first turn waits for the app to draw its prompt; the ones after it do
+        # not have to wait for anything, which is the point of asking twice.
+        found, dead, out = drive(fd, pid, out, message, marker, budget,
+                                 type_after if n == 1 else 0.5)
+        if dead or not found:
+            break
+        answered.append(marker)
+        print('turn %d answered (%s) at %.1fs' % (n, marker, time.time() - start))
 
     try:
         os.kill(pid, signal.SIGKILL)
@@ -145,14 +169,21 @@ def main():
           % (len(out), time.time() - start, 'exited' if dead else 'still running'))
     print(screen[-4000:])
     print('--- end ---')
-    if marker in screen:
-        print('SMOKE OK: the answer reached the transcript')
+    # The tripwire first, because it says what broke rather than leaving it to be
+    # guessed at from a marker that did not turn up.
+    if '(busy, try again)' in screen:
+        print('SMOKE FAIL: the app called itself busy.  A turn that has finished has')
+        print('to have its thread taken back, or every prompt after it is refused.')
+        return 1
+    if len(answered) == len(turns):
+        print('SMOKE OK: %d answer(s) reached the transcript' % len(answered))
         return 0
     if dead:
-        print('SMOKE FAIL: atui exited before answering')
+        print('SMOKE FAIL: atui exited during turn %d' % (len(answered) + 1))
         return 2
-    print('SMOKE FAIL: no %s on screen within the budget (marker must not appear '
-          'in the message: the message is echoed to the transcript)' % marker)
+    print('SMOKE FAIL: no %s on screen in turn %d within the budget (marker must '
+          'not appear in the message: the message is echoed to the transcript)'
+          % (turns[len(answered)][1], len(answered) + 1))
     return 1
 
 

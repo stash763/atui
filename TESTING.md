@@ -4190,3 +4190,84 @@ implies `lib`).
 `build.cmd exe candidate.exe` now exists so a candidate can be linked and run while
 `atui.exe` is loaded at a screen -- the linker cannot write an image that is running, and its
 `Permission denied` reads like a compile error to anyone reading build.log from here.
+
+## The second question in a session was never answered (measured 2026-10-24)
+
+Reported from the box's own screen, with the menus and the mouse now working: submit a
+prompt, see it appear in the transcript, and get no reply. It is not an OS/2 bug and not a
+driver bug. The macOS build does it too:
+
+| what was done | what happened |
+| --- | --- |
+| first prompt of a run | answered: `[+] thinking (762 chars)`, then the answer |
+| screen gone quiet, second prompt | `(busy, try again)` |
+| third prompt | `(busy, try again)` |
+
+**The mechanism** is a fact about `core::Thread` that was documented and not acted on.
+`running()` is true from `start()` until `join()` -- that is the whole of what the class
+reports, and the join is what makes the task safe to destroy. `join()` was called in one
+place, `~TApp()`. And `processMessage_()` refuses a prompt while `g_turnThread_.running()`,
+which is the right thing to do while a turn is in flight. Put the three together and the
+first answer of a session is also the last: a program whose model call finished a minute
+ago reports itself busy forever.
+
+**Why nothing saw it.** Every test stopped exactly where the bug starts:
+
+| test | what it actually did | what it could not tell |
+| --- | --- | --- |
+| `tui_smoke.py` | one message, wait for its answer marker, pass | anything about a second turn, which is the bug |
+| `tui_soak.py` | typed N messages, read the pty *into a void*, measured RSS and leaks | whether any message was submitted, or answered, or refused |
+| `tui_liveness.py` | poked *during* a turn and required the busy line | the same poke after a turn, where busy is the failure |
+
+The soak is the sharper lesson: it has been reporting "ten turns, flat memory" for weeks,
+and its baseline in this file said "each answered" -- a claim the script was not
+instrumented to make. Memory measured over turns that may not have been turns.
+
+**The fix** is `retireTurnThread_()` in `tui/app.cpp`, called from the pump every tick and
+once more in `processMessage_()` before the busy check, so a prompt arriving between the
+answer and the next tick is not refused either. It joins only when `ChatTurn::busy()` is
+false, and that guard is the whole care in the function: joining a *running* turn would
+leave `running()` false with the worker still stepping it, and the pump -- which drives
+the turn on the UI stack whenever no thread is running it -- would then drive the same
+HTTP stream from two stacks. Two owners of one stream is a much worse bug than the one
+being fixed.
+
+**The tests now fail on it,** which is worth more than the fix. `tui_smoke.py` asks twice
+(`4021+4021` → `8042`, then `4573+4573` → `9146`; neither marker appears in its question,
+and the question is echoed to the transcript so a marker in it would be worthless), and
+`(busy, try again)` anywhere on screen is a failure with the reason named. The soak checks
+each turn for having happened -- the token it typed must appear on screen, since typed is
+not submitted -- and treats the busy line as a hard failure.
+
+Verified by putting the bug back: with `retireTurnThread_()` made to return immediately,
+
+    turn 1 answered (8042) at 9.9s
+    SMOKE FAIL: the app called itself busy.  A turn that has finished has
+    to have its thread taken back, or every prompt after it is refused.
+
+and with the fix, three prompts in one run were answered in sequence (CARBON, SILICON,
+OXYGEN, no busy rows), the two-turn smoke passed (`turn 1 at 9.7s`, `turn 2 at 18.5s`),
+and `tui_soak.py --turns 4` reported 16 kB growth and no unreachable memory.
+
+And on the box itself, which is where it was reported -- `candidate2.exe` over the bridge,
+three prompts in one run, each verified to have reached the transcript before waiting:
+
+    > reply with only the word WALNUT        [+] thinking (120 chars)   WALNUT
+    > reply with only the word CEDAR         [+] thinking (52 chars)    CEDAR
+    > reply with only the word DOGWOOD                                  DOGWOOD
+
+No `(busy, try again)` anywhere. Two harness lessons from getting that measurement, both
+of which produced a false "no answer" first: over this bridge an Enter arriving among typed
+characters can be swallowed, so a test has to confirm its own message was submitted before
+it blames the app for not answering it; and `tui-test key press` takes a variadic list of
+key names, so a trailing `--session` is read as a key and the keystroke goes to another
+session entirely -- `TUI_TEST_SESSION` in the environment is the form that cannot be
+misread.
+
+Two small harness things from the same investigation. `tui-test submit 'text'` -- the text
+and the Enter in one burst -- does not reliably submit over a link this slow, and one
+message in three sat in the input line unseen; an explicit `key press Return` is what the
+soak's typing now does too, after a gap. And the soak's own exit path crashed with
+`ProcessLookupError` killing a process group that had already left: `poll()` reports what
+it has reaped, not what has exited, so the `killpg` needs the same `OSError` guard every
+other tool here already had.
