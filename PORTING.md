@@ -405,6 +405,20 @@ redrew itself forever"):
     is not showing anything while it does. That is normal, and it is why every wait in
     atui goes through the event loop.
 
+*   **One layout of a block costs the length of the block, so decide how often to pay
+    for it.** The transcript re-wraps a block from its own beginning -- fold, markdown
+    render, wrap, whole -- because a change anywhere in it can re-flow anything below.
+    That is right for a block that is finished and wrong to do twenty times a second for
+    one that is still arriving: the cost of an answer becomes its length times its
+    duration, which is what "high cpu utilization as the response grows" was. The view
+    therefore paces the layout of a block that is still `open` (120 ms), and lays out
+    immediately for everything a person reads the result of -- a block closing, a tool's
+    result, a click. The porter's note: this is a *pace*, not a cache, and so it cannot
+    go stale; nothing is remembered about the text except the clock reading of the last
+    layout. Deferred *caching* of laid-out rows is a faster thing to build and a
+    different class of bug -- the markdown renderer reads the whole block for table
+    widths and link definitions -- and has not been attempted here.
+
 *   **And when the screen *has* been changed behind the driver's back, tell the driver.**
     The weakness in the bullet above is not hypothetical: a child process writes to the
     controlling terminal whenever it likes -- `sudo`'s password prompt goes to `/dev/tty`,

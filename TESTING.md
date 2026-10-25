@@ -4369,3 +4369,55 @@ the box's 80x25 session, so the prompt's layout at the box's real session size h
 been seen from here. The prompt now writes its own arithmetic to the debug log
 (`ATUI_TURN_DEBUG=1 ... 2> dbg.log` gives `dlgscreen`, `dlgdesk`, `dlgbox` rows), so a run
 at the console and one `get dbg.log` says what the screen and the box were.
+
+## A streamed answer cost its own length, twenty times a second (measured 2026-10-24)
+
+Second thing in the same report: "high cpu utilization occurs as the size of the response
+grows". Neither the pump nor the driver was at fault -- the tick kept its 50 ms cadence
+(2900 ticks in 150 s on the box) and no tick handler went over 100 ms. What grows is
+*one layout of a block*: the block is folded, rendered as markdown and re-wrapped whole,
+and while an answer streams, that block is the whole answer so far. Twenty of those a
+second is the answer's length multiplied by its duration.
+
+Measured on a modern host, at roughly 13 ns a byte per layout: 0.09 ms at 512 bytes,
+0.81 ms at 32 kB, and one answer streamed to 32 kB -- rendering the prefix each time a
+piece arrives -- 263 ms of CPU. The `foldForTerminal` of the whole prefix turned out to be
+nothing (under 0.01 ms); it is the render.
+
+So a block that is still being written is laid out at most every 120 ms. The chunks keep
+accumulating in the block meanwhile, `onTick()` lays out what arrived once the interval is
+up, and anything that *is* the state a person reads -- the block closing, a tool's result,
+a click that expands one -- lays out when it happens. To measure it, the endpoint has to
+be a machine: a live model answers two runs with two different lengths, which measures
+nothing.
+
+    python3 tools/fake_stream.py --port 8799 --words 2400 --chunk 6 --delay 0.01
+
+| one streamed answer from that endpoint | before | after |
+| --- | --- | --- |
+| layouts | 575 | 193 |
+| CPU for the run | 4.46 s | 2.36 s |
+| idle session, 100 s | 5 layouts, 0 B out | unchanged |
+
+That a deferred layout can lose a frame is the risk of the change, so it is checked: with
+the fake endpoint the answer's last words and its last `Section` heading are on screen when
+the stream ends, `tools/tui_smoke.py` answers both of its questions, and `tools/tui_soak.py`
+runs ten turns with no busy row and a clean exit.
+
+Four things about the harness cost an hour each and are worth writing down:
+
+* `~/.atui.ini` exists on this machine, and a config file that exists replaces the store,
+  so `ATUI_BASE_URL` pointing at a fake endpoint is *ignored* unless `ATUI_CONFIG` names a
+  file that does not exist. The symptom is a test that passes by talking to the real model.
+* A fresh `cmake -S <copy> -B <copy>/build` configures `ATUI_HAVE_NETWORK=OFF`, so the
+  control build of an A/B quietly has no agent and never sends a request. Both sides of a
+  comparison need the same defines, and the way to notice is that the control's log has no
+  `ask` line in it.
+* The fake endpoint has to be a `ThreadingHTTPServer`: atui leaves its `/models` connection
+  open, and a single-threaded server is still sitting in that request when the `POST`
+  arrives. The symptom is a run with ticks and no answer.
+* A `build` over the bridge that is abandoned does not stop the target: the box keeps
+  working through the commands that were sent, so three timed-out attempts become three
+  queued builds and every measurement after that is someone else's log. `atui-remote` says
+  so -- "the log that came back belongs to build , not this one" -- and the answer is to
+  let the box go quiet, not to send more.
