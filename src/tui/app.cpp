@@ -191,9 +191,73 @@ static void turnDebug_( const char *what, long a, long b )
     if( !on || !*on || *on == '0' )
         return;
     static long n = 0;
-    std::fprintf( stderr, "[turn %ld] %s busy=%ld n=%ld (t+%ld)\n",
-                  (long) ++n, what, a, b, (long) std::time( 0 ) );
+    // Milliseconds, not whole seconds: the gap between two tick lines is the thing a
+    // cpu complaint turns on, and at one-second resolution every tick in a slow second
+    // looks identical and a 60 ms handler is invisible.  `a=` and `b=` rather than
+    // `busy=` and `n=` because the two fields mean something different per kind.
+    std::fprintf( stderr, "[turn %ld] %s a=%ld b=%ld (t+%lu ms)\n",
+                  (long) ++n, what, a, b, (unsigned long) nowMs_() );
     std::fflush( stderr );
+}
+
+// ---------------------------------------------------------------------------
+// A one-line-per-second profile of this thread while an answer is arriving.
+//
+// The complaint that needed it was "cpu utilization climbs to 90% as the response
+// finishes", and the instrument in place at the time said nothing at all -- no slow
+// tick had been logged.  That was the lesson: handlers are not judged one at a time.
+// A pump that takes 60 ms is not slow by any threshold worth writing, and twenty of
+// them a second is more than the whole machine.  So this adds up the milliseconds
+// spent in each second and prints the sum, which is a share of the processor rather
+// than a list of spikes: the number out of 1000 is the percentage.
+//
+// `pumpsec` is everything the timer handler did, and `drive` the part of that which
+// stepped the turn (the HTTP read, the model's bytes, the queue).  `layoutsec` is
+// re-wrapping and drawing the transcript, and how many times that was.  What is left
+// over is the wait for events and the driver's flush -- and the tick count says when
+// to look there, because at the nominal twenty ticks a second, eleven ticks in a
+// second means something outside this handler is holding the loop.
+//
+// A second with nothing in it says nothing: the lines appear when a second has spent
+// at least 20 ms in the handler, so an idle session stays silent and an answering one
+// speaks twenty times in each of its seconds.
+struct UiProfile
+{
+    unsigned long sinceMs;
+    long pumpMs, driveMs, layoutMs, layouts, ticks;
+};
+
+static UiProfile g_prof_ = { 0, 0, 0, 0, 0, 0 };
+
+// Called by the transcript view with what one layout of it cost.
+static void noteUiLayout_( long ms )
+{
+    g_prof_.layoutMs += ms;
+    ++g_prof_.layouts;
+}
+
+static void noteUiPump_( unsigned long tPump0, long driveMs )
+{
+    const unsigned long now = nowMs_();
+    ++g_prof_.ticks;
+    g_prof_.pumpMs  += (long) ( now - tPump0 );
+    g_prof_.driveMs += driveMs;
+    if( g_prof_.sinceMs == 0 )
+    {
+        g_prof_.sinceMs = tPump0;
+        return;
+    }
+    if( now - g_prof_.sinceMs < 1000 )
+        return;
+    if( g_prof_.pumpMs >= 20 )
+    {
+        turnDebug_( "pumpsec", g_prof_.pumpMs, g_prof_.driveMs );
+        turnDebug_( "layoutsec", g_prof_.layoutMs, g_prof_.layouts );
+        turnDebug_( "ticksec", g_prof_.ticks, 0 );
+    }
+    g_prof_.sinceMs = now;
+    g_prof_.pumpMs = g_prof_.driveMs = g_prof_.layoutMs = 0;
+    g_prof_.layouts = g_prof_.ticks = 0;
 }
 
 // A clock that quits the program, so that leaving atui can be scripted.
@@ -984,6 +1048,7 @@ private:
         // this machine.
         lastLayoutCostMs_ = nowMs_() - t0;
         turnDebug_( "layout", (long) lastLayoutCostMs_, (long) lines_.size() );
+        noteUiLayout_( (long) lastLayoutCostMs_ );
     }
 
     // The earliest block whose rows in `lines_` are no longer current, and the row each
@@ -1999,22 +2064,26 @@ void pumpChat_()
     if( g_transcript_ == 0 || g_inStep_ ) return;
 
     g_inStep_ = true;
+    const unsigned long tPump0 = nowMs_();
 
     // Who steps the turn depends on the build; nothing below this line can tell, and
     // that is the design: a record that came from a worker's stack and one that came
     // from this stack are drawn by the same four lines.
+    long driveMs = 0;
     if( !g_turnThread_.running() )
     {
         // A few passes per tick rather than one that waits: an answer arrives in
         // pieces over seconds and the 50ms timer paces the redraw, so the pump takes
         // what is ready now and gives the keyboard back.  A long wait inside step()
         // would hold a keystroke for its length.
+        const unsigned long tDrive = nowMs_();
         for( int i = 0; i < 4; ++i )
         {
             if( g_turn_ == 0 || !g_turn_->busy() )
                 break;
             g_task_.drive();
         }
+        driveMs = (long) ( nowMs_() - tDrive );
     }
 
     // Records, oldest first.  The cap is per tick so that a long answer spreads over
@@ -2028,7 +2097,7 @@ void pumpChat_()
     // spends the time is the difference between a terminal that cannot drain and a queue
     // that is not being read.  Only a slow pass is worth a line: at 20 ticks a second an
     // unconditional duration log buries the events it was added to put in context.
-    const unsigned long tPump0 = nowMs_();
+    const unsigned long tDrain0 = nowMs_();
     atui::net::TurnQueue::Record rec;
     long drawn = 0;
     g_transcript_->beginBatch();
@@ -2040,7 +2109,7 @@ void pumpChat_()
         ++drawn;
     }
     g_transcript_->endBatch();
-    const long drawMs = (long) ( nowMs_() - tPump0 );
+    const long drawMs = (long) ( nowMs_() - tDrain0 );
     if( drawMs >= 100 )
         turnDebug_( "drawslow", drawMs, drawn );
 
@@ -2083,6 +2152,11 @@ void pumpChat_()
     const long pumpMs = (long) ( nowMs_() - tPump0 );
     if( pumpMs >= 100 )
         turnDebug_( "pumpslow", pumpMs, drawMs );   // b: what the draw itself took
+
+    // And the running total for this second of answering.  Kept at the very end so
+    // that a modal approval box, which runs a nested event loop inside the tick above,
+    // is not charged to whichever second it happened to open in.
+    noteUiPump_( tPump0, driveMs );
 #endif // ATUI_HAVE_NETWORK
 }
 
