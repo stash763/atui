@@ -4322,3 +4322,50 @@ flushed wastefully; the blank-write count is the check that it is being flushed 
 One measurement note, since it cost a detour: the bridge's raw log writes escapes as the
 two characters `\` and `e`, not as byte 0x1B, so counting `\x1b` in it finds nothing and
 looks exactly like a driver that has stopped drawing.
+
+## A command that used the terminal left its mark on it (measured 2026-10-24)
+
+Reported at the box's own screen, in a session larger than 80x25: "when a security prompt
+appears it causes the UI to be corrupted. The menu at the top disappears and also issues are
+caused at the very bottom of the ui." What reproduces from here -- host, 80x25, no OS/2
+involved -- is the mechanism underneath it, and it reproduces every time:
+
+    ./build/atui --ask "Use run_command to run exactly this shell command: echo STRAYROW > /dev/tty"
+
+Allow it, and the input row is left holding the child's output:
+
+    24  STRAYROW
+
+atui captures the command's stdout and stderr, and that is exactly the problem: a program
+that wants the keyboard does not use them. `echo > /dev/tty` writes where it pleases, and
+`sudo` does it without being asked -- its password prompt appeared on the input row after a
+permitted `sudo ls`, same as the echo. Nothing in the driver saw those bytes. The shadow
+still says that row is the blank atui drew for it, so every repaint after it agrees with
+the shadow and sends nothing, and the row is wrong for the rest of the session. Under VIO
+the rows with no reason to ever be drawn again are the menu bar and the last row of the
+screen, which is the damage as reported.
+
+Controlled A/B: same command, same terminal, the two builds differing only in the repaint.
+
+| after allowing `echo STRAYROW > /dev/tty` | without the repaint | with it |
+| --- | --- | --- |
+| row 24 | `STRAYROW`, and it stays | blank |
+
+The repair is `THardwareInfo::redrawScreen()` -- put the whole screen back, whether or not
+the driver believes it changed. `repaintScreen_()` in the app draws the desktop, the menu
+bar and the status line and then calls it, and it runs at three moments: as the confirmation
+dialog goes up, as it comes down, and once after a command has finished
+(`atui::tools::takeTerminalTouched()`, which the pump takes on the next tick). One screenful
+of cells -- about 2 kB at 80x25, more in a big session -- at transitions a person is
+involved in, not from the frame loop.
+
+Marking *before* starting the child was tried first and measured wrong: the repaint then
+lands a tick after the spawn and a tick before `sudo` writes its prompt, which repairs a
+screen that has not been broken yet and leaves the damage that follows. The mark is made
+when the child is done, so everything it wrote is behind the repaint.
+
+What this does not settle is the geometry in the report. A telnet client cannot see past
+the box's 80x25 session, so the prompt's layout at the box's real session size has never
+been seen from here. The prompt now writes its own arithmetic to the debug log
+(`ATUI_TURN_DEBUG=1 ... 2> dbg.log` gives `dlgscreen`, `dlgdesk`, `dlgbox` rows), so a run
+at the console and one `get dbg.log` says what the screen and the box were.

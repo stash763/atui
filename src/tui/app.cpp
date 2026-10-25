@@ -307,6 +307,29 @@ public:
     }
 };
 
+// Put the whole screen back: every view draws again and the driver sends every
+// cell whether or not it thinks it changed.
+//
+// A driver that sends only what has changed cannot notice that the screen *lost*
+// something, so what is lost stays lost.  That is the report from the box: after a
+// security prompt went up and came down, in a session larger than 80x25, the menu
+// bar was gone and the bottom rows were wrong.  Nothing here can see why -- a row
+// the screen lost while the shadow believed it was already right, or the session
+// redrawing itself behind us -- and nothing the driver does afterwards would fix
+// it, because afterwards it only sends changes.  So the two moments a box covers
+// the desktop are the two moments the screen is put back: draw the desktop, the
+// menu bar and the status line again, and tell the driver to send them.
+//
+// One screenful of cells per call -- 2 KB of cells at 80x25, more at the box's
+// size -- at the two moments a dialog a person answers by hand covers the desktop.
+void repaintScreen_()
+{
+    if( TProgram::deskTop )    TProgram::deskTop->redraw();
+    if( TProgram::menuBar )    TProgram::menuBar->drawView();
+    if( TProgram::statusLine ) TProgram::statusLine->drawView();
+    THardwareInfo::redrawScreen();
+}
+
 // Show the confirmation dialog for a pending tool approval. Modal: it runs a
 // nested event loop on this thread.
 //
@@ -396,6 +419,17 @@ int showApprovalDialog_( const atui::tools::ApprovalRef &req )
                                    (short) ( w - 4 ), (short) ( h - 1 ) ),
                             "~N~o", cmNo, bfDefault ) );
 
+    // Going up: put the screen back, so the box is drawn over a desktop the
+    // application knows is on the screen.
+    repaintScreen_();
+    // And the box's own size next to the screen's in the debug log: the report says
+    // a session larger than 80x25 lays this prompt out wrongly, and the box's own
+    // console is the only place that knows what its session is.
+    turnDebug_( "dlgscreen", (long) THardwareInfo::getScreenRows(),
+                (long) THardwareInfo::getScreenCols() );
+    turnDebug_( "dlgdesk", (long) deskW, (long) deskH );
+    turnDebug_( "dlgbox", (long) w, (long) h );
+
     // The desktop, not the application group: this is what every other dialog in
     // atui does, and it is what makes the box clickable - a view executed on
     // TProgram::application gets keyboard but its mouse hit-testing is off by the
@@ -404,6 +438,11 @@ int showApprovalDialog_( const atui::tools::ApprovalRef &req )
         ? TProgram::deskTop->execView( d )
         : TProgram::application->execView( d );
     TObject::destroy( d );
+    // Coming down: redrawing what was under the box is tvision's job and it does
+    // it -- into the driver's shadow, where anything matching what the shadow
+    // already holds is never sent.  A row the screen had lost is exactly such a
+    // row, which is how a corrupted prompt stays corrupted.
+    repaintScreen_();
     if( r == cmYes ) return apOnce;
     if( r == cmOK )  return apSession;
     return apNo;
@@ -1887,6 +1926,14 @@ void pumpChat_()
     const long drawMs = (long) ( nowMs_() - tPump0 );
     if( drawMs >= 100 )
         turnDebug_( "drawslow", drawMs, drawn );
+
+    // A command may have used this terminal while the records above were being
+    // written -- its output is piped, but a program that wants a password writes
+    // to the controlling terminal, which on OS/2 is the same VIO screen atui is
+    // drawing on.  Whatever it put there, the driver never saw, so nothing would
+    // send it away again.  One screenful of cells, once, for the privilege.
+    if( atui::tools::takeTerminalTouched() )
+        repaintScreen_();
 
     // The question, if the turn is waiting on one.  Modal -- and the answer goes into
     // the queue rather than into the turn, because the thread stepping that turn owns

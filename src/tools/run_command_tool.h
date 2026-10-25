@@ -40,6 +40,19 @@ std::string &passEnvNames();
 // command that ran too long rather than enforced.
 bool commandTimeoutIsEnforced();
 
+// Has a command used this terminal since the last time someone asked? Takes the
+// flag, so it is the UI's own way of noticing once.
+//
+// A command's output is piped, but a program that wants a password does not queue
+// for it: `sudo` writes its prompt to the controlling terminal, which is the very
+// screen atui is drawing on (measured on the host: `Password:` left sitting on the
+// input row after `sudo ls` ran, and it stays -- the row's own view has no reason
+// to draw it again).  On OS/2 that screen is VIO, where the damage is a row the
+// driver never saw change and therefore never sends again.  Only this file knows a
+// command has run, and the mark is made when the child has finished -- a repaint
+// before it has written everything is a repaint of the wrong moment.
+bool takeTerminalTouched();
+
 class RunCommandTool : public Tool {
 public:
     const char *name() const;

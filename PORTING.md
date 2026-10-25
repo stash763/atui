@@ -404,3 +404,21 @@ redrew itself forever"):
     then blocks on something *else* -- a child process, a sleep, a socket of its own --
     is not showing anything while it does. That is normal, and it is why every wait in
     atui goes through the event loop.
+
+*   **And when the screen *has* been changed behind the driver's back, tell the driver.**
+    The weakness in the bullet above is not hypothetical: a child process writes to the
+    controlling terminal whenever it likes -- `sudo`'s password prompt goes to `/dev/tty`,
+    past both pipes atui holds -- and the row it used then stays wrong indefinitely,
+    because every repaint after it agrees with the shadow and sends nothing. So the driver
+    has `THardwareInfo::redrawScreen()`: send the whole screen whether or not it changed.
+    On the platforms with a modern driver that is `DisplayBuffer::redrawScreen()`, which
+    already existed for this reason and is already called after an OSC sequence that might
+    have messed up the terminal; on OS/2 it marks every cell of the shadow dirty and
+    flushes, the shadow being the application's own picture of the screen. atui calls it,
+    with the desktop redrawn first, when a dialog goes up and when it comes down, and once
+    after any command has finished.
+
+    Where to put that "once after" is the part that was got wrong first: marking *before*
+    the child starts repairs the screen a few milliseconds too early and still leaves the
+    prompt the child wrote. Mark it when the child is done, so that every byte it wrote is
+    behind the repaint (`tools/run_command_tool.cpp`, `takeTerminalTouched()`).

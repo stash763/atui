@@ -43,6 +43,14 @@
 namespace atui {
 namespace tools {
 
+// Set when a command has finished, taken by the UI the next time it looks.
+// Written on whichever thread is stepping the turn and read after the UI has
+// popped a record off that turn's queue -- the queue's mutex is what orders the
+// two.  What it is for is a child that wrote to the terminal itself: output is
+// piped, but a password prompt goes to the controlling tty, which is the screen
+// atui is drawing on, and no view has any reason to draw that row again.
+static volatile bool g_terminalTouched = false;
+
 namespace {
 
 // Bound captured output so a chatty command cannot blow up memory or the
@@ -367,6 +375,14 @@ const char *RunCommandTool::parametersSchema() const
            "},\"required\":[\"command\"]}";
 }
 
+bool takeTerminalTouched()
+{
+    if( !g_terminalTouched )
+        return false;
+    g_terminalTouched = false;
+    return true;
+}
+
 std::string RunCommandTool::execute( const std::string &argumentsJson )
 {
     if( !looksJsonObject( argumentsJson ) )
@@ -391,6 +407,13 @@ std::string RunCommandTool::execute( const std::string &argumentsJson )
     const long timeoutSeconds = commandTimeoutSeconds();
     const ChildResult result = runCaptured( shellCmd, passEnvNames(),
                                             timeoutSeconds );
+    // Marked after the child is done rather than before it starts.  Measured on the
+    // host with `sudo ls`: marking beforehand put the repaint one tick after the
+    // spawn and still one tick before sudo wrote its password prompt to the
+    // terminal, which repairs a screen that has not been broken yet and leaves the
+    // damage that follows.  Once the child has finished, every byte it wrote to the
+    // screen is behind us and the repaint covers all of it.
+    g_terminalTouched = true;
     if( !result.started )
         return "run_command: failed to start '" + oneLineClip( command, 80 ) + "'";
 
