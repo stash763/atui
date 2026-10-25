@@ -4470,3 +4470,33 @@ Four things about the harness cost an hour each and are worth writing down:
   queued builds and every measurement after that is someone else's log. `atui-remote` says
   so -- "the log that came back belongs to build , not this one" -- and the answer is to
   let the box go quiet, not to send more.
+
+## Two ways the build channel lied about a build that was fine (measured 2026-10-25)
+
+Three hours went on the box today for builds that had succeeded. Both faults were in the
+channel between the host and `build.cmd`, and both looked exactly like a target that was
+still busy, which is the one diagnosis that costs an hour each time because the correct
+advice is to wait.
+
+* **The nonce was read from a fixed argument position.** `tools/atui-remote` puts a four
+  hex digit nonce on every build and refuses a log that does not carry it -- the box has
+  one command processor and one input queue, so a command sent an hour ago can finish
+  during a later visit and be taken for that visit's verdict. The batch echoed `%4`,
+  which is the nonce only for the modes that take two arguments: `atui` and `exe` got it
+  somewhere else, so the log came back with `ATUI-BUILD-ID=` empty, the host read an
+  empty id as "somebody else's build", and waited out its deadline. Twice. The id is
+  passed in the environment now (`ATUI_BUILD_ID`, cleared again by the batch after it has
+  been echoed so a later run cannot inherit it), and the host treats an empty id as
+  *unverifiable* -- say so and return -- rather than as a reason to keep waiting.
+* **OS/2's command processor has no substring expansion.** The obvious repair, scanning
+  the arguments for the last one and testing its length with `%VAR:~4%`, does nothing at
+  all here: that syntax is an NT cmd.exe feature, and where the expansion is not
+  understood the text stays literal, so the test always failed and the id stayed empty.
+  A batch file on this target can move along its arguments with `shift` and compare whole
+  strings; that is the vocabulary. Write the protocol so it needs nothing more.
+
+What the same day's builds actually did: 47 files, no warnings, `ATUI-BUILD-RC=0`, and an
+executable of 1,405,091 bytes sitting in `D:\atui` while the host insisted nothing had
+finished. The lesson is not to distrust the box; it is that a channel which cannot tell
+"not yet" from "not mine" from "not supported" will eventually report all three as the
+first.

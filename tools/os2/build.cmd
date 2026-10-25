@@ -671,5 +671,12 @@ rem an hour ago was seen to run under a later visit and report its rc as the lat
 rem build's, complete with a log about files that had not been compiled.  So the
 rem host sends a nonce as the fourth argument, and a log that does not carry it is
 rem somebody else's build however plausible its verdict looks.
-echo ATUI-BUILD-ID=%4
-echo ATUI-BUILD-ID=%4 >> %LOG%
+rem Whose build this was -- the nonce the host passed in ATUI_BUILD_ID, echoed
+rem into the log and then forgotten, so that a later run in the same session
+rem cannot pick it up and lend it to a build it does not belong to.  It travels
+rem in the environment rather than as an argument because this command processor
+rem cannot find the last of its own arguments: no substring expansion, and a
+rem fixed position is only correct for the modes that take that many.
+echo ATUI-BUILD-ID=%ATUI_BUILD_ID%
+echo ATUI-BUILD-ID=%ATUI_BUILD_ID% >> %LOG%
+set ATUI_BUILD_ID=

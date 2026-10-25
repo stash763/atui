@@ -1715,14 +1715,23 @@ def cmd_build(args):
     # it would only report the last command's status anyway.  A driver that
     # carries on past failures has to grade itself, which is what ATUI-BUILD-RC
     # in the log is for; its absence means the batch never got to the end.
-    # A nonce as the fourth argument, echoed into the log by the batch.  It is
-    # what distinguishes this build's log from the one the box produced an hour
-    # ago for a command that was still sitting in its input queue: the verdict
-    # line alone cannot, because a stale build finishes with a real rc=0 and a
-    # log full of files that were never compiled.
+    # A nonce, echoed into the log by the batch.  It is what distinguishes this
+    # build's log from the one the box produced an hour ago for a command that
+    # was still sitting in its input queue: the verdict line alone cannot,
+    # because a stale build finishes with a real rc=0 and a log full of files
+    # that were never compiled.
+    #
+    # It travels in the environment, because OS/2's command processor has no way
+    # for a batch file to find the last of its own arguments: there is no
+    # substring expansion (`%VAR:~4%` is an NT construct, and reading it leaves
+    # the text literal), and a fixed position is only right for the modes that
+    # happen to take that many arguments -- which is how a finished, successful
+    # build came to look like a hung target twice in one day, the host waiting
+    # out its deadline over an empty id.  A space before the `&&` would become
+    # part of the value, so there is none.
     nonce = "%04x" % (int.from_bytes(os.urandom(2), "big"))
-    command = "d: && cd %s && %s %s %s" % (args.remote_root, args.batch,
-                                           args.batch_args, nonce)
+    command = "d: && cd %s && set ATUI_BUILD_ID=%s&& %s %s" % (
+        args.remote_root, nonce, args.batch, args.batch_args)
     if len(command) > 300:
         warn("build: command is %d characters; the target's command processor "
              "silently drops lines past about 315" % len(command))
@@ -1776,9 +1785,19 @@ def cmd_build(args):
                    re.findall(re.escape(BUILD_ID_MARK) + r"(\S*)", candidate)]
             if BUILD_RC_MARK in candidate:
                 if ids and ids[-1] != nonce:
+                    if not ids[-1]:
+                        # An id field that is empty is a build driver that does
+                        # not know how to carry the nonce -- build.cmd before it
+                        # learned that the nonce is the LAST argument, whatever
+                        # the mode.  That is not somebody else's build, and
+                        # waiting for it to change its mind is how a build that
+                        # had finished successfully an hour ago came to look
+                        # like a hung target for half an hour at a stretch.
+                        no_id = True
+                        text = candidate
+                        break
                     not_mine = ids[-1]      # somebody else's build: keep waiting
                 else:
-                    no_id = not ids
                     text = candidate
                     break
         if time.time() >= deadline:
@@ -1801,8 +1820,10 @@ def cmd_build(args):
                  % (BUILD_RC_MARK, args.log_to))
         return 1
     if no_id:
-        warn("build: the log carries no %s line, so this build cannot be told from "
-             "an earlier one -- sync build.cmd to the target" % BUILD_ID_MARK)
+        warn("build: the log's %s field is empty or missing, so this verdict cannot "
+             "be told from an earlier one -- sync build.cmd to the target and run it "
+             "again (its rc and log are below, for what they are worth)"
+             % BUILD_ID_MARK.strip("="))
     lines = text.splitlines()
     if args.tail:
         lines = lines[-args.tail:]
