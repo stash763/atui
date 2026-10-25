@@ -475,6 +475,7 @@ public:
         streamWait_ = false;
         forceLayout_ = false;
         lastLayoutMs_ = 0;
+        lastLayoutCostMs_ = 0;
     }
 
     // --- document building (called on the UI thread) ---------------------
@@ -597,7 +598,7 @@ public:
     {
         if( !streamWait_ || batchDepth_ > 0 || blocks_.empty() )
             return;
-        if( unsigned( nowMs_() - lastLayoutMs_ ) < kStreamIntervalMs )
+        if( unsigned( nowMs_() - lastLayoutMs_ ) < streamIntervalMs_() )
             return;
         relayout();
     }
@@ -815,13 +816,11 @@ private:
 
     void relayout()
     {
+        const unsigned long t0 = nowMs_();
         layoutDirty_ = false;
         streamWait_ = false;
-        lastLayoutMs_ = nowMs_();
-        // Counted because a layout costs the length of the document, which is what
-        // the throttling above trades against: with ATUI_TURN_DEBUG on, the number of
-        // these lines during one streamed answer is the work being done.
-        turnDebug_( "layout", (long) blocks_.size(), (long) lines_.size() );
+        forceLayout_ = false;
+        lastLayoutMs_ = t0;
         const int width = size.x > 0 ? size.x : 1;
 
         // Where the rebuild starts. `lines_` is the wrapped form of `blocks_`, and
@@ -976,6 +975,15 @@ private:
         // end of the batch instead of once per record.
         if( batchDepth_ == 0 )
             drawView();
+
+        // What that cost, in the same log as the ticks.  It is the number the
+        // interval below is built from, and without it the box's "90% cpu" is a
+        // complaint and not a measurement: 147 rows of transcript turned out to be
+        // about 120 ms of layout there, which is why eight layouts a second --
+        // enough for a fast reader on a machine with cores to spare -- is all of
+        // this machine.
+        lastLayoutCostMs_ = nowMs_() - t0;
+        turnDebug_( "layout", (long) lastLayoutCostMs_, (long) lines_.size() );
     }
 
     // The earliest block whose rows in `lines_` are no longer current, and the row each
@@ -1024,21 +1032,43 @@ private:
         return !forceLayout_ && !restartLayout_
             && firstDirty_ + 1 == blocks_.size()
             && !blocks_.empty() && blocks_.back().open
-            && unsigned( nowMs_() - lastLayoutMs_ ) < kStreamIntervalMs;
+            && unsigned( nowMs_() - lastLayoutMs_ ) < streamIntervalMs_();
     }
 
-    // A change whose result is the state a person reads: lay it out now.
+    // How long to hold off the next layout of a block that is still arriving.
+    //
+    // A layout costs the length of the document, so a fixed interval is the wrong
+    // promise to make: 120 ms is eight repaints a second of a short answer, which
+    // is fine, and eight repaints a second of a long one, which on the box measured
+    // 90% of the machine doing nothing but re-rendering rows that mostly did not
+    // change.  Four times the last layout's cost spends at most a quarter of the
+    // cpu on repainting whatever the document's size, and the floor and ceiling keep
+    // it sane at both ends: never busier than eight a second, never slower than one
+    // a second, which is a screen that is still visibly alive while an answer pours.
+    unsigned long streamIntervalMs_() const
+    {
+        unsigned long want = kStreamIntervalMs;
+        if( 4 * lastLayoutCostMs_ > want )
+            want = 4 * lastLayoutCostMs_;
+        if( want > kStreamIntervalMaxMs )
+            want = kStreamIntervalMaxMs;
+        return want;
+    }
+
+    // A change whose result is the state a person reads: lay it out now.  The flag
+    // is not cleared here -- a forced change that arrives inside a batch (the end of
+    // an answer does exactly that) has to survive until the batch's layout, and
+    // relayout() is the thing that takes it back off.
     void changedNow_( size_t fromBlock )
     {
         forceLayout_ = true;
         changed_( fromBlock );
-        forceLayout_ = false;
     }
 
     // How often a block that is still streaming may be re-laid out.  Eight times a
     // second is more text than an eye can read; the layouts it saves are the ones
     // that cost the most, because they are the longest.
-    enum { kStreamIntervalMs = 120 };
+    enum { kStreamIntervalMs = 120, kStreamIntervalMaxMs = 1000 };
 
     std::vector<Block> blocks_;
     std::vector<RLine> lines_;
@@ -1052,6 +1082,9 @@ private:
     bool   streamWait_;
     bool   forceLayout_;
     unsigned long lastLayoutMs_;
+    // The cost of the last layout, in milliseconds: the only other thing the
+    // document's size is allowed to be measured by.
+    unsigned long lastLayoutCostMs_;
     bool expandAll_;
     bool follow_;
 };
