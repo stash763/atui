@@ -472,6 +472,9 @@ public:
         batchDepth_ = 0;
         layoutDirty_ = false;
         restartLayout_ = false;
+        streamWait_ = false;
+        forceLayout_ = false;
+        lastLayoutMs_ = 0;
     }
 
     // --- document building (called on the UI thread) ---------------------
@@ -485,8 +488,17 @@ public:
     {
         if( batchDepth_ > 0 )
             --batchDepth_;
-        if( batchDepth_ == 0 && layoutDirty_ )
-            relayout();
+        if( batchDepth_ != 0 || !layoutDirty_ )
+            return;
+        // The same interval as changed_(), and this is the path that matters: the
+        // pump drains a tick's records inside a batch, so the layout a streaming
+        // answer pays for happens here, once a tick.
+        if( streamMayWait_() )
+        {
+            streamWait_ = true;
+            return;
+        }
+        relayout();
     }
 
     void appendUser( const std::string &text )
@@ -574,7 +586,20 @@ public:
     void finishReply()
     {
         closeOpen();
-        changed_( blocks_.empty() ? 0 : blocks_.size() - 1 );
+        changedNow_( blocks_.empty() ? 0 : blocks_.size() - 1 );
+    }
+
+    // The application's timer.  What makes the throttling below honest: the text
+    // that arrived during the interval is laid out on the first tick after it, so a
+    // stream is never left waiting for a chunk that has already been drawn
+    // somewhere else.
+    void onTick()
+    {
+        if( !streamWait_ || batchDepth_ > 0 || blocks_.empty() )
+            return;
+        if( unsigned( nowMs_() - lastLayoutMs_ ) < kStreamIntervalMs )
+            return;
+        relayout();
     }
 
     // Toggle every thinking block (Ctrl-T).
@@ -588,7 +613,7 @@ public:
                 blocks_[i].expanded = expandAll_;
                 if( i < first ) first = i;
             }
-        changed_( first );
+        changedNow_( first );
     }
 
     // Reflect a persisted default without flipping it (called once at startup).
@@ -665,7 +690,7 @@ public:
                       blocks_[b].kind == kTool ) )
                 {
                     blocks_[b].expanded = !blocks_[b].expanded;
-                    changed_( (size_t) b );
+                    changedNow_( (size_t) b );   // a click answers now, not in 120ms
                     clearEvent( event );
                     return;
                 }
@@ -791,6 +816,12 @@ private:
     void relayout()
     {
         layoutDirty_ = false;
+        streamWait_ = false;
+        lastLayoutMs_ = nowMs_();
+        // Counted because a layout costs the length of the document, which is what
+        // the throttling above trades against: with ATUI_TURN_DEBUG on, the number of
+        // these lines during one streamed answer is the work being done.
+        turnDebug_( "layout", (long) blocks_.size(), (long) lines_.size() );
         const int width = size.x > 0 ? size.x : 1;
 
         // Where the rebuild starts. `lines_` is the wrapped form of `blocks_`, and
@@ -951,15 +982,63 @@ private:
     // block ends at -- which is what lets a rebuild start in the middle. Blocks are only
     // added at the end and never removed or reordered, so a block index stays meaningful
     // for the life of the transcript.
+    //
+    // One layout of a block costs the length of that block: it is folded, rendered and
+    // re-wrapped whole.  While an answer is streaming, the block that changed is the
+    // whole answer so far, and the pump calls in 20 times a second, so the cost of an
+    // answer is its length multiplied by its duration -- which is the report from the
+    // box: "high cpu utilization occurs as the size of the response grows".  Measured on
+    // a modern host at 13 ns a byte per layout (0.8 ms for a 32 kB answer, and a whole
+    // answer streamed that way costs 263 ms of CPU it does not need); the box is a good
+    // deal slower per byte, and it has nothing else to spend on.
+    //
+    // So a block that is still being written is re-laid out at most every
+    // kStreamIntervalMs.  Nothing is dropped: the text keeps accumulating in the block,
+    // and onTick() lays out whatever arrived once the interval has passed.  The last
+    // word -- closing the block, a tool's result, a click -- is never deferred, because
+    // that is the state a person reads.
     void changed_( size_t fromBlock )
     {
         if( fromBlock < firstDirty_ )
             firstDirty_ = fromBlock;
-        if( batchDepth_ == 0 )
-            relayout();
-        else
+        if( batchDepth_ > 0 )
+        {
             layoutDirty_ = true;
+            return;
+        }
+        if( streamMayWait_() )
+        {
+            streamWait_ = true;
+            return;
+        }
+        relayout();
     }
+
+    // Whether a layout can wait for the next tick: the only thing dirty is the block
+    // that is still being written, and the screen was laid out for it less than the
+    // interval ago.  Anything else -- a block that has just closed, a record of a
+    // different kind, a resize, a click that expanded something -- is a state a
+    // person reads, and is laid out when it happens.
+    bool streamMayWait_() const
+    {
+        return !forceLayout_ && !restartLayout_
+            && firstDirty_ + 1 == blocks_.size()
+            && !blocks_.empty() && blocks_.back().open
+            && unsigned( nowMs_() - lastLayoutMs_ ) < kStreamIntervalMs;
+    }
+
+    // A change whose result is the state a person reads: lay it out now.
+    void changedNow_( size_t fromBlock )
+    {
+        forceLayout_ = true;
+        changed_( fromBlock );
+        forceLayout_ = false;
+    }
+
+    // How often a block that is still streaming may be re-laid out.  Eight times a
+    // second is more text than an eye can read; the layouts it saves are the ones
+    // that cost the most, because they are the longest.
+    enum { kStreamIntervalMs = 120 };
 
     std::vector<Block> blocks_;
     std::vector<RLine> lines_;
@@ -968,6 +1047,11 @@ private:
     int    batchDepth_;
     bool   layoutDirty_;
     bool   restartLayout_;
+    // A layout that was put off because a block was still streaming, and the clock
+    // reading of the last one that ran (see changed_() and onTick()).
+    bool   streamWait_;
+    bool   forceLayout_;
+    unsigned long lastLayoutMs_;
     bool expandAll_;
     bool follow_;
 };
@@ -1934,6 +2018,11 @@ void pumpChat_()
     // send it away again.  One screenful of cells, once, for the privilege.
     if( atui::tools::takeTerminalTouched() )
         repaintScreen_();
+
+    // And the layout the throttling of a streamed answer put off, if its interval
+    // has come round.  Without this a stream would stop painting the moment a tick
+    // had no records in it.
+    g_transcript_->onTick();
 
     // The question, if the turn is waiting on one.  Modal -- and the answer goes into
     // the queue rather than into the turn, because the thread stepping that turn owns
