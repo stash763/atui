@@ -411,9 +411,12 @@ redrew itself forever"):
     That is right for a block that is finished and wrong to do twenty times a second for
     one that is still arriving: the cost of an answer becomes its length times its
     duration, which is what "high cpu utilization as the response grows" was. The view
-    therefore paces the layout of a block that is still `open` (120 ms), and lays out
-    immediately for everything a person reads the result of -- a block closing, a tool's
-    result, a click. The porter's note: this is a *pace*, not a cache, and so it cannot
+    therefore paces the layout of a block that is still `open` -- four times what the last
+    layout cost, never under 120 ms, never over a second -- and lays out immediately for
+    everything a person reads the result of: a block closing, a tool's result, a click.
+    The pace has to be measured rather than chosen, and that is the portable lesson: 120 ms
+    is eight repaints a second on a machine where a layout costs a millisecond and all of
+    the cpu on one where it costs 120. The porter's note: this is a *pace*, not a cache, and so it cannot
     go stale; nothing is remembered about the text except the clock reading of the last
     layout. Deferred *caching* of laid-out rows is a faster thing to build and a
     different class of bug -- the markdown renderer reads the whole block for table

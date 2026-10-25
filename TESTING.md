@@ -4384,20 +4384,69 @@ Measured on a modern host, at roughly 13 ns a byte per layout: 0.09 ms at 512 by
 piece arrives -- 263 ms of CPU. The `foldForTerminal` of the whole prefix turned out to be
 nothing (under 0.01 ms); it is the render.
 
-So a block that is still being written is laid out at most every 120 ms. The chunks keep
-accumulating in the block meanwhile, `onTick()` lays out what arrived once the interval is
-up, and anything that *is* the state a person reads -- the block closing, a tool's result,
-a click that expands one -- lays out when it happens. To measure it, the endpoint has to
-be a machine: a live model answers two runs with two different lengths, which measures
-nothing.
+So a block that is still being written is laid out less often. The chunks keep
+accumulating in the block meanwhile, the layout catches up on a later tick, and anything
+that *is* the state a person reads -- the block closing, a tool's result, a click that
+expands one -- lays out when it happens. To measure it, the endpoint has to be a machine:
+a live model answers two runs with two different lengths, which measures nothing.
 
     python3 tools/fake_stream.py --port 8799 --words 2400 --chunk 6 --delay 0.01
 
-| one streamed answer from that endpoint | before | after |
+A first version held the interval fixed at 120 ms, which is eight repaints a second:
+
+| one streamed answer from that endpoint | before | 8 a second |
 | --- | --- | --- |
 | layouts | 575 | 193 |
 | CPU for the run | 4.46 s | 2.36 s |
 | idle session, 100 s | 5 layouts, 0 B out | unchanged |
+
+That was measured on a machine where a layout of a 32 kB answer costs 0.8 ms. The box
+answered with its own conditions and its own numbers -- "asked 'tell me about the empire
+state building', set the thinking section to be visible. Cpu utilization climbed to 50% as
+it reached the end of thinking portion. cpu utilization dropped and then started rising
+finally to 90% as it completed the response" -- and its log said why the fixed interval was
+the wrong shape of answer: 1007 layouts in 2756 ticks, exactly eight a second, so the
+throttle *was* working, ending at 147 rows of transcript. 147 rows at 90% of the machine is
+about 120 ms a layout there. Eight a second is the whole box, at any interval that is a
+number of milliseconds.
+
+So the interval is now four times what the last layout cost, with 120 ms as its floor and a
+second as its ceiling, and each layout logs what it cost (`layout <ms> <rows>`), which is
+what turns the next report from a machine into a curve. A quarter of the cpu on repainting
+however big the document gets; never slower than one repaint a second. Simulated here by
+adding 120 ms to each layout, same fake endpoint and so the same stream for both:
+
+| one streamed answer, 120 ms a layout | fixed 120 ms | cost-aware |
+| --- | --- | --- |
+| layouts | 201 | 60 |
+| CPU for the run | 2.45 s | 1.48 s |
+
+and when layouts are cheap the two are identical (193 layouts each), which is the point:
+adaptation that costs nothing on a fast machine is the kind worth having.
+
+Before pacing was believed, the alternative explanation was checked: that some shape of
+markdown makes the renderer quadratic, so that a long line -- a table, a fence, an
+unmatched `*` -- costs much more than its bytes. It does not. Ten shapes, same byte
+count, on a modern host:
+
+| shape (16 kB each) | ms per render |
+| --- | --- |
+| 80-column prose | 0.70 |
+| one line of 16 kB | 0.40 |
+| inline emphasis | 0.61 |
+| emphasis that never closes | 0.65 |
+| a real table | 1.06 |
+| a code fence | 0.95 |
+| reference links | 0.40 |
+| brackets that are not links | 0.48 |
+| a list | 0.48 |
+| headings | 0.39 |
+
+Everything is in the band of 0.02-0.06 ms per kB, tables and fences at the expensive end.
+So the box's 120 ms for 147 rows is the machine -- an unoptimised Watcom build (`-od`),
+its old standard library, its malloc -- and not a hidden square. That is worth writing
+down because the tempting conclusion from "90% cpu" is that something is algorithmically
+wrong, and here the answer is only that re-rendering the whole answer costs what it costs.
 
 That a deferred layout can lose a frame is the risk of the change, so it is checked: with
 the fake endpoint the answer's last words and its last `Section` heading are on screen when
