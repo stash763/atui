@@ -4500,3 +4500,86 @@ executable of 1,405,091 bytes sitting in `D:\atui` while the host insisted nothi
 finished. The lesson is not to distrust the box; it is that a channel which cannot tell
 "not yet" from "not mine" from "not supported" will eventually report all three as the
 first.
+
+## Profiling the box: why wsample could not, and what prof.c found (measured 2026-10-26)
+
+The open question was where a streamed answer's CPU goes: the taskbar monitor near the box's
+own screen reads roughly 50% during a turn, while the app's own per-second instrument
+(`pumpsec`) says the UI pump does 20–70 ms of work per second — 2–7%. Most of the machine
+was being spent outside anything the app could time. Open Watcom ships a sampler, `wsample`,
+built on the same `DosDebug` trap as everything else; the plan was to use it. It cannot be
+used at all on a multithreaded program, and each of the three walls it hit belongs to
+someone who will hit them again:
+
+1. **Any first-chance exception kills the child.** `sampos22.c`'s main loop answers
+   `DBG_N_Exception` with a message and `DBG_C_Term` — a full stop. A multithreaded OS/2
+   program raises first-chance exceptions routinely: the Watcom C runtime opens with a
+   software-fault notification (the banner handshake, number `0x60068`, meant for the
+   debugger, handled by the startup library `stubl.lib`), and a thread's stack commit
+   raises another. Measured: candidate7 under wsample, "CPU exception reported" ten
+   milliseconds into the worker thread's start, no trace file, the session wedged.
+2. **Terminating a debuggee that died mid-something hangs the termination**, behind a
+   teardown timeout of about ten minutes (measured twice, both exactly ten-ish minutes,
+   wsample and prof alike). What fixes it: never send `DBG_C_Term` to a child that has
+   already produced `ProcTerm`, and give the sampler a **sampling budget** — `-b<ms>`,
+   after which the sleeper thread stops issuing stops and the child lives out its remain-
+   ing time unsampled and dies in peace. With a `prof`-under-`ATUI_QUIT_AFTER_MS` run,
+   budget = quit-after − 2000. (A second, smaller hang of the same family: the sleeper's
+   `DosDebug(Stop)` after `ProcTerm` was consumed. `gDone` before everything, and the
+   exit is `DosExit(EXIT_PROCESS)`, the one way to leave that cannot wait on a thread.)
+3. **`DosExecPgm`'s argument block is not an argv array.** It is the program path, one
+   NUL, and then the command tail as ONE raw string (sampos22.c's `LoadProg` builds
+   exactly that). A NUL-delimited argv block "works" for single-word arguments and
+   silently truncates everything after the first: `--ask "tell me about…"` arrived as
+   `--ask` alone, and the whole profiled run was atui printing its usage and exiting.
+   Join with spaces, re-quote what contains them.
+
+The exception policy that works for a passive observer, taken from the shape of Open
+Watcom's own debugger backend (`bld/trap/lcl/os2v2/c/os2v2acc.c`): every wait after the
+first is `DBG_C_Continue` carrying a disposition; first chance answers `CONTINUE_SEARCH`
+(never report — reporting bypasses the program's handler chain, and its chain is where
+the banner fault gets eaten); LAST chance answers `CONTINUE_SEARCH` too — that is the
+hand-off to the program's chain for its final word, and killing there, as a first draft
+did, kills every Watcom program at its own startup notification. Breakpoints and single
+steps (debugger-directed) and the whole `0x600xxxxx` software-fault band get
+`CONTINUE_EXECUTION` — swallowed. A program never dies from the profiler; if it dies,
+`ProcTerm` says so. And a link-side hygiene fix that falls out of all this: **link
+`stubl.lib`** (every OW makefile does; `:link` and `:exe` now do) so the runtime's
+opening notification has a handler of the program's own.
+
+So: `tools/os2/prof.c`, one file, builds with `build.cmd link prof.c prof.exe`. It traces
+plain text — `SAMPLE <tid> <eip-hex>` plus module loads, object-table scans, thread events,
+exceptions — flushed every 64 lines so a crash leaves what it reached. Before believing it,
+point it at a known shape: `probe_busy.c` spins four seconds, or sleeps, or both. The trace
+says exactly that — spin samples inside the image, sleep samples parked at one kernel
+address (`0xe3e1` is where `DosSleep` waits; it is the calibration mark for "blocked"),
+percentages matching the budget arithmetic. And it caught the `--ask` truncation bug, above,
+by showing a 95-second run with one sample.
+
+```
+build.cmd link prof.c prof.exe
+build.cmd link probe_busy.c probe_busy.exe        # calibration: spin, sleep, both
+prof.exe -r20 -b3000 busy.trc probe_busy.exe both
+prof.exe -r25 -b88000 turn.trc candidate8.exe --ask "tell me about something"
+```
+
+`tools/wsample_report.py` reads either format — `--smp` for wsample's binary (it still
+works when wsample works) or `--trc` for prof's text, resolving through the program's own
+wlink map. It finds the code's linear base by asking the samples which object base puts
+most of them inside the map's code segment — the loader's order is not the map's order
+(candidate7's code landed at `0x20000` behind a stub object at `0x10000`; probe_busy's at
+`0x10000`).
+
+What the first honest profiles said. **Idle atui: 98.7% `DosSleep`, no exceptions, user
+CPU zero to the resolution of the sampling.** **A streamed turn over the bridge: 90% of
+the UI thread parked in `DosSleep`, 8% in user code — and that 8% is almost entirely
+`__AccessSemaphore`/`__CloseSemaphore`, the C runtime's global mutex around the heap and
+stdio, taken for every little allocation and every log line; the worker thread is 96%
+waiting inside one address above the image (the TCP/IP stack's receive wait) and 4% user.**
+Neither thread is anywhere near a 50%. The drawing itself — `render`, `TView::writeStr`,
+`clearScreen` — is a handful of samples. What is not visible to an in-process sampler is
+whatever the kernel and the session do *for* the process between its syscalls — and the
+50% reading belongs to the local screen, where drawing goes through VIO and the PM, not
+over the pipe. The instrument for that last step is the same command at the local screen,
+`prof.exe -r25 -b88000 local.trc candidate8.exe --ask "..."`, which draws where the user
+can see it and writes the trace beside it.

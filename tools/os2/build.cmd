@@ -323,6 +323,14 @@ echo option stack=256k >> link.rsp
 for %%f in (obj\one\*.obj) do echo file %%f >> link.rsp
 echo library obj\tvision.lib >> link.rsp
 echo library os2386.lib >> link.rsp
+rem  stubl.lib is the startup library every OW makefile links ("wlinksupport"):
+rem  the C runtime opens with a deliberate software fault (XCPT_SOFTWARE_FAULT,
+rem  0x60068 -- the banner/callout to the debugger) whose handler lives there.
+rem  Without it the fault sails past first chance: harmless alone, fatal under
+rem  any debugger (measured: probe_busy under prof died with EXC 1/2 60068
+rem  2026-10-26, which is also why wsample killed candidate7 -- same code path,
+rem  no stub in either link).
+echo library stubl.lib >> link.rsp
 wlink @link.rsp >> %LOG% 2>&1
 if errorlevel 1 goto one_failed
 dir %3
@@ -470,6 +478,10 @@ rem time even if it never opens a socket -- which is the right trade for a progr
 rem whose only mode is asking a model something over the LAN, and the reason the
 rem no-network configuration above is compile-checked rather than linked here.
 echo library tcpip32.lib >> link.rsp
+rem  stubl.lib: the startup library that swallows the runtime's opening
+rem  software-fault banner notification (note in :link).  Every OW makefile
+rem  links it; without it the program is hostile to every debugger.
+echo library stubl.lib >> link.rsp
 wlink @link.rsp >> %LOG% 2>&1
 if errorlevel 1 goto one_failed
 dir %EXENAME%
