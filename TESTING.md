@@ -4636,3 +4636,59 @@ stderr has to be a file, and the file's growth is what says "a layout just happe
 a `&`-backgrounded fake server dies with the tool call that started it (SIGHUP), which
 reads to the naive harness as "the stream ended after 13 rows" — the instrumented server
 now says `stream complete` or `stream aborted at <n>` so the two are never confused again.
+
+## The kernel still drew the screen; now it gets to scroll it instead (measured 2026-10-27)
+
+The settled-prefix layout (candidate8) did what it was built to do, and the taskbar
+said so — about 35% during a streamed answer, down from about 50%. But
+`local2.trc` showed the ledger had moved rather than shrunk:
+
+| tid 1 (UI thread) | `local.trc` | `local2.trc` |
+|---|---|---|
+| application code, clib, semaphores | 14.9% | 1.4% |
+| kernel display path (trace address `0x476e`) | 17.1% | **43.4%** |
+| `DosSleep` | 66.7% | 48.1% |
+
+Why *bigger*: layouts are now nearly free, so the cost-aware interval sits at its
+120 ms floor again — and while an answer follows, every frame legitimately changes
+every visible row, because the text has shifted. The flush's cell shadow cannot skip
+cells that genuinely moved; it sends about 25 `VioWrtCellStr` calls per frame. On the
+local screen the call, not the bytes, is what costs — every write is carried through
+the Presentation Manager machinery that mirrors the session. Four frames' worth of
+rows per second times 25 calls is the 43%. (The profiler inflates the picture —
+suspend/read/resume every 25 ms is itself expensive — so the taskbar is the number
+to believe; the trace is for attribution.)
+
+The fix is the one every terminal emulator learned decades ago, put at the flush:
+the driver keeps the frame the screen holds, and a frame that is that frame shifted
+up by k rows goes out as **one `VioScrollUp` plus the k new rows** — five calls
+where twenty-five were going out. The recognizer is narrow on purpose (window rows
+must each equal the previous frame's row k below, tried from the first few dirty
+rows; the exposed rows are marked dirty in full and written from the shadow, so the
+screen ends holding the shadow whatever the search decided). Non-shift frames take
+the ordinary path untouched.
+
+The other half answers "what about a machine slower than this P4": the driver times
+every flush, and `streamIntervalMs_()` gives the display's milliseconds the same
+weight as the layout's — interval = 4 × (layout + flush), still bounded to
+[120 ms, 1 s]. A box that pays tens of milliseconds to *draw* a frame stops being
+asked to draw eight a second, with no table of machine speeds anywhere. The
+once-a-second debug line gained `vio a=<write calls>/b=<scrolls>` so the shortcut
+is visible in a run's own log.
+
+Measuring the before/after of the display share:
+
+    prof.exe -r25 -b88000 local3.trc candidate9.exe --ask "tell me about the empire state building"
+
+    python3 tools/wsample_report.py --trc local3.trc --map candidate9.map
+
+and compare `0x476e` against the 43.4% of `local2.trc`.
+
+One operational lesson the box handed over the same day: its telnet server can be
+left holding sessions it never gives back — after an abandoned command with a stuck
+child, new connections were accepted, showed the banner, and never honored a login;
+FTP stayed healthy. `curl stop telnet` + `curl start telnet` at the box's own console
+clears it. While it was jammed, the build rode around it: code over FTP (the sync
+channel is pure FTP), and `d:\atui\mk9.cmd` — a wrapper that runs the whole
+tvone/lib/atui/exe sequence at the box's own command window and leaves the verdicts
+in `mk9.done`, which the host reads back over FTP.

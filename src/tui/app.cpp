@@ -229,6 +229,17 @@ struct UiProfile
 
 static UiProfile g_prof_ = { 0, 0, 0, 0, 0, 0 };
 
+#if defined( __OS2__ )
+// The VIO driver counts the calls that cost the box: every frame ends in some
+// number of VioWrtCellStr's, and the scroll shortcut replaces runs of them with
+// one VioScrollUp (hardwvos2.cpp).  Totals; the second below keeps the deltas.
+extern "C" {
+unsigned long tvVioStatCalls();
+unsigned long tvVioStatScrolls();
+unsigned long tvVioStatFlushMs();
+}
+#endif
+
 // Called by the transcript view with what one layout of it cost.
 static void noteUiLayout_( long ms )
 {
@@ -254,6 +265,21 @@ static void noteUiPump_( unsigned long tPump0, long driveMs )
         turnDebug_( "pumpsec", g_prof_.pumpMs, g_prof_.driveMs );
         turnDebug_( "layoutsec", g_prof_.layoutMs, g_prof_.layouts );
         turnDebug_( "ticksec", g_prof_.ticks, 0 );
+#if defined( __OS2__ )
+        // What the display asked for this second: cell-write calls made, and
+        // scrolls that replaced runs of them.  The number that reads "the box
+        // is drawing too much" lives here even when pumpsec says the
+        // application is not -- local2.trc made that visible as kernel time
+        // with the app itself asleep.
+        {
+            static unsigned long lastCalls = 0, lastScrolls = 0;
+            const unsigned long c = tvVioStatCalls();
+            const unsigned long s = tvVioStatScrolls();
+            turnDebug_( "vio", (long) ( c - lastCalls ), (long) ( s - lastScrolls ) );
+            lastCalls = c;
+            lastScrolls = s;
+        }
+#endif
     }
     g_prof_.sinceMs = now;
     g_prof_.pumpMs = g_prof_.driveMs = g_prof_.layoutMs = 0;
@@ -1222,9 +1248,19 @@ private:
     // that is still visibly alive while an answer pours.
     unsigned long streamIntervalMs_() const
     {
+        unsigned long cost = lastLayoutCostMs_;
+#if defined( __OS2__ )
+        // The display is the other half of a frame and, on the box, the more
+        // expensive half: what the last flush cost the session -- the scroll
+        // calls and cell writes it made, timed inside the driver -- counts
+        // against the same quarter of the machine the layout does.  A P4 pays
+        // a few milliseconds and the floor stands; a 486 pays tens and the
+        // interval takes notice by itself, without a table of machine speeds.
+        cost += tvVioStatFlushMs();
+#endif
         unsigned long want = kStreamIntervalMs;
-        if( 4 * lastLayoutCostMs_ > want )
-            want = 4 * lastLayoutCostMs_;
+        if( 4 * cost > want )
+            want = 4 * cost;
         if( want > kStreamIntervalMaxMs )
             want = kStreamIntervalMaxMs;
         return want;
