@@ -4676,11 +4676,13 @@ asked to draw eight a second, with no table of machine speeds anywhere. The
 once-a-second debug line gained `vio a=<write calls>/b=<scrolls>` so the shortcut
 is visible in a run's own log.
 
-Measuring the before/after of the display share:
+Measuring the before/after of the display share (the shortcut is opt-in as
+this is written — see the retraction below — so `set ATUI_VIOSCROLL=1`
+first, or the run measures the ordinary path):
 
-    prof.exe -r25 -b88000 local3.trc candidate9.exe --ask "tell me about the empire state building"
+    prof.exe -r25 -b88000 local3.trc atui.exe --ask "tell me about the empire state building"
 
-    python3 tools/wsample_report.py --trc local3.trc --map candidate9.map
+    python3 tools/wsample_report.py --trc local3.trc --map atui.map
 
 and compare `0x476e` against the 43.4% of `local2.trc`.
 
@@ -4718,8 +4720,9 @@ The way back is incremental and disposable:
 - **candidate10** carries the whole idea *behind a switch*: the shortcut is
   off unless `ATUI_VIOSCROLL=1`, and when on it passes the attribute in
   FTE's cell-pointer shape. Without the variable it behaves like candidate8
-  plus flush-cost pacing, which is safe. candidate9.exe is still on
-  `D:\atui` — **do not run it**; it still hangs the box.
+  plus flush-cost pacing, which is safe. candidate9.exe was deleted from
+  `D:\atui` when the shipping name went back to plain `atui.exe` — it hangs
+  the box, so the same warning stands for any backup that holds it.
 - **`pscroll.exe`** (`tools/os2/probe_scroll.cpp`, build with
   `build.cmd link probe_scroll.cpp pscroll.exe`) tests each call shape alone
   at the box's own screen, logging every step to `pscroll.log` *before*
