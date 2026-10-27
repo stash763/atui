@@ -4737,3 +4737,13 @@ The way back is incremental and disposable:
   `a`–`e` decide, the flush-cost pacing (timed flush, adaptive interval)
   stays — that half was never in question and it is what a slower machine
   needs on its own.
+
+Postscript, measured the same day: candidate10 — the flush-cost pacing with
+the scroll shortcut off — holds the taskbar at a **steady 22%** during a
+streamed answer at the box's own screen, against the ~35% candidate9 showed
+and the ~50% before any of this. Which is the pacing doing exactly its job:
+the P4's flushes cost enough milliseconds that the interval stretches and
+the screen repaints less often, and the kernel stops being asked to mirror
+the world eight times a second. The `VioScrollUp` fast path is expected to
+cut the per-frame call count further on top of this — once `pscroll` has
+proven which call shapes this kernel tolerates, per the section above.
