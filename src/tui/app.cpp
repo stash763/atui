@@ -540,6 +540,11 @@ public:
         forceLayout_ = false;
         lastLayoutMs_ = 0;
         lastLayoutCostMs_ = 0;
+        ans_.valid = false;
+        ans_.block = 0;
+        ans_.width = -1;
+        ans_.settled = 0;
+        ans_.scan.init();
     }
 
     // --- document building (called on the UI thread) ---------------------
@@ -839,6 +844,22 @@ private:
         r.block = b; r.toggle = g; return r;
     }
 
+    // Settled-prefix cache for the answer block that is being streamed: the
+    // rows of the bytes that can no longer change, and the scanner that finds
+    // where that is (see SettleScan in tui/markdown.h, and the kAnswer path in
+    // relayout()). One block streams at a time, so one slot is enough; it
+    // belongs to the block `block`, was made at `width`, and covers the first
+    // `settled` bytes of that block's text.
+    struct AnswerCache {
+        bool               valid;
+        size_t             block;
+        int                width;
+        size_t             settled;   // bytes of bl.text covered by rows
+        std::vector<RLine> rows;      // those rows, already rendered
+        atui::tui::SettleScan scan;
+    };
+    AnswerCache ans_;
+
     // Maximum height of a collapsed tool record (command, result and hint
     // together). Anything longer starts collapsed and is expanded by a click.
     enum { kToolRows = 5 };
@@ -899,6 +920,10 @@ private:
         // seconds in one tick handler, and the keyboard was dead for as long as the model
         // kept talking (TESTING.md, "The transcript was the freeze").
         size_t first = firstDirty_;
+        // Rows of the streaming answer's settled prefix that can stay exactly
+        // where they are instead of being rebuilt (see the kAnswer path and
+        // SettleScan); only the first dirty block can keep rows.
+        size_t keepRows = 0;
         if( restartLayout_ || first == 0 || first > rowsEnd_.size() )
         {
             first = 0;
@@ -913,14 +938,28 @@ private:
             // block's rows while appending the new one, which is a transcript that
             // repeats the answer: caught by counting copies of the answer's tail on
             // screen before and after this change (2 before the fix below, 1 after).
-            lines_.resize( rowsEnd_[ first - 1 ] );
+            size_t keep = rowsEnd_[ first - 1 ];
+            // What SettleScan called settled does not change when the answer
+            // grows, so its rows -- and the spacer in front of them -- can
+            // survive the rebuild. Copying them back from the cache every
+            // pump instead would cost what settling just saved.
+            if( !ans_.rows.empty() && ans_.valid && ans_.block == first &&
+                ans_.width == width && first < blocks_.size() &&
+                blocks_[first].kind == kAnswer &&
+                blocks_[first].text.size() >= ans_.settled &&
+                lines_.size() >= keep + 1 + ans_.rows.size() )
+            {
+                keep += 1 + ans_.rows.size();
+                keepRows = ans_.rows.size();
+            }
+            lines_.resize( keep );
             rowsEnd_.resize( first );
         }
         restartLayout_ = false;
 
         for( size_t b = first; b < blocks_.size(); ++b )
         {
-            if( !lines_.empty() )
+            if( !lines_.empty() && !( b == first && keepRows > 0 ) )
                 lines_.push_back( RLine() );   // blank spacer between blocks
             const Block &bl = blocks_[b];
             // What the terminal is shown, which for an 8-bit console is not what
@@ -928,8 +967,12 @@ private:
             // the way in, because a streamed answer arrives in chunks and a multi-byte
             // character can be split between two of them -- by now the block holds the
             // whole text. Blocks keep what was sent so a copy, an export or a fold
-            // toggle sees the original.
-            const std::string text = atui::tui::foldForTerminal( bl.text );
+            // toggle sees the original. An answer folds per region instead (below),
+            // which is the same bytes but a paragraph at a time.
+            const std::string text =
+                ( bl.kind == kAnswer )
+                    ? std::string()
+                    : atui::tui::foldForTerminal( bl.text );
             const std::string out  = atui::tui::foldForTerminal( bl.out );
             const std::string note = atui::tui::foldForTerminal( bl.note );
             if( bl.kind == kUser )
@@ -1004,12 +1047,74 @@ private:
             }
             else if( bl.kind == kAnswer )
             {
-                // Render as markdown: headings, emphasis, lists, tables and
-                // syntax-highlighted code blocks become styled spans.
-                std::vector<Line> md = atui::tui::render( text, width );
-                for( size_t i = 0; i < md.size(); ++i )
-                    lines_.push_back(
-                        RLine( md[i].spans, (int) b, false, md[i].bg ) );
+                // Markdown: headings, emphasis, lists, tables and syntax
+                // highlighted code blocks become styled spans.
+                //
+                // render() costs the length of what it is given, and while an
+                // answer streams the pump asks for it again and again -- at
+                // its worst once per chunk, which is an answer costing its
+                // length times its duration. The text is append-only and
+                // SettleScan knows which prefix of it is final, so that prefix
+                // is rendered once into ans_.rows and every pump after it
+                // re-renders only the unsettled tail: the current paragraph,
+                // not the answer. The rows already in lines_ that came from
+                // the cache stay in place (keepRows above), so settling costs
+                // what it settles and nothing more.
+                size_t rowsIn = ( b == first ) ? keepRows : 0;
+                if( !( ans_.valid && ans_.block == b && ans_.width == width
+                       && bl.text.size() >= ans_.settled ) )
+                {
+                    ans_.valid   = true;
+                    ans_.block   = b;
+                    ans_.width   = width;
+                    ans_.settled = 0;
+                    ans_.rows.clear();
+                    ans_.scan.init();
+                }
+                size_t bound = ans_.scan.feed( bl.text );
+                if( ans_.scan.dead )
+                {
+                    // A link definition can change text above it, so no
+                    // prefix of this answer is final and the cache is off:
+                    // render the whole answer, as before settling existed.
+                    ans_.settled = 0;
+                    ans_.rows.clear();
+                    std::vector<Line> md = atui::tui::render(
+                        atui::tui::foldForTerminal( bl.text ), width );
+                    for( size_t i = 0; i < md.size(); ++i )
+                        lines_.push_back(
+                            RLine( md[i].spans, (int) b, false, md[i].bg ) );
+                }
+                else
+                {
+                    // A closed block settles to the end: nothing arrives
+                    // below it any more.
+                    if( !bl.open && bl.text.size() > bound )
+                        bound = bl.text.size();
+                    if( bound > ans_.settled )
+                    {
+                        std::string seg = atui::tui::foldForTerminal(
+                            bl.text.substr( ans_.settled, bound - ans_.settled ) );
+                        std::vector<Line> segLines =
+                            atui::tui::render( seg, width );
+                        for( size_t i = 0; i < segLines.size(); ++i )
+                            ans_.rows.push_back( RLine( segLines[i].spans,
+                                                         (int) b, false,
+                                                         segLines[i].bg ) );
+                        ans_.settled = bound;
+                    }
+                    for( size_t i = rowsIn; i < ans_.rows.size(); ++i )
+                        lines_.push_back( ans_.rows[i] );
+                    if( bl.text.size() > ans_.settled )
+                    {
+                        std::string tail = atui::tui::foldForTerminal(
+                            bl.text.substr( ans_.settled ) );
+                        std::vector<Line> md = atui::tui::render( tail, width );
+                        for( size_t i = 0; i < md.size(); ++i )
+                            lines_.push_back(
+                                RLine( md[i].spans, (int) b, false, md[i].bg ) );
+                    }
+                }
             }
             else // kThinking
             {
@@ -1057,15 +1162,18 @@ private:
     // for the life of the transcript.
     //
     // One layout of a block costs the length of that block: it is folded, rendered and
-    // re-wrapped whole.  While an answer is streaming, the block that changed is the
-    // whole answer so far, and the pump calls in 20 times a second, so the cost of an
-    // answer is its length multiplied by its duration -- which is the report from the
-    // box: "high cpu utilization occurs as the size of the response grows".  Measured on
-    // a modern host at 13 ns a byte per layout (0.8 ms for a 32 kB answer, and a whole
-    // answer streamed that way costs 263 ms of CPU it does not need); the box is a good
-    // deal slower per byte, and it has nothing else to spend on.
+    // re-wrapped whole.  While an answer is streaming, the block that changed used to be
+    // the whole answer so far, and the pump calls in 20 times a second, so the cost of
+    // an answer was its length multiplied by its duration -- which is the report from
+    // the box: "high cpu utilization occurs as the size of the response grows".
+    // Measured on a modern host at 13 ns a byte per layout (0.8 ms for a 32 kB answer,
+    // and a whole answer streamed that way costs 263 ms of CPU it does not need); the
+    // box is a good deal slower per byte, and it has nothing else to spend on.  The
+    // settled-prefix cache in the kAnswer path is what ended that: while an answer
+    // streams, a layout now costs its newest paragraph, not its length (SettleScan in
+    // tui/markdown.h, and the local-screen profile in TESTING.md that asked for it).
     //
-    // So a block that is still being written is re-laid out at most every
+    // A block that is still being written is nevertheless re-laid out at most every
     // kStreamIntervalMs.  Nothing is dropped: the text keeps accumulating in the block,
     // and onTick() lays out whatever arrived once the interval has passed.  The last
     // word -- closing the block, a tool's result, a click -- is never deferred, because
@@ -1102,14 +1210,16 @@ private:
 
     // How long to hold off the next layout of a block that is still arriving.
     //
-    // A layout costs the length of the document, so a fixed interval is the wrong
-    // promise to make: 120 ms is eight repaints a second of a short answer, which
-    // is fine, and eight repaints a second of a long one, which on the box measured
-    // 90% of the machine doing nothing but re-rendering rows that mostly did not
-    // change.  Four times the last layout's cost spends at most a quarter of the
-    // cpu on repainting whatever the document's size, and the floor and ceiling keep
-    // it sane at both ends: never busier than eight a second, never slower than one
-    // a second, which is a screen that is still visibly alive while an answer pours.
+    // A layout costs the document's unsettled tail plus a full pass over the
+    // visible rows, so a fixed interval is the wrong promise to make: 120 ms is
+    // eight repaints a second of a short answer, which is fine, and eight
+    // repaints a second of a long one on a machine that pays per row, which on
+    // the box once measured 90% of the machine doing nothing but re-rendering
+    // rows that mostly did not change.  Four times the last layout's cost
+    // spends at most a quarter of the cpu on repainting whatever the document's
+    // size, and the floor and ceiling keep it sane at both ends: never busier
+    // than eight a second, never slower than one a second, which is a screen
+    // that is still visibly alive while an answer pours.
     unsigned long streamIntervalMs_() const
     {
         unsigned long want = kStreamIntervalMs;

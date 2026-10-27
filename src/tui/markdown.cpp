@@ -1193,5 +1193,102 @@ std::vector<Line> render( const std::string &md, int width )
     return out;
 }
 
+// --- incremental settling ----------------------------------------------------
+
+void SettleScan::init()
+{
+    scan = 0; boundary = 0; dead = false;
+    prevBlank = false; fence = 0; fenceLen = 0;
+}
+
+size_t SettleScan::feed( const std::string &md )
+{
+    // Walk whole lines from where the last feed stopped. Line ends are read
+    // the way render() normalizes them: \n, \r\n and a lone \r all break, and
+    // the walk waits on a trailing \r because it may still become a \r\n --
+    // a phantom blank line would settle in the middle of a paragraph.
+    const size_t n = md.size();
+    size_t i = scan;
+    while( i < n )
+    {
+        size_t e = i;
+        while( e < n && md[e] != '\n' && md[e] != '\r' ) ++e;
+        if( e == n ) break;               // the line may still be growing
+        size_t nxt = e + 1;
+        if( md[e] == '\r' )
+        {
+            if( nxt == n ) break;         // could be \r\n: decide when it is
+            if( md[nxt] == '\n' ) ++nxt;
+        }
+
+        size_t s = i;
+        while( s < e && ( md[s] == ' ' || md[s] == '\t' ) ) ++s;
+        const bool blank = ( s == e );
+
+        // A link definition can change how text above it is rendered --
+        // render() collects the definitions before laying out any block --
+        // and it is the renderer's only document-global dependency. Mirror
+        // extractLinkDefs exactly, including the lines it looks at inside
+        // fences; one hit and nothing in this document may settle.
+        if( !dead && e - s > 3 && md[s] == '[' &&
+            !( s + 1 < e && md[s + 1] == '^' ) )
+        {
+            for( size_t k = s; k + 1 < e; ++k )
+                if( md[k] == ']' && md[k + 1] == ':' ) { dead = true; break; }
+        }
+
+        // A non-blank line at column 0 right after a blank line, with no
+        // fence open, starts a block that owes nothing to the lines above:
+        // every construct above it ended at that blank line, and an indented
+        // line is refused because it could continue something above.
+        if( !dead && prevBlank && !blank && s == i && !fence )
+            boundary = i;
+
+        // Fence state, mirroring isFence()/isClosingFence(): an opener at
+        // indent <= 3 of at least three ` or ~ whose backtick info holds no
+        // backtick; a closer of the same char, at least as long, alone on
+        // its line. A line inside a fence that merely looks like a closer of
+        // the other kind changes nothing, exactly as in the renderer.
+        if( !fence )
+        {
+            if( !blank && ( s - i ) <= 3 && ( md[s] == '`' || md[s] == '~' ) )
+            {
+                size_t k = s;
+                while( k < e && md[k] == md[s] ) ++k;
+                bool ok = ( k - s ) >= 3;
+                if( ok && md[s] == '`' )
+                    for( size_t j = k; j < e; ++j )
+                        if( md[j] == '`' ) { ok = false; break; }
+                if( ok ) { fence = md[s]; fenceLen = (int) ( k - s ); }
+            }
+        }
+        else if( !blank && md[s] == fence && e - s >= (size_t) fenceLen )
+        {
+            size_t k = s;
+            while( k < e && md[k] == fence ) ++k;
+            if( (int) ( k - s ) >= fenceLen )
+            {
+                bool alone = true;
+                for( size_t j = k; j < e; ++j )
+                    if( md[j] != ' ' && md[j] != '\t' ) { alone = false; break; }
+                if( alone ) { fence = 0; fenceLen = 0; }
+            }
+        }
+
+        prevBlank = blank;
+        i = nxt;
+        scan = i;
+    }
+    // A line that has started but not ended still speaks its first byte, and
+    // that is all a boundary needs: a column-0 non-blank right after a blank
+    // line settles everything above it whether or not it has reached its end.
+    // (`scan` stays put, so the line's definition and fence questions are
+    // answered on a later feed, when the rest of it arrives.)
+    if( i < n && !dead && prevBlank && !fence
+        && md[i] != ' ' && md[i] != '\t' )
+        boundary = i;
+    return dead ? 0 : boundary;
+}
+
 } // namespace atui::tui
 } // namespace atui

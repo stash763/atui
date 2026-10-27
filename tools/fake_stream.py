@@ -33,6 +33,13 @@ def answer(words):
     return "".join(out)
 
 
+def text_of():
+    if CFG.get("raw"):
+        with open(CFG["raw"]) as f:
+            return f.read()
+    return answer(CFG["words"])
+
+
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
         body = json.dumps({"object": "list",
@@ -44,7 +51,7 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(body.encode())
 
     def do_POST(self):
-        text = answer(CFG["words"])
+        text = text_of()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
@@ -55,7 +62,8 @@ class H(BaseHTTPRequestHandler):
             try:
                 self.wfile.write(b"data: " + json.dumps(obj).encode() + b"\n\n")
                 self.wfile.flush()
-            except Exception:
+            except Exception as e:
+                print("stream aborted at %d/%d: %s" % (i, len(text), e), flush=True)
                 return
             STATS["chunks"] += 1
             STATS["bytes"] += len(piece)
@@ -64,8 +72,10 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(b'data: {"choices":[{"index":0,"delta":{},'
                              b'"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
             self.wfile.flush()
-        except Exception:
-            pass
+            print("stream complete: %d chunks, %d bytes"
+                  % (STATS["chunks"], STATS["bytes"]), flush=True)
+        except Exception as e:
+            print("finish write failed: %s" % e, flush=True)
 
     def log_message(self, *a):
         pass
@@ -77,10 +87,11 @@ def main():
     p.add_argument("--words", type=int, default=2400)
     p.add_argument("--chunk", type=int, default=6)
     p.add_argument("--delay", type=float, default=0.01)
+    p.add_argument("--raw", help="stream this file's bytes instead of the canned answer")
     a = p.parse_args()
-    CFG.update(words=a.words, chunk=a.chunk, delay=a.delay)
-    print("fake stream on %d: %d words, %d-byte chunks, %s s apart"
-          % (a.port, a.words, a.chunk, a.delay), flush=True)
+    CFG.update(words=a.words, chunk=a.chunk, delay=a.delay, raw=a.raw)
+    print("fake stream on %d: %s, %d-byte chunks, %s s apart"
+          % (a.port, a.raw or "%d words" % a.words, a.chunk, a.delay), flush=True)
     ThreadingHTTPServer(("127.0.0.1", a.port), H).serve_forever()
 
 

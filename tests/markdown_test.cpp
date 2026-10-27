@@ -390,6 +390,154 @@ int test_syntax_json_keys()
     return 0;
 }
 
+// --- incremental settling (SettleScan) --------------------------------------
+//
+// The claim under test is the one the streaming transcript relies on: feeding
+// a growing document to SettleScan and rendering each newly settled region
+// separately must produce exactly what rendering the whole document produces.
+// It is checked byte-by-chunk against documents built from every construct the
+// settle rule claims to survive.
+
+size_t settleAll( const std::string &doc, bool *deadOut )
+{
+    atui::tui::SettleScan sc;
+    sc.init();
+    size_t b = sc.feed( doc );
+    if( deadOut ) *deadOut = sc.dead;
+    return b;
+}
+
+bool sameLine( const Line &a, const Line &b )
+{
+    if( a.spans.size() != b.spans.size() ) return false;
+    if( a.bg != b.bg ) return false;
+    for( size_t i = 0; i < a.spans.size(); ++i )
+        if( a.spans[i].text != b.spans[i].text ||
+            a.spans[i].role != b.spans[i].role )
+            return false;
+    return true;
+}
+
+// Stream `doc` to the scanner `step` bytes at a time, render every region the
+// scanner settles plus the tail a closed block renders, and compare against
+// rendering the whole at once. 0 on equal, negative on divergence.
+int settleDivergence( const std::string &doc, size_t step, int width )
+{
+    atui::tui::SettleScan sc;
+    sc.init();
+    std::vector<Line> whole = render( doc, width );
+    std::vector<Line> parts;
+    size_t settled = 0, fed = 0;
+    while( fed < doc.size() )
+    {
+        fed += step;
+        if( fed > doc.size() ) fed = doc.size();
+        std::string head = doc.substr( 0, fed );
+        size_t b = sc.feed( head );
+        if( sc.dead ) return 0;       // unsettleable: not what this compares
+        if( b > settled )
+        {
+            std::vector<Line> seg =
+                render( doc.substr( settled, b - settled ), width );
+            parts.insert( parts.end(), seg.begin(), seg.end() );
+            settled = b;
+        }
+    }
+    std::vector<Line> tail = render( doc.substr( settled ), width );
+    parts.insert( parts.end(), tail.begin(), tail.end() );
+    if( parts.size() != whole.size() ) return -1;
+    for( size_t i = 0; i < parts.size(); ++i )
+        if( !sameLine( parts[i], whole[i] ) ) return -2;
+    return 0;
+}
+
+int test_settle_paragraph()
+{
+    // The boundary starts the newest line after a blank line: here "ccc"
+    // at offset 10 (3 + newline + newline + 3 + newline + newline).
+    if( settleAll( "aaa\n\nbbb\n\nccc", 0 ) != 10 ) return -1;
+    // Nothing to settle while a paragraph stands alone.
+    if( settleAll( "aaa bbb ccc", 0 ) != 0 ) return -2;
+    // An indented line could continue something above: it never settles.
+    if( settleAll( "aaa\n\n    bbb", 0 ) != 0 ) return -3;
+    // A continuation line makes one paragraph with its predecessor.
+    if( settleAll( "aaa\nbbb\n\nccc", 0 ) != 9 ) return -4;
+    return 0;
+}
+
+int test_settle_fence()
+{
+    const std::string closed = "aaa\n\n```\ncode\n```\n\nbbb";
+    // "aaa" settles before the fence opens; the closed fence then settles
+    // itself, and the boundary sits at "bbb" -- the line being written.
+    if( settleAll( closed, 0 ) != 19 ) return -1;
+    // Unclosed: the fence swallows everything, nothing past its opener.
+    if( settleAll( "aaa\n\n```\ncode\n\nbbb", 0 ) != 5 ) return -2;
+    // A ~~~ line inside a ``` block is code, not a closer -- the backtick
+    // fence stays open and nothing beyond its opener settles.
+    if( settleAll( "aaa\n\n```\n~~~\n\nbbb", 0 ) != 5 ) return -3;
+    return 0;
+}
+
+int test_settle_dead_on_link_def()
+{
+    bool dead = false;
+    if( settleAll( "para\n\n[r]: http://x\n\ntext [r]", &dead ) != 0
+        || !dead )
+        return -1;
+    // A definition that arrives after a prefix was settled kills the whole
+    // document: the rows settled earlier are dropped, not kept.
+    atui::tui::SettleScan sc;
+    sc.init();
+    if( sc.feed( "para\n\nmore text" ) != 6 || sc.dead ) return -2;
+    if( sc.feed( "para\n\nmore text\n\n[r]: http://x\n\ntail" ) != 0
+        || !sc.dead )
+        return -3;
+    return 0;
+}
+
+int test_settle_footnote_alive()
+{
+    // A footnote definition is rendered where it stands, and a [^id] marker
+    // is literal text, so unlike a link definition it settles fine.
+    bool dead = false;
+    settleAll( "text[^1]\n\n[^1]: the note", &dead );
+    if( dead ) return -1;
+    return 0;
+}
+
+int test_settle_differential()
+{
+    const char *docs[] = {
+        "one paragraph\n",
+        "first\n\nsecond\n\nthird\n",
+        "# Head\n\ntext\n\n## More\n",
+        "- a\n- b\n\n- c\n",
+        "1. one\n\n2. two continued text\n",
+        "  - nested\n    - deeper\n\n- out\n",
+        "> quoted one\n\n> quoted two\n\ntext\n",
+        "| a | b |\n|---|---|\n| 1 | 2 |\n\ntext\n",
+        "para\n\n```c\nint main() { return 0; }\n```\n\nafter\n",
+        "para\n\n~~~\n~~~\n\nafter\n",
+        "text with **bold\nacross lines** and `code`\n\nnext\n",
+        "---\n\ntext\n\n***\n",
+        "![img](http://x/y.png)\n\ntext\n",
+        "text[^1]\n\n[^1]: the note\n\nmore\n",
+        "first\r\n\r\nsecond\r\n\r\nthird\r\n",
+        "a\n\n\n\nb\n",
+        "> q\n\n- list\n\n```\nfence\n```\n\n| t |\n|---|\n| x |\n\nend\n",
+        0
+    };
+    const size_t steps[] = { 1, 3, 7, 64, 100000 };
+    for( int d = 0; docs[d]; ++d )
+        for( int s = 0; s < 5; ++s )
+        {
+            int r = settleDivergence( docs[d], steps[s], 40 );
+            if( r != 0 ) return r * 100 + d;
+        }
+    return 0;
+}
+
 } // anonymous namespace
 
 void init_markdown_tests()
@@ -418,6 +566,11 @@ void init_markdown_tests()
     register_test( "thinking: body prose", &test_thinking_body_prose );
     register_test( "thinking: body code block", &test_thinking_body_code_block );
     register_test( "thinking: body unclosed fence", &test_thinking_body_unclosed_fence );
+    register_test( "settle: paragraph", &test_settle_paragraph );
+    register_test( "settle: code fence", &test_settle_fence );
+    register_test( "settle: dead on link def", &test_settle_dead_on_link_def );
+    register_test( "settle: footnote alive", &test_settle_footnote_alive );
+    register_test( "settle: differential", &test_settle_differential );
 }
 
 } // namespace atui_test

@@ -4583,3 +4583,56 @@ whatever the kernel and the session do *for* the process between its syscalls �
 over the pipe. The instrument for that last step is the same command at the local screen,
 `prof.exe -r25 -b88000 local.trc candidate8.exe --ask "..."`, which draws where the user
 can see it and writes the trace beside it.
+
+## The local screen paid per row, so the answer stopped paying per length (measured 2026-10-27)
+
+The user's eyes were right twice: idle costs nothing, and CPU climbs with the size of the
+response area. The local-screen trace (`prof.exe -r25 -b88000 local.trc`, candidate7 at the
+box's own screen, streamed answer over the bridge) said where. Of the UI thread's life:
+about 70% `DosSleep` (`0xe3e1`), about 14% at **`0x476e` — a kernel-shared address that
+appears in no other trace** — not idle, not the bridge run, not the calibration probe.
+It is the display path: what VIO costs when there is a real console to write. The clib
+lock pair again ate about 10%, actual atui/tvision code about 1-2%, and the quartiles
+showed both the display address and the in-image samples growing mid-stream (image
+samples 27 → 76 → 98 across the answer) before falling when the stream ended. The taskbar
+counts what the session does *for* the process on top of that — PM mirroring the screen,
+the stack's interrupt work — which is how 15+10 turns into a reading around 50.
+
+Cost-per-frame scaled with the area because a layout of the streaming block was still a
+render of the whole answer so far — the cost-aware interval had kept the *duty* bounded
+but not the size of each payment, and the box was making eight payments a second on a
+document that only grew. The fix is to stop rendering the part of the answer that can
+no longer change. The text is append-only, and for *this* renderer a prefix ending just
+before a non-blank column-0 line that follows a blank line is final: paragraphs flush at
+blank lines, quotes need their marker on every line, tables need adjacent rows, list
+items carry literal markers, and no code fence is open there — so the prefix renders once
+into cached rows and every pump re-renders only the tail, the current paragraph. The one
+document-global construct is a link definition (`[label]: url`), which text *above* it may
+reference; a document that shows one is marked dead and settles nothing, which is the old
+behavior exactly. The cache keys on block and width; a resize rebuilds, an unclosed fence
+freezes the boundary instead of guessing through it, and the settled rows can stay in
+`lines_` across rebuilds instead of being recopied (the `keepRows` path in `relayout()`).
+
+`SettleScan` lives in `tui/markdown.{h,cpp}` and is tested where render is tested, one way
+only: differentially. Feeding a document a byte — then 3, 7, 64 bytes — at a time and
+rendering each settled region separately must produce exactly what rendering the whole
+produces, across seventeen documents that walk every construct the settle rule claims to
+survive: loose lists, nested indentation, quotes without lazy continuation, a fence with
+blank lines and look-alike markdown inside, a tilde fence holding a backtick line, tables,
+CRLF line endings, footnote definitions, and death on a link definition.
+
+The view's half — the row bookkeeping — cannot be tested without a terminal, so it is
+proven against itself at a pty: same fixed stream (now `fake_stream.py --raw doc.md`),
+two builds (the settle one and a worktree of HEAD before it), and the transcript's final
+row count from the `layout a= b=` debug line must match. It does: 60 rows both, monotonic
+both, LF and CRLF documents, repeated runs.
+
+    python3 tools/fake_stream.py --port 8799 --raw /tmp/atdiff_doc.md --chunk 9 --delay 0.02 &
+    python3 tools/transcript_diff.py ./build/atui 8799 ENDTOKEN-9137
+    python3 tools/transcript_diff.py /tmp/atui-base/build/atui 8799 ENDTOKEN-9137
+
+Two harness facts fell out: **stderr on the pty swallows the debug lines** — the child's
+stderr has to be a file, and the file's growth is what says "a layout just happened"; and
+a `&`-backgrounded fake server dies with the tool call that started it (SIGHUP), which
+reads to the naive harness as "the stream ended after 13 rows" — the instrumented server
+now says `stream complete` or `stream aborted at <n>` so the two are never confused again.
