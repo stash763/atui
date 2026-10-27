@@ -4692,3 +4692,48 @@ clears it. While it was jammed, the build rode around it: code over FTP (the syn
 channel is pure FTP), and `d:\atui\mk9.cmd` — a wrapper that runs the whole
 tvone/lib/atui/exe sequence at the box's own command window and leaves the verdicts
 in `mk9.done`, which the host reads back over FTP.
+
+### Retraction first: candidate9 hung the box on its first scroll (2026-10-27)
+
+The first streamed answer that reached the bottom of the screen — the first
+scroll — froze the machine with candidate9. The process could not be killed;
+only a reboot answered. So the section above describes a fix that is *right
+about the cost* and, as shipped in candidate9, **wrong about this kernel**.
+
+The call matched FTE's editor in every shape the headers can express — seven
+parameters, value-form (Watcom's own `VioScrollUp` prototype in `h\os21x\bsesub.h`
+agrees), sane rectangle — with two habits FTE does not have:
+
+1. **candidate9 passed NULL for the attribute fill.** FTE always passes a
+   pointer to a cell (`~/code/fte/src/con_os2.cpp`, `ConScroll`). If eCS's
+   VIO server reads `*pAttr` without checking, that is a kernel-mode read of
+   address 0 — precisely a fault you cannot `/kill` your way out of.
+2. candidate9 wrote the exposed rows with `VioWrtCellStr` immediately after
+   the asynchronous scroll. FTE does the same, but "the same" is exactly the
+   thing a probe may prove and a candidate build may not.
+
+One does not debug a kernel by pointing candidates at it and standing by.
+The way back is incremental and disposable:
+
+- **candidate10** carries the whole idea *behind a switch*: the shortcut is
+  off unless `ATUI_VIOSCROLL=1`, and when on it passes the attribute in
+  FTE's cell-pointer shape. Without the variable it behaves like candidate8
+  plus flush-cost pacing, which is safe. candidate9.exe is still on
+  `D:\atui` — **do not run it**; it still hangs the box.
+- **`pscroll.exe`** (`tools/os2/probe_scroll.cpp`, build with
+  `build.cmd link probe_scroll.cpp pscroll.exe`) tests each call shape alone
+  at the box's own screen, logging every step to `pscroll.log` *before*
+  making the call — a hard lock survives the reboot in that log. Variants,
+  in the order worth trying:
+
+      pscroll a   candidate9's call exactly: full screen, 3 lines, NULL attr
+      pscroll b   same, attr -> cell (FTE's) -- the fix if `a` hangs
+      pscroll c   inner rectangle, attr -> cell
+      pscroll d   full screen, 1 line, NULL attr
+      pscroll e   a, plus writing the exposed rows right after -- the flush sequence
+      pscroll m   e, plus the app's mouse polling around the scroll
+
+  Five iterations each; clean exit means that shape is innocent. Whatever
+  `a`–`e` decide, the flush-cost pacing (timed flush, adaptive interval)
+  stays — that half was never in question and it is what a slower machine
+  needs on its own.
