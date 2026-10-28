@@ -4750,3 +4750,37 @@ the screen repaints less often, and the kernel stops being asked to mirror
 the world eight times a second. The `VioScrollUp` fast path is expected to
 cut the per-frame call count further on top of this — once `pscroll` has
 proven which call shapes this kernel tolerates, per the section above.
+
+## Asking the PM toolchain without touching the screen (measured 2026-10-27)
+
+The PM version stands or falls on whether Watcom 1.9 can compile and link a
+PM program on the box at all.  `tools/os2/pmhello.{cpp,cmd}` ask that in one
+pass — window class, `WinCreateWindow`, paint, keyboard, clean quit — and
+they answered, on the box, first try once the three name traps below were
+out of the way:
+
+  * the message queue is **`WinCreateMsgQueue`/`WinDestroyMsgQueue`** — the
+    Warp-era `WinOpen/CloseMessageQueue` spellings are not declared in these
+    headers, and eFTE's working code (`g_pm.cpp:3988`) confirms the 1.x
+    names are what compiles under this toolchain;
+  * **no `MPVOID`** (a later nicety) — window procedures take `MPARAM`;
+  * **`RGB(r,g,b)` is a struct type in `pmgpi.h`, not the macro** — and
+    Watcom prototypes `WinFillRect(HPS, PRECTL, LONG)`, so palette
+    constants (`CLR_BLUE`, `CLR_YELLOW`) are the portable call.
+
+`os2386.lib` turned out to carry the `Win*` and `Gpi*` imports itself (its
+build in the Watcom tree lists `pmwin.lbc`/`pmgpi.lbc`), so the link recipe
+is the VIO one with a single word changed — `system os2v2_pm` — and no
+import library added.  The `stubl.lib`/`stublp.lib` lines in the first
+recipes were noise: this distribution has neither, and neither is wanted;
+the map shows imports from exactly `DOSCALLS`, `NLS`, `PMGPI`, `PMWIN`.
+
+**The rule this section exists for: never start a PM executable from a
+telnet session.**  A PM program with no screen grabs the session and hangs
+it; retried attempts pile up until the box needs a reboot — that is exactly
+what happened the evening this probe was written.  `pmhello.cmd` now only
+compiles and links and says so in its output.  `pmhello.exe` is started by
+hand at the box's own display; it paints a blue window with two lines of
+text, closes on `q` or Esc, and appends each milestone to
+`pmhello.run.txt`, which can then be fetched over FTP — so even the paint
+cycle is confirmable from here without touching the console again.
