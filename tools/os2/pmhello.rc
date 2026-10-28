@@ -1,0 +1,28 @@
+/* pmhello.rc -- resources for the PM scaffold probe, shaped like the
+   toolkit stdwnd sample's hello.rc: ICON, MENU, ACCELTABLE, STRINGTABLE
+   under one id (ID_WINDOW) that WinCreateStdWindow is given as
+   idResources.  No <os2.h> include: everything the statements need comes
+   from pmhello.h, so RC runs with no -i path on this box.
+
+   Throwaway by design: answers belong in TESTING.md, files go away. */
+#include "pmhello.h"
+
+ICON    ID_WINDOW hello.ico
+
+MENU    ID_WINDOW PRELOAD
+BEGIN
+  SUBMENU "~Options", ID_OPTIONS
+  BEGIN
+    MENUITEM "E~xit", ID_EXITPROG
+  END
+END
+
+ACCELTABLE ID_WINDOW PRELOAD
+BEGIN
+  VK_F3, ID_EXITPROG, VIRTUALKEY
+END
+
+STRINGTABLE PRELOAD
+BEGIN
+ IDS_HELLO, "atui PM scaffold works"
+END

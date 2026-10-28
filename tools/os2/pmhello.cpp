@@ -1,29 +1,32 @@
-/* pmhello.cpp -- PM scaffold probe: a minimal framed window, built the way
-   Watcom 1.9 + eFTE do it.
+/* pmhello.cpp -- PM scaffold probe: a twin of the toolkit stdwnd sample
+   (~/code/TOOLKIT/samples/pm/stdwnd/hello.c, also Watcom-tested at
+   open-watcom-v2 bld/wv/os2/pmtest), built against pmhello.rc resources.
 
    Never start the resulting exe from a telnet session: a PM program has no
-   screen there and hangs the session.  pmhello.cmd only compiles and links;
-   the window itself must be started at the box's own display.  What it
-   proves when it runs:
-     1. WinInitialize/WinCreateMsgQueue/WinGetMsg: a PM process lives;
-     2. WinCreateStdWindow + WM_PAINT: it paints (blue field, text via
-        GpiCharStringAt);
-     3. WM_CHAR: the keyboard reaches it -- q or Esc closes it;
-     4. clean shutdown (WM_DESTROY -> WM_QUIT -> loop exit -> WinTerminate),
-        each step appended to pmhello.run.txt so the host can confirm the
-        cycles over FTP even unattended.
+   screen there and hangs the session.  pmhello.cmd compiles, links and
+   appends the resources; the window itself must be started at the box's own
+   display.
 
-   Lesson from the first run: a frameless WinCreateWindow directly off
-   HWND_DESKTOP never receives focus, so WM_CHAR never arrived -- it had to
-   be killed.  A frame (titlebar, sysmenu, min/max) is the cure and the
-   advice; q/Esc post WM_CLOSE to the frame as a backstop.  The frame recipe
-   is the toolkit template's (~/code/TOOLKIT/samples/pm/template):
-   FCF_STANDARD, WS_VISIBLE child, CS_SIZEREDRAW | CS_CLIPCHILDREN.
+   Why this rewrite: the previous frameless variant painted but never got
+   focus (killed by hand), and its successor failed WinCreateStdWindow with
+   PMERR_RESOURCE_NOT_FOUND (0x8100a) -- a Watcom system os2v2_pm image has
+   no resource segment until rc appends one, which is exactly what both the
+   toolkit mak (rc -r ftepm.rc) and Watcom's own pmtest (rc -p -x hello.res
+   hello.exe) do after linking.  So: hello.c's exact call sequence --
+
+     flCreate = FCF_STANDARD & ~FCF_SHELLPOSITION
+     WinCreateStdWindow(desktop, 0, &flCreate, class, title, 0, 0,
+                        ID_WINDOW, &hwndClient)          (idResources = 256)
+     WinSetWindowPos(frame, HWND_TOP, x, y, w, h,
+                     SWP_SIZE | SWP_MOVE | SWP_ACTIVATE | SWP_SHOW)
+
+   plus WM_ERASEBACKGROUND -> TRUE, WM_CLOSE -> WM_QUIT, and
+   WinDestroyWindow after the loop, as the sample does.  q/Esc/F3/Exit all
+   close; each milestone lands in pmhello.run.txt.
 
    API names follow the Watcom headers and eFTE's working calls: queue is
-   WinCreateMsgQueue/WinDestroyMsgQueue (the Warp "Open/Close" spellings are
-   not declared), key decoding is SHORT1FROMMP(mp2)=char, CHAR4FROMMP(mp1)
-   =scan code (g_pm.cpp:2616).
+   WinCreateMsgQueue/WinDestroyMsgQueue, key decoding is
+   SHORT1FROMMP(mp2)=char, CHAR4FROMMP(mp1)=scan code (g_pm.cpp:2616).
 
    Throwaway by design: answers belong in TESTING.md, files go away.
 */
@@ -34,7 +37,10 @@
 
 #include <stdio.h>
 
+#include "pmhello.h"
+
 static FILE *logf;
+static HAB   hab;
 
 static void plog(const char *what)
 {
@@ -45,10 +51,34 @@ static void plog(const char *what)
     }
 }
 
+/* Log the PM error code and its human text: WinGetErrorInfo's block holds
+   an array of string offsets at offaoffszMsg -- the first entry is the
+   message (the unpack follows hello.c's AbortHello). */
+static void plogerr( const char *what )
+{
+    if( logf != 0 )
+    {
+        PERRINFO ei;
+        fprintf( logf, "%s: error 0x%lx\n", what, WinGetLastError( hab ) );
+        ei = WinGetErrorInfo( hab );
+        if( ei != 0 )
+        {
+            PSZ pszOffSet = (PSZ) ei + ei->offaoffszMsg;
+            PSZ pszMsg    = (PSZ) ei + *(PUSHORT) pszOffSet;
+            fprintf( logf, "  info: %s\n", pszMsg );
+            WinFreeErrorInfo( ei );
+        }
+        fflush( logf );
+    }
+}
+
 static MRESULT EXPENTRY probeWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
 {
     switch( msg )
     {
+    case WM_ERASEBACKGROUND:
+        return (MRESULT) TRUE;        /* let PM paint SYSCLR_WINDOW first */
+
     case WM_PAINT:
         {
             RECTL   rcl;
@@ -71,11 +101,25 @@ static MRESULT EXPENTRY probeWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM m
     case WM_CHAR:
         plog( "char received" );
         if( SHORT1FROMMP( mp2 ) == 'q' || SHORT1FROMMP( mp2 ) == 0x1b )
-            WinPostMsg( WinQueryWindow( hwnd, QW_PARENT ), WM_CLOSE, 0, 0 );
+            WinPostMsg( hwnd, WM_CLOSE, 0, 0 );
+        return 0;
+
+    case WM_COMMAND:
+        if( SHORT1FROMMP( mp1 ) == ID_EXITPROG )   /* menu Exit / F3 */
+        {
+            plog( "menu exit" );
+            WinPostMsg( hwnd, WM_CLOSE, 0, 0 );
+            return 0;
+        }
+        break;
+
+    case WM_CLOSE:
+        plog( "close -> quit" );
+        WinPostMsg( hwnd, WM_QUIT, 0, 0 );         /* hello.c's exit path */
         return 0;
 
     case WM_DESTROY:
-        WinPostMsg( HWND_DESKTOP, WM_QUIT, 0, 0 );
+        WinPostMsg( HWND_DESKTOP, WM_QUIT, 0, 0 ); /* backstop */
         return 0;
     }
     return WinDefWindowProc( hwnd, msg, mp1, mp2 );
@@ -83,13 +127,11 @@ static MRESULT EXPENTRY probeWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM m
 
 int main()
 {
-    HAB     hab;
     HMQ     hmq;
-    HWND    hwndFrame;
-    HWND    hwndClient;
+    HWND    hwndFrame = 0;
+    HWND    hwndClient = 0;
     QMSG    qmsg;
-    ULONG   flFrame = FCF_STANDARD;   /* the toolkit template's frame: titlebar,
-                                         sysmenu, sizeborder, min/max */
+    ULONG   flCreate = FCF_STANDARD & ~FCF_SHELLPOSITION;
 
     logf = fopen( "pmhello.run.txt", "w" );
     plog( "start" );
@@ -105,38 +147,49 @@ int main()
     hmq = WinCreateMsgQueue( hab, 0 );
     if( hmq == 0 )
     {
-        plog( "WinCreateMsgQueue failed" );
+        plogerr( "WinCreateMsgQueue failed" );
         WinTerminate( hab );
         return 1;
     }
     plog( "hmq ok" );
 
     if( !WinRegisterClass( hab, "AtuiProbe", (PFNWP) probeWndProc,
-                           CS_SIZEREDRAW | CS_CLIPCHILDREN, 0 ) )
+                           CS_SIZEREDRAW, 0 ) )
     {
-        plog( "WinRegisterClass failed" );
+        plogerr( "WinRegisterClass failed" );
         WinDestroyMsgQueue( hmq );
         WinTerminate( hab );
         return 1;
     }
 
-    hwndFrame = WinCreateStdWindow( HWND_DESKTOP, WS_VISIBLE, &flFrame,
+    hwndFrame = WinCreateStdWindow( HWND_DESKTOP, 0, &flCreate,
                                     "AtuiProbe", "atui PM probe",
-                                    WS_VISIBLE, 0, 0, &hwndClient );
+                                    0, (HMODULE) 0, ID_WINDOW, &hwndClient );
     if( hwndFrame == 0 )
     {
-        plog( "WinCreateStdWindow failed" );
+        plogerr( "WinCreateStdWindow failed" );
         WinDestroyMsgQueue( hmq );
         WinTerminate( hab );
         return 1;
     }
-    WinSetFocus( HWND_DESKTOP, hwndClient );
-    plog( "framed window created+shown, focus set" );
+    plog( "std window created" );
+
+    if( !WinSetWindowPos( hwndFrame, HWND_TOP, 50, 50, 480, 280,
+                          SWP_SIZE | SWP_MOVE | SWP_ACTIVATE | SWP_SHOW ) )
+    {
+        plogerr( "WinSetWindowPos failed" );
+        WinDestroyWindow( hwndFrame );
+        WinDestroyMsgQueue( hmq );
+        WinTerminate( hab );
+        return 1;
+    }
+    plog( "window shown" );
 
     while( WinGetMsg( hab, &qmsg, NULLHANDLE, 0, 0 ) )
         WinDispatchMsg( hab, &qmsg );
 
     plog( "loop exited" );
+    WinDestroyWindow( hwndFrame );
     WinDestroyMsgQueue( hmq );
     WinTerminate( hab );
     plog( "done" );
