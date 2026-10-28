@@ -1,4 +1,4 @@
-/* pmhello.cpp -- PM scaffold probe: a minimal real window, built the way
+/* pmhello.cpp -- PM scaffold probe: a minimal framed window, built the way
    Watcom 1.9 + eFTE do it.
 
    Never start the resulting exe from a telnet session: a PM program has no
@@ -6,17 +6,24 @@
    the window itself must be started at the box's own display.  What it
    proves when it runs:
      1. WinInitialize/WinCreateMsgQueue/WinGetMsg: a PM process lives;
-     2. WinRegisterClass + WinCreateWindow + WM_PAINT: it paints (dark blue
-        field, a few lines of text via GpiCharStringAt);
+     2. WinCreateStdWindow + WM_PAINT: it paints (blue field, text via
+        GpiCharStringAt);
      3. WM_CHAR: the keyboard reaches it -- q or Esc closes it;
-     4. clean shutdown (WinPostMsg desktop WM_QUIT -> loop exit ->
-        WinTerminate), with each step appended to pmhello.run.txt so the
-        host can confirm the paint cycle over FTP even unattended.
+     4. clean shutdown (WM_DESTROY -> WM_QUIT -> loop exit -> WinTerminate),
+        each step appended to pmhello.run.txt so the host can confirm the
+        cycles over FTP even unattended.
+
+   Lesson from the first run: a frameless WinCreateWindow directly off
+   HWND_DESKTOP never receives focus, so WM_CHAR never arrived -- it had to
+   be killed.  A frame (titlebar, sysmenu, min/max) is the cure and the
+   advice; q/Esc post WM_CLOSE to the frame as a backstop.  The frame recipe
+   is the toolkit template's (~/code/TOOLKIT/samples/pm/template):
+   FCF_STANDARD, WS_VISIBLE child, CS_SIZEREDRAW | CS_CLIPCHILDREN.
 
    API names follow the Watcom headers and eFTE's working calls: queue is
    WinCreateMsgQueue/WinDestroyMsgQueue (the Warp "Open/Close" spellings are
-   not declared), key decoding is SHORT1FROMMP(mp2)=char,
-   SHORT2FROMMP(mp2)=SC_*, CHAR4FROMMP(mp1)=scan code (g_pm.cpp:2616).
+   not declared), key decoding is SHORT1FROMMP(mp2)=char, CHAR4FROMMP(mp1)
+   =scan code (g_pm.cpp:2616).
 
    Throwaway by design: answers belong in TESTING.md, files go away.
 */
@@ -64,11 +71,7 @@ static MRESULT EXPENTRY probeWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM m
     case WM_CHAR:
         plog( "char received" );
         if( SHORT1FROMMP( mp2 ) == 'q' || SHORT1FROMMP( mp2 ) == 0x1b )
-            WinPostMsg( hwnd, WM_CLOSE, 0, 0 );
-        return 0;
-
-    case WM_CLOSE:
-        WinDestroyWindow( hwnd );
+            WinPostMsg( WinQueryWindow( hwnd, QW_PARENT ), WM_CLOSE, 0, 0 );
         return 0;
 
     case WM_DESTROY:
@@ -82,8 +85,11 @@ int main()
 {
     HAB     hab;
     HMQ     hmq;
-    HWND    hwnd;
+    HWND    hwndFrame;
+    HWND    hwndClient;
     QMSG    qmsg;
+    ULONG   flFrame = FCF_STANDARD;   /* the toolkit template's frame: titlebar,
+                                         sysmenu, sizeborder, min/max */
 
     logf = fopen( "pmhello.run.txt", "w" );
     plog( "start" );
@@ -105,7 +111,8 @@ int main()
     }
     plog( "hmq ok" );
 
-    if( !WinRegisterClass( hab, "AtuiProbe", (PFNWP) probeWndProc, CS_SIZEREDRAW, 0 ) )
+    if( !WinRegisterClass( hab, "AtuiProbe", (PFNWP) probeWndProc,
+                           CS_SIZEREDRAW | CS_CLIPCHILDREN, 0 ) )
     {
         plog( "WinRegisterClass failed" );
         WinDestroyMsgQueue( hmq );
@@ -113,17 +120,18 @@ int main()
         return 1;
     }
 
-    hwnd = WinCreateWindow( HWND_DESKTOP, "AtuiProbe", "atui PM probe",
-                            WS_VISIBLE, 50, 50, 480, 280,
-                            HWND_DESKTOP, HWND_TOP, 0, 0, 0 );
-    if( hwnd == 0 )
+    hwndFrame = WinCreateStdWindow( HWND_DESKTOP, WS_VISIBLE, &flFrame,
+                                    "AtuiProbe", "atui PM probe",
+                                    WS_VISIBLE, 0, 0, &hwndClient );
+    if( hwndFrame == 0 )
     {
-        plog( "WinCreateWindow failed" );
+        plog( "WinCreateStdWindow failed" );
         WinDestroyMsgQueue( hmq );
         WinTerminate( hab );
         return 1;
     }
-    plog( "window created+shown" );
+    WinSetFocus( HWND_DESKTOP, hwndClient );
+    plog( "framed window created+shown, focus set" );
 
     while( WinGetMsg( hab, &qmsg, NULLHANDLE, 0, 0 ) )
         WinDispatchMsg( hab, &qmsg );

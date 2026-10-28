@@ -25,7 +25,6 @@ echo op m >> pmhello.rsp
 echo option stack=256k >> pmhello.rsp
 echo file obj\pm\pmhello.obj >> pmhello.rsp
 echo library os2386.lib >> pmhello.rsp
-echo library stublp.lib >> pmhello.rsp
 wlink @pmhello.rsp >> pmhello.out 2>&1
 if errorlevel 1 goto done
 

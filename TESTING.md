@@ -4784,3 +4784,21 @@ hand at the box's own display; it paints a blue window with two lines of
 text, closes on `q` or Esc, and appends each milestone to
 `pmhello.run.txt`, which can then be fetched over FTP — so even the paint
 cycle is confirmable from here without touching the console again.
+
+### Frame, not void: what the first PM window run taught (2026-10-27)
+
+The probe's first life was a frameless `WinCreateWindow` off `HWND_DESKTOP`.
+At the box it painted — `paint ok` in the log — but never received a single
+`WM_CHAR`: a frameless top-level window is never given focus, so there was
+no way to quit it short of killing the process.  The cure is the toolkit
+template's own recipe (`~/code/TOOLKIT/samples/pm/template/main.c` — the
+canonical PM boilerplate, worth more than any guessing at styles):
+`fl = FCF_STANDARD` + `WinCreateStdWindow(..., WS_VISIBLE, &fl, class,
+title, WS_VISIBLE, 0, 0, &hwndClient)`, class registered
+`CS_SIZEREDRAW | CS_CLIPCHILDREN`.  The frame receives activation and hands
+focus to the client, so keys arrive; its sysmenu closes it, and WM_QUIT on
+client WM_DESTROY is the backstop.
+
+(While at it: `WS_SIZEBOX`/`WS_NONE` are Win32 spellings, absent from the
+Watcom OS/2 headers — another reason to copy the toolkit rather than
+remember Windows.)
