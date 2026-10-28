@@ -1,0 +1,13 @@
+/* atuipm.rc -- resources for the PM build, appended to the image by
+   `build.cmd pmexe`.  Not decoration: a Watcom system os2v2_pm image has
+   no resource segment at all until rc appends one, and WinCreateStdWindow
+   then fails PMERR_RESOURCE_NOT_FOUND (TESTING.md, "PM probe: green").
+
+   Only the icon is here.  The id is the one the frame is created with --
+   256, the stdwnd sample's ID_WINDOW, written as a number so RC needs no
+   header and no -i path on this box.  The probe's MENU and ACCELTABLE are
+   deliberately not repeated: atui draws its own menu bar inside the
+   window, and a second one in the frame would only compete with it.
+
+   The icon is the probe's for now; an atui-drawn one is later polish. */
+ICON    256 atui.ico

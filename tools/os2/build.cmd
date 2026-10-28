@@ -169,6 +169,13 @@ rem #include <os2.h> arrives too late to do anything -- which is exactly the
 rem situation once atui's sources and tvision's driver both want the kernel.
 set WPP=wpp386 @defs.rsp
 
+rem The resource compiler, named by path because this box carries several
+rem RC.EXE copies (C:\OS2 and an IBMCPP one among them) and the version
+rem question is not worth answering twice: this is the Warp 4 Toolkit copy
+rem that appended the probe's resource segment successfully (TESTING.md,
+rem "PM probe: green").
+set RCPROG=d:\IBMDev\DCOS2012003\TOOLKITS\WARPTLKT\TOOLKIT\BIN\RC.EXE
+
 set RC=0
 
 if "%1"=="one" goto one
@@ -186,6 +193,9 @@ if "%1"=="thread" goto thread
 if "%1"=="size" goto size
 if "%1"=="atui" goto atui
 if "%1"=="atunon" goto atunon
+if "%1"=="pmdrv" goto pmdrv
+if "%1"=="pmlib" goto pmlib
+if "%1"=="pmexe" goto pmexe
 
 echo ================== tvision library ==================
 rem Only source/tvision, and not geninc.cpp.  This is what the Borland build in
@@ -486,6 +496,83 @@ wlink @link.rsp >> %LOG% 2>&1
 if errorlevel 1 goto one_failed
 dir %EXENAME%
 echo [exe] OK
+goto summary
+
+:pmdrv
+rem The PM display driver, and only it.  ATUI_PM is what tells it apart:
+rem hardwspm.cpp's own guard tests the define, so a `lib` build of the whole
+rem tree compiles the file to an empty object and the VIO library keeps
+rem exactly one driver.  It goes to obj\pm rather than obj\tv for the same
+rem reason `tvone` exists -- the splice below wants it where the ordinary
+rem library build will not sweep it up.
+echo ================== hardwspm.obj ==================
+if not exist obj\pm mkdir obj\pm
+%WPP% -DATUI_PM -fo=obj\pm\ tvision\source\tvision\hardwspm.cpp >> %LOG% 2>&1
+if errorlevel 1 goto tvone_failed
+echo [pmdrv] OK
+goto summary
+
+:pmlib
+rem The PM tvision library: a copy of obj\tvision.lib with its display
+rem driver swapped -- hardwvos2.obj out, hardwspm.obj in.  Spliced from the
+rem copy rather than rebuilt from 177 sources because the two libraries
+rem differ in exactly one member; and it has to be a swap because both
+rem drivers in one link is a duel of duplicated symbols the linker resolves
+rem in whichever order it likes -- an invisible loss whose only sign is a
+rem PM image doing VIO calls.  The listing check after is not decoration:
+rem a `wlib -name` that matched nothing is a silent success otherwise.
+echo ================== obj\tvisionpm.lib ==================
+if not exist obj\tvision.lib goto one_failed
+if not exist obj\pm\hardwspm.obj goto one_failed
+if exist obj\tvisionpm.lib del obj\tvisionpm.lib
+copy obj\tvision.lib obj\tvisionpm.lib >> %LOG% 2>&1
+if not exist obj\tvisionpm.lib goto one_failed
+wlib -q obj\tvisionpm.lib -hardwvos2 +obj\pm\hardwspm.obj >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+wlib -q -l=obj\pm\liblist_pm.txt obj\tvisionpm.lib >> %LOG% 2>&1
+find /i "hardwvos2" obj\pm\liblist_pm.txt
+if not errorlevel 1 goto pmlib_both
+find /i "hardwspm" obj\pm\liblist_pm.txt >> %LOG% 2>&1
+if errorlevel 1 goto pmlib_both
+dir obj\tvisionpm.lib
+echo [pmlib] OK
+goto summary
+:pmlib_both
+echo [pmlib] FAILED: the splice did not take -- listing both drivers, or neither
+goto one_failed
+
+:pmexe
+rem The PM image: the same application objects `exe` links -- the program
+rem does not know which driver sits under it, that is the THardwareInfo
+rem seam's whole point -- with the driver-swapped library and `system
+rem os2v2_pm`, the recipe settled by the probe.  Then rc: a Watcom PM image
+rem carries no resource segment until rc appends one, and WinCreateStdWindow
+rem answers that with PMERR_RESOURCE_NOT_FOUND; atuipm.rc is the icon the
+rem frame asks for and nothing else -- atui draws its own menu bar.
+rem Like every PM image this one must never be started from a telnet
+rem session; it hangs that session.  Start it at the box's own display, and
+rem read atuipm.run.txt afterwards -- it is written as the window is born.
+echo ================== atuipm.exe ==================
+if not exist obj\at\main.obj goto one_failed
+if not exist obj\tvisionpm.lib goto one_failed
+set EXENAME=atuipm.exe
+if not "%2"=="" set EXENAME=%2
+if exist link.rsp del link.rsp
+echo system os2v2_pm > link.rsp
+echo name %EXENAME% >> link.rsp
+echo op m >> link.rsp
+echo option stack=256k >> link.rsp
+for %%f in (obj\at\*.obj) do echo file %%f >> link.rsp
+echo library obj\tvisionpm.lib >> link.rsp
+echo library os2386.lib >> link.rsp
+echo library tcpip32.lib >> link.rsp
+echo library stubl.lib >> link.rsp
+wlink @link.rsp >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+%RCPROG% -n -p atuipm.rc %EXENAME% >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+dir %EXENAME%
+echo [pmexe] OK: never start it from telnet; run it at the box display
 goto summary
 
 :one
