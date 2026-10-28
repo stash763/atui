@@ -4802,3 +4802,42 @@ client WM_DESTROY is the backstop.
 (While at it: `WS_SIZEBOX`/`WS_NONE` are Win32 spellings, absent from the
 Watcom OS/2 headers — another reason to copy the toolkit rather than
 remember Windows.)
+
+### PM probe: green, and the resource lesson is the whole lesson (2026-10-28)
+
+`pmhello.exe` ran at the box's display and behaved: framed window (icon,
+Options→Exit menu, F3/q/Esc close paths), and `pmhello.run.txt` shows the
+full cycle —
+
+    std window created / window shown / paint ok / close -> quit / loop exited / done
+
+— a clean shutdown with no kill needed.  The three facts that got there,
+each worth more than a page of design notes:
+
+  1. **A Watcom `system os2v2_pm` image has no resource segment until RC
+     appends one**, and `WinCreateStdWindow` with frame controls fails
+     without it: `PMERR_RESOURCE_NOT_FOUND` (`WinGetLastError` said
+     0x8100a).  Both references append after the link — toolkit maks
+     (`rc -r ftepm.rc`), Watcom's own `bld/wv/os2/pmtest`
+     (`rc -p -x hello.res hello.exe`).  The probe now does
+     `rc -n -p pmhello.rc pmhello.exe` with the box's Warp 4 toolkit RC
+     (`D:\IBMDev\DCOS2012003\TOOLKITS\WARPTLKT\TOOLKIT\BIN\RC.EXE`), and
+     the four resource objects (icon/menu/accel/strings, id 256) land in
+     the LE image exactly as the toolkit sample writes them.
+  2. **The frame is what makes the keyboard work**: a frameless top-level
+     window never receives focus, so WM_CHAR never arrives — the frame
+     (`FCF_STANDARD & ~FCF_SHELLPOSITION`, the stdwnd sample's exact
+     recipe) does the activation and focus forwarding.
+  3. **`WinGetErrorInfo` belongs in every PM error path**: the numeric code
+     pointed at "resource", the unpacked text names which one.  The probe's
+     `plogerr` carries the unpack (offset-array dance from `hello.c`'s
+     `AbortHello`).
+
+Toolchain settled: `wpp386 @defs.rsp` + `INCL_WIN/INCL_GPI` compiles PM
+code; `wlink system os2v2_pm` + `os2386.lib` links it (no stubs exist or
+are needed; Win*/Gpi* imports come from that one lib); `rc -n -p` resources
+it.  This trio is now the pattern for `atuipm` — the PM build of atui — and
+`hardwspm.cpp` starts from this probe's skeleton: same hab/hmq/StdWindow/
+WinSetWindowPos birth, same WM_QUIT death, `SHORT1FROMMP(mp2)`/
+`CHAR4FROMMP(mp1)` key decoding feeding the VIO scan-code table, and a
+WM_PAINT that paints the cell shadow instead of two lines of text.
