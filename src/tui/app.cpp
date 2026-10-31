@@ -91,6 +91,7 @@ using atui::core::String;
 // configured model comes with it.
 enum { CmdHelp = 1000, CmdTheme = 1004, CmdProviders = 1003,
        CmdSettings = 1005, CmdUndo = 1006,
+       CmdSwitchModel = 1007,      // the model list as a dialog (windowed front)
        CmdRefreshModels = 2000,
        CmdSwitchModelBase = 2200 };  // + provider index
 
@@ -333,6 +334,7 @@ void updateProviderStatus_();
 void updatePermissionStatus_();
 void showProvidersDialog_();
 void pickSwitchModel_( int index );
+void showSwitchModelDialog_();
 void showUndoDialog_();
 void maybeRecoverInterruptedWrites_();
 
@@ -1652,6 +1654,37 @@ public:
             return;
         }
 
+        // The windowed front (PM) builds no in-grid menu bar, so the keys that
+        // menu bar used to own -- Options and the model switcher -- are bound
+        // here instead.  The PM menu bar's picks arrive as exactly these Alt
+        // chords (and a user typing them on a real keyboard gets the same
+        // command; the chords are free without a menu bar).  The comparison is
+        // TKey against TKey, the one the status line makes too: it holds for
+        // the driver's injection encoding of scan+Alt with no character, which
+        // is what KbdCharIn delivers for Alt chords on VIO as well.  Alt-H,
+        // Alt-A and Alt-X are deliberately absent -- the status line binds
+        // those for every front, and binding them twice would fire twice.
+        if( event.what == evKeyDown && THardwareInfo::windowed() )
+        {
+            static const struct { ushort key, cmd; } kAltCommands[] =
+                {
+                { kbAltU, CmdUndo        },
+                { kbAltP, CmdProviders   },
+                { kbAltI, CmdSettings    },
+                { kbAltT, CmdTheme       },
+                { kbAltS, CmdSwitchModel },
+                };
+            for( unsigned i = 0;
+                 i < sizeof( kAltCommands ) / sizeof( kAltCommands[ 0 ] ); ++i )
+                if( TKey( event.keyDown ) == TKey( kAltCommands[ i ].key ) )
+                    {
+                    event.what = evCommand;
+                    event.message.command = kAltCommands[ i ].cmd;
+                    event.message.infoPtr = 0;
+                    break;
+                    }
+        }
+
         TApplication::handleEvent( event );
 
 #ifdef ATUI_DEBUG_KEYS
@@ -1757,6 +1790,10 @@ public:
                     showUndoDialog_();
                     clearEvent( event );
                     break;
+                case CmdSwitchModel:
+                    showSwitchModelDialog_();
+                    clearEvent( event );
+                    break;
                 case cmQuit:
                     clearEvent( event );
                     endModal( cmQuit );
@@ -1843,6 +1880,14 @@ TStatusLine *initStatusLine_( TRect r )
 
 TMenuBar *initMenuBar_( TRect r )
 {
+    // The windowed front (PM) says no: its menus are the desktop's, built
+    // from the image's resources, and their picks arrive as the injected Alt
+    // keys that the status line and the table in TApp::handleEvent bind.  A
+    // second, in-grid menu bar would be tvision's idea of a menu on a screen
+    // that already has the platform's.  The desktop keeps the row.
+    if( THardwareInfo::windowed() )
+        return 0;
+
     r.b.y = r.a.y + 1;
     // The "Switch model" dropdown must be a TSubMenu: in a menu-bar item chain,
     // "subMenu + menuItem" appends to the LAST top-level entry's own menu, so
@@ -1877,6 +1922,17 @@ TMenuBar *initMenuBar_( TRect r )
     );
 }
 
+// The first row the panels may use.  Normally one below the desktop's top:
+// the row the tvision menu bar is drawn across (the menu bar overlays the
+// desktop, so leaving the row clear is the panels' job, not the desktop's).
+// The windowed front builds no menu bar (initMenuBar_ returns 0), and the row
+// goes back into service -- on a 25-row screen one row is four or five lines
+// of transcript.
+static int panelTop_( int desktopTop )
+{
+    return desktopTop + ( THardwareInfo::windowed() ? 0 : 1 );
+}
+
 TDeskTop *initDeskTop_( TRect r )
 {
     TDeskTop *d = new TDeskTop( r );
@@ -1895,8 +1951,8 @@ TDeskTop *initDeskTop_( TRect r )
     // exactly ONE column wide: TScrollBar decides its orientation from its width
     // (size.x == 1 means vertical), so a wider box is drawn - and clicked - as a
     // horizontal bar. Its own drawing already includes both end arrows.
-    TRect sbRect( x2 - 1, y1 + 1, x2, y2 - 1 );
-    TRect trRect( x1, y1 + 1, x2 - 1, y2 - 1 );
+    TRect sbRect( x2 - 1, panelTop_( y1 ), x2, y2 - 1 );
+    TRect trRect( x1, panelTop_( y1 ), x2 - 1, y2 - 1 );
     TRect inRect( x1, y2 - 2, x2, y2 - 1 );
 
     g_vBar_ = new TScrollBar( sbRect );
@@ -1975,7 +2031,7 @@ void relayoutPanels_()
     if( need < 1 ) need = 1;
 
     const int bottom = y2 - 1;            // exclusive: last usable row is y2-2
-    int avail = bottom - (y1 + 1);        // rows shared by transcript + prompt
+    int avail = bottom - panelTop_( y1 ); // rows shared by transcript + prompt
     if( avail < 4 ) avail = 4;            // tiny terminal: give some room
 
     const int MIN_TR = 2;                 // keep some transcript visible
@@ -1988,8 +2044,8 @@ void relayoutPanels_()
     const int ptop = bottom - 1 - textRows;   // row 0 = separator, rows 1.. text
 
     const TRect pRect( x1, ptop, x2, bottom );
-    const TRect tRect( x1, y1 + 1, x2 - 1, ptop );
-    const TRect bRect( x2 - 1, y1 + 1, x2, ptop );   // one column, 1 == vertical
+    const TRect tRect( x1, panelTop_( y1 ), x2 - 1, ptop );
+    const TRect bRect( x2 - 1, panelTop_( y1 ), x2, ptop ); // one column, vertical
 
     const bool moved = !(g_prompt_->getBounds() == pRect);
     if( moved )
@@ -2520,8 +2576,12 @@ static void setSubMenu_( TMenuItem *item, TMenu *menu )
 // from the event loop only (never while that menu is open).
 void refreshSwitchModelMenu_()
 {
+    // No menu bar (the windowed front), nothing to hold the dropdown: building
+    // it would hand setSubMenu_ a menu with nowhere to put it, and the menu
+    // would leak on every refresh.
+    if( TProgram::menuBar == 0 ) return;
     setSubMenu_( g_switchModelMenu_, buildSwitchModelMenu_() );
-    if( TProgram::menuBar ) TProgram::menuBar->drawView();
+    TProgram::menuBar->drawView();
 }
 
 // Status line: what a message will actually be sent to. TStatusLine lays its
@@ -2595,6 +2655,83 @@ public:
             selectItem( focused );
     }
 };
+
+// The windowed front's "Switch model".  On VIO the model list is a dropdown
+// in the menu bar; the PM front has no tvision menu bar (its menus are the
+// desktop's), so the same list comes up as a dialog -- same entries, same
+// label grammar as buildSwitchModelMenu_, same pickSwitchModel_ behind them,
+// and a single click lands the pick.
+class SwitchModelDialog : public TDialog
+{
+public:
+    SwitchModelDialog( const TRect &bounds, TStringView title )
+        : TWindowInit( &TDialog::initFrame ),
+          TDialog( bounds, title )
+    {
+    }
+
+    virtual void handleEvent( TEvent &event )
+    {
+        // Picking is the whole reason this dialog exists: the list's
+        // cmListItemSelected (a click, or Space on the focused row) closes it
+        // with success, and the caller reads the row back.
+        if( event.what == evBroadcast &&
+            event.message.command == cmListItemSelected )
+        {
+            endModal( cmOK );
+            clearEvent( event );
+            return;
+        }
+        TDialog::handleEvent( event );
+    }
+};
+
+void showSwitchModelDialog_()
+{
+    std::vector<atui::net::ProviderSettings> &all = atui::net::providers();
+    int count = (int) all.size();
+    if( count > kMaxSwitchModels ) count = kMaxSwitchModels;
+    if( count == 0 ) return;
+    const int active = (int) atui::net::activeProviderIndex();
+
+    const int rows = count < 12 ? count : 12;
+    SwitchModelDialog *d = new SwitchModelDialog( TRect( 0, 0, 46, rows + 5 ),
+                                                  "Switch model" );
+    d->options |= ofCentered;
+    d->insert( new TStaticText( TRect( 3, 1, 43, 2 ),
+                                "Send to which provider and model:" ) );
+
+    TScrollBar *sb = new TScrollBar( TRect( 43, 2, 44, rows + 2 ) );
+    d->insert( sb );
+    ModelListBox *list = new ModelListBox( TRect( 3, 2, 43, rows + 2 ), 1, sb );
+    TStringCollection *coll = new TStringCollection( 4096, 32 );
+    for( int i = 0; i < count; ++i )
+    {
+        const std::string model =
+            all[i].model.empty() ? all[i].name : all[i].model;
+        const std::string label =
+            std::string( i == active ? "* " : "  " ) + menuText_( model ) +
+            "  (" + menuText_( all[i].name, 20 ) + ")";
+        coll->insert( dupStr_( label ) );
+    }
+    list->newList( coll );
+    ushort sel = ( active >= 0 && active < count ) ? (ushort) active : (ushort) 0;
+    list->setData( &sel );
+    d->insert( list );
+
+    d->insert( new TButton( TRect( 18, rows + 2, 28, rows + 4 ), "Cancel",
+                            cmCancel, bfNormal ) );
+    d->select();    // the list gets the focus: arrows, then Space or Enter
+
+    if( TProgram::deskTop->execView( d ) == cmOK )
+    {
+        ushort which = 0xFFFF;
+        list->getData( &which );
+        if( which < (ushort) count )
+            pickSwitchModel_( which );
+    }
+    TObject::destroy( d );
+}
 
 // Options > Providers dialog: manage the provider list (OpenAI-compatible
 // endpoints). The list box on the left picks which provider the fields describe;

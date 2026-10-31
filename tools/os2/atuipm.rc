@@ -8,9 +8,10 @@
    back as WM_COMMAND, which the driver injects as the same Alt key the
    application's hot keys already answer (hardwspm.cpp, pmTakeCommand).
    The ids below and that table are one contract kept in two files.
-   "Switch model" is absent until the PM menu can be built with the
-   model list in it -- app-side knowledge, and the native-dialog phase's
-   work.
+   "Switch model" is a static item on purpose: the list of models is app
+   knowledge, and the pick lands in the app's own picker dialog -- building
+   the PM menu with the list in it (WinLoadMenu only loads from resources)
+   is the native-dialog phase's question, not this item's.
 
    The ids are the ones the frame is created with -- 256, the stdwnd
    sample's ID_WINDOW, written as numbers so RC needs no header and no -i
@@ -37,6 +38,8 @@ BEGIN
     MENUITEM "~Providers...", 1103, 1
     MENUITEM "~Settings...",  1104, 1
     MENUITEM "~Theme...",     1105, 1
+    MENUITEM "", -1, 64
+    MENUITEM "Switch ~m~odel...", 1106, 1
     MENUITEM "", -1, 64
     MENUITEM "E~xit",         1110, 1
   END
