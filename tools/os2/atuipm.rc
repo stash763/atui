@@ -49,6 +49,54 @@ BEGIN
   END
 END
 
+/* The dialogs of the PM front (901 theme, 902 switch model), drawn by
+   pmdlg.cpp and opened with WinDlgBox by these ids.  The dialect was
+   measured on this box's RC/2: headerless, bare numerics, DLGTEMPLATE
+   900.4 written from a probe of exactly this spelling (2026-10-31).  The
+   numbers are PM's own, read from the box's headers, and they are not the
+   Windows ones:
+     class atoms     Button 0xffff0003, Static 0xffff0005, ListBox 0xffff0007
+     WS_             VISIBLE 0x80000000, GROUP 0x10000, TABSTOP 0x20000
+                     VSCROLL 0x200000 (from the toolkit's os2win.h -- the
+                     Watcom copy does not carry the scroll pair at all)
+     BS_             PUSHBUTTON 0, AUTOCHECKBOX 2, AUTORADIOBUTTON 4 (bit
+                     fields, not Windows' IDs), DEFAULT 0x400
+     SS_             TEXT 0x0001; DT_LEFT and DT_TOP are zero, so no style
+                     word is written for a plain label beyond visibility
+     frame controls  TITLEBAR 0x1, SYSMENU 0x2 -- two, no sizing border,
+                     no min/max: these are questions with answers, not
+                     workspaces
+   Control ids belong to pmdlg.cpp's enums the same way the menu ids belong
+   to pmTakeCommand's table: two files, one contract.  Coordinates grow up
+   from the bottom edge; sizes are dialog units, sized off eFTE's pmdlg.rc. */
+DLGTEMPLATE 901 LOADONCALL MOVEABLE DISCARDABLE SEGALIGN
+BEGIN
+    DIALOG "Theme", 901, 10, 10, 160, 90, 0x80000000, 0x00000003
+    BEGIN
+        CONTROL "Color theme:", 410, 12, 62, 100, 10,
+                0xffff0005, 0x80000001
+        CONTROL "~C~lassic", 401, 14, 44, 80, 10,
+                0xffff0003, 0x80030004
+        CONTROL "~D~ark", 402, 14, 30, 80, 10,
+                0xffff0003, 0x80000004
+        DEFPUSHBUTTON "OK", 1, 40, 6, 51, 14, 0x80030400
+        PUSHBUTTON "Cancel", 2, 100, 6, 51, 14, 0x80020000
+    END
+END
+
+DLGTEMPLATE 902 LOADONCALL MOVEABLE DISCARDABLE SEGALIGN
+BEGIN
+    DIALOG "Switch model", 902, 10, 10, 260, 130, 0x80000000, 0x00000003
+    BEGIN
+        CONTROL "Send to which provider and model:", 420, 10, 112, 220, 10,
+                0xffff0005, 0x80000001
+        CONTROL "", 403, 10, 28, 240, 78,
+                0xffff0007, 0x80230000
+        DEFPUSHBUTTON "OK", 1, 140, 6, 51, 14, 0x80030400
+        PUSHBUTTON "Cancel", 2, 200, 6, 51, 14, 0x80020000
+    END
+END
+
 ACCELTABLE 256 PRELOAD
 BEGIN
   114, 1002, VIRTUALKEY     /* F3; numbers because RC here has no headers

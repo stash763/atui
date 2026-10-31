@@ -62,6 +62,7 @@
 #include "core/strutil.h"      // Fmt and toString: Watcom has no std::ostringstream
 #include "tui/theme.h"
 #include "tui/md_style.h"
+#include "tui/pmdialogs.h"
 #include "tui/markdown.h"
 #include "tui/thinking.h"
 #include "tui/wrap.h"
@@ -80,6 +81,13 @@
 #endif
 
 #include <vector>
+
+/* The seam for a windowed front's native dialogs (src/tui/pmdialogs.h):
+   null everywhere the PM driver does not exist, which is every console
+   front; pmdlg.cpp installs its kit when the PM window is born.  Global,
+   not namespace-scope: the header declares it global and the driver reads
+   it there -- anything else is two variables wearing one name. */
+const PmDialogs *gPmDialogs = 0;
 
 namespace atui {
 namespace tui {
@@ -2434,8 +2442,28 @@ void processMessage_()
     g_prompt_->drawView();
 }
 
+// The About box's words, one copy for both tellers: the tvision box below
+// and the PM message box, which has no other way to read them (pmdlg.cpp
+// asks through pmAboutText).  The wrap notes of showHelp still apply --
+// lines under its wrap column, and lengthening them means resizing the box.
+static const char kAboutText[] =
+    "atui - AI development TUI (M2)\n"
+    "Streaming chat with tool calling.\n"
+    "\n"
+    "Switch model picks the provider; Alt-P edits them,\n"
+    "Alt-T the theme, Ctrl-T a thinking block, and Alt-U\n"
+    "lists the files atui changed so one can go back.\n"
+    "\n"
+    "Nothing outside this project is written unasked, and\n"
+    "a command runs without atui's own credentials.";
+
 void TApp::showHelp()
 {
+    // A windowed front with a native About box shows that instead (eFTE's
+    // pattern: a message box is a dialog, and an About is a message).
+    if( gPmDialogs && gPmDialogs->about && gPmDialogs->about() )
+        return;
+
     TDialog *d = new TDialog( TRect( 12, 9, 72, 24 ), "atui - About" );
     // TStaticText wraps at the box width and then clips to its height, so every
     // line here is under the wrap column and the nine rows they make fit the box.
@@ -2443,16 +2471,7 @@ void TApp::showHelp()
     // line: a dropped sentence in an About box looks like a program with less to
     // say than it has.
     d->insert( new TStaticText( TRect( 3, 2, d->size.x - 2, d->size.y - 3 ),
-        "atui - AI development TUI (M2)\n"
-        "Streaming chat with tool calling.\n"
-        "\n"
-        "Switch model picks the provider; Alt-P edits them,\n"
-        "Alt-T the theme, Ctrl-T a thinking block, and Alt-U\n"
-        "lists the files atui changed so one can go back.\n"
-        "\n"
-        "Nothing outside this project is written unasked, and\n"
-        "a command runs without atui's own credentials."
-        ) );
+        kAboutText ) );
     TButton *b = new TButton( TRect( 0, 0, 14, 3 ), "OK", cmCancel, bfNormal );
     d->insert( b );
     b->moveTo( (d->size.x - b->size.x) / 2, d->size.y - 3 );
@@ -2537,21 +2556,32 @@ private:
     TMenuItem **link_;
 };
 
+// "model  (provider)" for one provider index: the text of a row in every
+// rendering of the switch-model list -- the menu dropdown, its windowed
+// dialog twin, and the PM list box.  A provider with no model set shows its
+// name, so an entry is never blank; the active one carries the "* " mark.
+static std::string switchModelLabel_( int index )
+{
+    std::vector<atui::net::ProviderSettings> &all = atui::net::providers();
+    if( index < 0 || (std::size_t) index >= all.size() )
+        return std::string();
+    const std::string model =
+        all[index].model.empty() ? all[index].name : all[index].model;
+    return std::string( (std::size_t) index ==
+                            atui::net::activeProviderIndex() ? "* " : "  " )
+        + menuText_( model ) + "  (" + menuText_( all[index].name, 20 ) + ")";
+}
+
 // "model  (provider)" per provider, the active one marked with '*'. A provider
 // with no model set shows its name, so an entry is never blank.
 TMenu *buildSwitchModelMenu_()
 {
     std::vector<atui::net::ProviderSettings> &all = atui::net::providers();
-    const std::size_t active = atui::net::activeProviderIndex();
 
     MenuBuilder mb;
     for( std::size_t i = 0; i < all.size() && (int) i < kMaxSwitchModels; ++i )
     {
-        const std::string model =
-            all[i].model.empty() ? all[i].name : all[i].model;
-        const std::string label =
-            std::string( i == active ? "* " : "  " ) + menuText_( model ) +
-            "  (" + menuText_( all[i].name, 20 ) + ")";
+        const std::string label = switchModelLabel_( (int) i );
         // TKey( ... ) spelled out: kbNoKey is a constant whose value is 0, and in
         // C++98 that makes it a null pointer constant as well, which would leave
         // the TMenu* overload of this constructor looking like an equally good
@@ -2688,6 +2718,11 @@ public:
 
 void showSwitchModelDialog_()
 {
+    // A windowed front shows PM's list box instead (pmdlg.cpp); the same
+    // app callbacks feed both, and the same pickSwitchModel_ lands.
+    if( gPmDialogs && gPmDialogs->switchModel && gPmDialogs->switchModel() )
+        return;
+
     std::vector<atui::net::ProviderSettings> &all = atui::net::providers();
     int count = (int) all.size();
     if( count > kMaxSwitchModels ) count = kMaxSwitchModels;
@@ -2706,14 +2741,7 @@ void showSwitchModelDialog_()
     ModelListBox *list = new ModelListBox( TRect( 3, 2, 43, rows + 2 ), 1, sb );
     TStringCollection *coll = new TStringCollection( 4096, 32 );
     for( int i = 0; i < count; ++i )
-    {
-        const std::string model =
-            all[i].model.empty() ? all[i].name : all[i].model;
-        const std::string label =
-            std::string( i == active ? "* " : "  " ) + menuText_( model ) +
-            "  (" + menuText_( all[i].name, 20 ) + ")";
-        coll->insert( dupStr_( label ) );
-    }
+        coll->insert( dupStr_( switchModelLabel_( i ) ) );
     list->newList( coll );
     ushort sel = ( active >= 0 && active < count ) ? (ushort) active : (ushort) 0;
     list->setData( &sel );
@@ -2732,6 +2760,65 @@ void showSwitchModelDialog_()
     }
     TObject::destroy( d );
 }
+
+/* --------------------------------------------------------------------------
+ * The C interface of the PM front's native dialogs (src/tui/pmdialogs.h).
+ * The dialogs live in the driver's tree (pmdlg.cpp) and bring UI only:
+ * every fact they show or change is fetched and applied here, where the
+ * tvision dialogs already keep it.  Each pair -- tvision dialog and native
+ * one -- shares these, which is what keeps them telling the same story.
+ */
+extern "C" {
+
+const char *pmAboutText( void )
+{
+    return kAboutText;
+}
+
+int pmThemeCurrent( void )
+{
+    return currentTheme() == ThemeDark ? 1 : 0;
+}
+
+void pmThemeApply( int which )
+{
+    // The same three things the tvision picker's OK button does: set,
+    // repaint the screen in the new palette, persist.  setScreenMode is
+    // the application's (a non-static member -- re-renders with whatever
+    // palette the theme now says); the mode itself does not change.
+    if( setTheme( which == 0 ? ThemeClassic : ThemeDark )
+        && TProgram::application != 0 )
+        TProgram::application->setScreenMode( TScreen::screenMode );
+    atui::settings::saveAll();
+}
+
+int pmModelCount( void )
+{
+    int n = (int) atui::net::providers().size();
+    return n > kMaxSwitchModels ? kMaxSwitchModels : n;
+}
+
+const char *pmModelLabel( int index )
+{
+    // One reused string: the PM list box copies the text at LM_INSERTITEM,
+    // and the dialog reads the list top to bottom, so no two answers are
+    // ever alive at once.
+    static std::string s;
+    s = switchModelLabel_( index );
+    return s.c_str();
+}
+
+int pmModelActive( void )
+{
+    return (int) atui::net::activeProviderIndex();
+}
+
+void pmModelChosen( int index )
+{
+    pickSwitchModel_( index );
+}
+
+} /* extern "C" */
 
 // Options > Providers dialog: manage the provider list (OpenAI-compatible
 // endpoints). The list box on the left picks which provider the fields describe;
@@ -3166,6 +3253,11 @@ void TApp::showProviders()
 
 void TApp::showTheme()
 {
+    // A windowed front shows PM's radio buttons instead (pmdlg.cpp); the
+    // tvision picker below stays as the consoles' own.
+    if( gPmDialogs && gPmDialogs->theme && gPmDialogs->theme() )
+        return;
+
     // Radio-button picker (tvdemo mousedlg.cpp pattern). Index order matches
     // the TSItem list below: 0 = classic, 1 = dark.
     TDialog *d = new TDialog( TRect( 0, 0, 34, 11 ), "Options - Theme" );

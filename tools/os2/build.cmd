@@ -509,6 +509,10 @@ echo ================== hardwspm.obj ==================
 if not exist obj\pm mkdir obj\pm
 %WPP% -DATUI_PM -fo=obj\pm\ tvision\source\tvision\hardwspm.cpp >> %LOG% 2>&1
 if errorlevel 1 goto tvone_failed
+rem The native dialogs ride the same mark (ATUI_PM) for the same reason:
+rem they speak PM and must be inert everywhere else.
+%WPP% -DATUI_PM -fo=obj\pm\ tvision\source\tvision\pmdlg.cpp >> %LOG% 2>&1
+if errorlevel 1 goto tvone_failed
 echo [pmdrv] OK
 goto summary
 
@@ -524,15 +528,18 @@ rem a `wlib -name` that matched nothing is a silent success otherwise.
 echo ================== obj\tvisionpm.lib ==================
 if not exist obj\tvision.lib goto one_failed
 if not exist obj\pm\hardwspm.obj goto one_failed
+if not exist obj\pm\pmdlg.obj goto one_failed
 if exist obj\tvisionpm.lib del obj\tvisionpm.lib
 copy obj\tvision.lib obj\tvisionpm.lib >> %LOG% 2>&1
 if not exist obj\tvisionpm.lib goto one_failed
-wlib -q obj\tvisionpm.lib -hardwvos2 +obj\pm\hardwspm.obj >> %LOG% 2>&1
+wlib -q obj\tvisionpm.lib -hardwvos2 +obj\pm\hardwspm.obj +obj\pm\pmdlg.obj >> %LOG% 2>&1
 if errorlevel 1 goto one_failed
 wlib -q -l=obj\pm\liblist_pm.txt obj\tvisionpm.lib >> %LOG% 2>&1
 find /i "hardwvos2" obj\pm\liblist_pm.txt
 if not errorlevel 1 goto pmlib_both
 find /i "hardwspm" obj\pm\liblist_pm.txt >> %LOG% 2>&1
+if errorlevel 1 goto pmlib_both
+find /i "pmdlg" obj\pm\liblist_pm.txt >> %LOG% 2>&1
 if errorlevel 1 goto pmlib_both
 dir obj\tvisionpm.lib
 echo [pmlib] OK
