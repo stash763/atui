@@ -4841,3 +4841,94 @@ it.  This trio is now the pattern for `atuipm` — the PM build of atui — and
 WinSetWindowPos birth, same WM_QUIT death, `SHORT1FROMMP(mp2)`/
 `CHAR4FROMMP(mp1)` key decoding feeding the VIO scan-code table, and a
 WM_PAINT that paints the cell shadow instead of two lines of text.
+
+### The PM front takes the screen: a page, not pixels (2026-10-30)
+
+`atuipm.exe` runs at the box's display as a working atui: the whole UI with its
+theme colours, typing, backspace that erases, both menu bars, close that exits
+clean.  It was taken there by one architectural surrender and a handful of
+measured facts, all of them visible in the driver
+(`tvision/source/tvision/hardwspm.cpp`, fork `5b9eea9`) and its comments.
+
+**The architecture: the grid is the kernel's, not ours.**  The hand-drawn
+window -- `WinFillRect` per background run, `GpiCharStringAt` per text run, a
+font recipe, a palette table -- took seven builds and the box found each answer
+wrong: unpainted rows left *transparent holes* (an unpainted PM window shows
+the desktop behind it, which reads exactly like "corrupted text" -- screenshots
+2 and 3), and `GpiSetColor` was being asked for colours in a colour *long* when
+its argument is a palette *index*, so every colour was a garbage index ("the
+colour scheme is not working at all").  The comparison the post-mortem demanded
+found the answer in eFTE: it never draws its grid either.  It creates an
+**AVIO page** -- `GpiCreatePS(GPIA_ASSOC)` on the window's DC, `VioCreatePS`
+for a BIOS text screen of rows and columns, `VioAssociate` to hang it on the
+window -- and writes it with the same `VioWrtCellStr`/`VioScrollUp` family the
+VIO driver speaks.  Cells, CP850 glyphs, attribute colours, the repaint on
+expose: the kernel's, shipping for decades.  `WM_PAINT` became a `VioShowBuf`
+re-show; the flush pushes dirty runs as cell strings; the window sizes itself
+from `VioGetDeviceCellSize`.
+
+**Measured facts, each one paid for in a walk to the box:**
+
+* **The headers are the switches.**  `bsesub.h` keeps the whole VIO write side
+  -- `HVIO`, `VioWrtCellStr`, `VioScrollUp` and their `VIO16*` import aliases --
+  behind `#define INCL_VIO` (line 365 of the box's own copy), and `pm.h` adds
+  `pmavio.h` only under `#define INCL_AVIO`.  eFTE asks with both
+  (`g_pm.cpp:25..26`); without them the compiler reports the *type names*
+  missing, not the functions.
+* **Cell strings are character-first** -- video-memory order.  Sent the other
+  way round, every blank space reads as attribute 0x20 (green on black) and
+  every attribute byte draws as its CP850 control glyph: screenshot4's sea of
+  green with dotted confetti.  eFTE's `TCell` being one little-endian `unsigned
+  short` says the same thing in code.
+* **The engine's default cell was 12x30** on this 1024x768 display (the pixels
+  are doubled), so the 80x25 grid stood 968x805 -- taller than the screen,
+  title bar off the top, hot-key hockey to reach the menu.  The driver now asks
+  for 8x16 with `VioSetDeviceCellSize` (eFTE's WindowFont spelling) and centres
+  the frame on the desktop-window rect, `WinQuerySysInfo` being absent from
+  Watcom's headers *and* import library -- the same 1.x vocabulary gap as
+  `WinSetTimer`, which is why timeouts ride posted messages from the alarm
+  thread instead.
+* **PM's caret is an inversion overlay**, not maintenance the window can draw
+  under untouched: writes that land under a shown caret leave the inversion
+  when their own ink does not cover it -- a blank covers nothing, so backspace
+  dragged a white block along (screenshot5).  The driver hides the caret around
+  the flush and destroys-before-creates when it moves, exactly eFTE's
+  `PMHideCursor`/`PMShowCursor` pair.
+* **The write itself is proven**: run seven produced the first `key char=` in
+  the project's history, run nine a screen where typing and erasing both show.
+
+**Build: three modes, and their verdicts are the gate -- not the exit code.**
+
+    python3 tools/atui-remote --exec "d: && cd \atui && build pmdrv"   # driver obj
+    python3 tools/atui-remote --exec "d: && cd \atui && build pmlib"   # splice tvisionpm.lib
+    python3 tools/atui-remote --exec "d: && cd \atui && build pmexe"   # link + rc -> atuipm.exe
+
+The modes all exit 0 whatever happened, and `pmlib` will splice whatever
+`obj\pm\hardwspm.obj` it finds: one evening `pmdrv` failed (the
+`WinQuerySysInfo` above) and `pmlib`/`pmexe` dutifully rebuilt a *green* exe
+from the previous morning's object.  Read `[pmdrv] OK` / `[pmlib] OK` /
+`[pmexe] OK` per stage, and check `atuipm.exe`'s timestamp and size against
+expectation before walking to the box.
+
+**Running it: never from the telnet session** -- a PM image started from there
+hangs the session; it is started at the box's own display (the user's rule
+since the probe).  Its lifeline is `atuipm.run.txt` next to the exe, fetched
+after each run by FTP.  The vocabulary, first line first: `birth`, `window ok`,
+`avio ps rc= hvps=`, `avio associate rc=`, `avio cell set rc=`, `avio cell rc=
+WxH`, `page ok cell WxH`, `grid 80x25 cell 8x16 frame 648x455`, `focus in`,
+`shown`, `wait #N t=`, `first paint`, `mouse first`, `key char=... virt=
+scan= mods=`, `command N -> name` (menu picks), `close -> quit`, `dtor`.  A
+peek line's `err=0x82053` is the queue-empty notice, benign; `WinPeekMsg: error
+0x0` with an info line is the same event unpacked.
+
+**Proven at the display:** full screen with theme colours and box drawing,
+typing, backspacing, Enter sending, replies streaming, the PM menu bar's picks
+arriving as hot keys (`command 1101 -> Alt-H help`), caret blinking and moving,
+occlusion and restore (the page re-shows), close exiting cleanly.  **Still v1
+limits, documented in the driver's header:** the grid stays 80x25 whatever the
+window is; no clipboard; no wheel; the caret is PM's one shape, a flashing
+block.
+
+`tools/os2/pmhello.*` -- the probe that proved the toolchain trio -- has been
+deleted now that the driver carries all of it; its lessons stand in the section
+above and in `hardwspm.cpp`'s comments.
