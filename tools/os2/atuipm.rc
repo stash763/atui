@@ -1,13 +1,59 @@
 /* atuipm.rc -- resources for the PM build, appended to the image by
    `build.cmd pmexe`.  Not decoration: a Watcom system os2v2_pm image has
    no resource segment at all until rc appends one, and WinCreateStdWindow
-   then fails PMERR_RESOURCE_NOT_FOUND (TESTING.md, "PM probe: green").
+   answers that with PMERR_RESOURCE_NOT_FOUND (atuipm.run.txt, 2026-10-28).
 
-   Only the icon is here.  The id is the one the frame is created with --
-   256, the stdwnd sample's ID_WINDOW, written as a number so RC needs no
-   header and no -i path on this box.  The probe's MENU and ACCELTABLE are
-   deliberately not repeated: atui draws its own menu bar inside the
-   window, and a second one in the frame would only compete with it.
+   The menu is the application's chrome in the PM idiom -- the toolkit's
+   pattern and eFTE's: the frame carries a real menu bar, and picks come
+   back as WM_COMMAND, which the driver injects as the same Alt key the
+   application's hot keys already answer (hardwspm.cpp, pmTakeCommand).
+   The ids below and that table are one contract kept in two files.
+   "Switch model" is absent until the PM menu can be built with the
+   model list in it -- app-side knowledge, and the native-dialog phase's
+   work.
 
-   The icon is the probe's for now; an atui-drawn one is later polish. */
+   The ids are the ones the frame is created with -- 256, the stdwnd
+   sample's ID_WINDOW, written as numbers so RC needs no header and no -i
+   path on this box.  ACCELTABLE stays in the image inert: the frame flag
+   is off (the application's hot keys arrive as WM_CHAR without it), but
+   whether the loader asks for these by flag or always is not a question
+   worth a round trip to the machine's display.  The icon is the probe's
+   for now; an atui-drawn one is later polish. */
+
 ICON    256 atui.ico
+
+/* Menu item flags are the numeric values (MIS_TEXT = 1, MIS_SEPARATOR =
+   0x40) for the same reason the accel below is the numeric 114: this rc
+   compiles headerless, and RCPP answers an undefined name -- MIS_TEXT or
+   the bare SEPARATOR form -- as an error.  The ids are the contract with
+   pmTakeCommand in hardwspm.cpp. */
+MENU    256 PRELOAD
+BEGIN
+  SUBMENU "~File", 1100, 1
+  BEGIN
+    MENUITEM "~Help...",      1101, 1
+    MENUITEM "~Undo file...", 1102, 1
+    MENUITEM "", -1, 64
+    MENUITEM "~Providers...", 1103, 1
+    MENUITEM "~Settings...",  1104, 1
+    MENUITEM "~Theme...",     1105, 1
+    MENUITEM "", -1, 64
+    MENUITEM "E~xit",         1110, 1
+  END
+  SUBMENU "~About", 1200, 1
+  BEGIN
+    MENUITEM "~about...",     1201, 1
+  END
+END
+
+ACCELTABLE 256 PRELOAD
+BEGIN
+  114, 1002, VIRTUALKEY     /* F3; numbers because RC here has no headers
+                               included, and the character form arrived at
+                               RCPP as something undefined (measured). */
+END
+
+STRINGTABLE PRELOAD
+BEGIN
+  256, "atui"
+END
