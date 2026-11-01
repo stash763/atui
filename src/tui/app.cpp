@@ -2060,6 +2060,13 @@ TDeskTop *initDeskTop_( TRect r )
     g_vBar_->options &= ~ofSelectable;  // mouse-driven only; keep keyboard focus
                                         // on the prompt (see TranscriptView)
     d->insert( g_vBar_ );
+    // The windowed front has the real thing: PM's native scrollbar stands
+    // immediately outside this column, and two bars side by side is the
+    // "additional bar" the screenshots showed. The view stays alive --
+    // the scroller's plumbing and the layout's reserved column are
+    // unchanged -- it simply never draws here.
+    if( THardwareInfo::windowed() )
+        g_vBar_->setState( sfVisible, False );
 
     g_transcript_ = new TranscriptView( trRect, g_vBar_ );
     g_transcript_->hideCursor();
@@ -2156,7 +2163,12 @@ void relayoutPanels_()
         if( g_vBar_ )
         {
             g_vBar_->setBounds( bRect );
-            g_vBar_->drawView();   // repaint reclaimed/vacated scrollbar columns
+            // The explicit repaint below honours the native-scrollbar
+            // hiding: this fork's drawView asks only about exposure,
+            // and a view the windowed front decided is invisible must
+            // stay unpainted, not merely unfocused.
+            if( ( g_vBar_->state & sfVisible ) != 0 )
+                g_vBar_->drawView();   // repaint reclaimed/vacated scrollbar columns
         }
     }
 
