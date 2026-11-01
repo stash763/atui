@@ -805,6 +805,24 @@ public:
         TScroller::handleEvent( event );
     }
 
+    // PgUp / PgDn, one page at a time: the wheel's arithmetic with a
+    // page for a notch, because these keys reach the transcript through
+    // TApp's interception rather than its own event path -- the prompt
+    // holds the focus and the classic focus chain lets one view hear a
+    // key.  Follow keeps its meaning: paging back to the last line
+    // resumes following the stream, paging up stops it.
+    void pageBy( int pages )
+    {
+        const int step = size.y > 2 ? size.y - 2 : 1;
+        int maxTop = (int) lines_.size() - size.y;
+        if( maxTop < 0 ) maxTop = 0;
+        int nt = delta.y + pages * step;
+        if( nt < 0 ) nt = 0;
+        if( nt > maxTop ) nt = maxTop;
+        follow_ = ( nt >= maxTop );
+        if( nt != delta.y ) scrollTo( 0, nt );
+    }
+
     // The scrollbar moved the view (click or drag on the bar). Keep the
     // "follow the bottom" flag in step with it: jumping up stays up, and
     // returning the thumb to the end resumes following the stream. Without
@@ -1660,6 +1678,32 @@ public:
                 g_transcript_->toggleThinkingAll();
             clearEvent( event );
             return;
+        }
+
+        // PgUp / PgDn page the transcript from anywhere on the main
+        // screen: the prompt holds the focus, the focus chain lets one
+        // view hear a key, and these two would die in the prompt on
+        // every front without landing on the one view worth scrolling.
+        // A dialog keeps its own PgUp -- its lists page with them, and
+        // while a dialog is up it, not the prompt, is deskTop's focused
+        // child.
+        if( event.what == evKeyDown && g_transcript_ != 0 && deskTop != 0 &&
+            ( deskTop->last == g_transcript_ ||
+              deskTop->last == g_prompt_ ||
+              deskTop->last == g_vBar_ ) )
+        {
+            if( TKey( event.keyDown ) == TKey( kbPgUp ) )
+            {
+                g_transcript_->pageBy( -1 );
+                clearEvent( event );
+                return;
+            }
+            if( TKey( event.keyDown ) == TKey( kbPgDn ) )
+            {
+                g_transcript_->pageBy( 1 );
+                clearEvent( event );
+                return;
+            }
         }
 
         // The windowed front (PM) builds no in-grid menu bar, so the keys that
