@@ -823,6 +823,27 @@ public:
         if( nt != delta.y ) scrollTo( 0, nt );
     }
 
+    // The PM front's native scrollbar (hardwspm.cpp) asks these two:
+    // how far this view scrolls and where it sits, and where to put the
+    // first line when the thumb says so. Follow keeps its meaning in
+    // both directions: the thumb at the end is the stream's end, and
+    // the thumb anywhere else is a reader who wants to stay put.
+    void scrollExtent( int &total, int &view, int &pos )
+    {
+        total = (int) lines_.size();
+        view  = size.y > 0 ? size.y : 1;
+        pos   = delta.y;
+    }
+    void scrollToLine( int line )
+    {
+        int maxTop = (int) lines_.size() - size.y;
+        if( maxTop < 0 ) maxTop = 0;
+        if( line < 0 ) line = 0;
+        if( line > maxTop ) line = maxTop;
+        follow_ = ( line >= maxTop );
+        if( line != delta.y ) scrollTo( 0, line );
+    }
+
     // The scrollbar moved the view (click or drag on the bar). Keep the
     // "follow the bottom" flag in step with it: jumping up stays up, and
     // returning the thumb to the end resumes following the stream. Without
@@ -1328,6 +1349,26 @@ private:
     bool follow_;
 };
 
+/* The PM front's native scrollbar seam: hardwspm.cpp owns the bar and
+   knows nothing of transcripts, this file owns the transcript and knows
+   nothing of bars -- these two functions are the whole conversation,
+   pulled by the driver's event pump. The console builds never reference
+   them, and a definition nothing calls costs nothing. */
+extern "C" void pmTranscriptExtent( int *total, int *view, int *pos )
+{
+    *total = 0;
+    *view  = 1;
+    *pos   = 0;
+    if( g_transcript_ != 0 )
+        g_transcript_->scrollExtent( *total, *view, *pos );
+}
+
+extern "C" void pmTranscriptJump( int line )
+{
+    if( g_transcript_ != 0 )
+        g_transcript_->scrollToLine( line );
+}
+
 
 // --- PromptInput: a wrapping, auto-growing prompt ----------------------------
 //
@@ -1684,25 +1725,33 @@ public:
         // screen: the prompt holds the focus, the focus chain lets one
         // view hear a key, and these two would die in the prompt on
         // every front without landing on the one view worth scrolling.
+        // The focus holder is deskTop's selected child -- the
+        // validView(current) the toolkit itself answers to the query;
+        // group->last is the insertion ring's anchor, a different animal
+        // entirely, and an equality with the panels' pointers there is
+        // never true (measured: PgUp stayed dead in the prompt with the
+        // driver delivering the key fine).
         // A dialog keeps its own PgUp -- its lists page with them, and
-        // while a dialog is up it, not the prompt, is deskTop's focused
+        // while a dialog is up it, not the prompt, is the selected
         // child.
-        if( event.what == evKeyDown && g_transcript_ != 0 && deskTop != 0 &&
-            ( deskTop->last == g_transcript_ ||
-              deskTop->last == g_prompt_ ||
-              deskTop->last == g_vBar_ ) )
+        if( event.what == evKeyDown && g_transcript_ != 0 && deskTop != 0 )
         {
-            if( TKey( event.keyDown ) == TKey( kbPgUp ) )
+            TView *focus = validView( deskTop->current );
+            if( focus == g_transcript_ || focus == g_prompt_ ||
+                focus == g_vBar_ )
             {
-                g_transcript_->pageBy( -1 );
-                clearEvent( event );
-                return;
-            }
-            if( TKey( event.keyDown ) == TKey( kbPgDn ) )
-            {
-                g_transcript_->pageBy( 1 );
-                clearEvent( event );
-                return;
+                if( TKey( event.keyDown ) == TKey( kbPgUp ) )
+                {
+                    g_transcript_->pageBy( -1 );
+                    clearEvent( event );
+                    return;
+                }
+                if( TKey( event.keyDown ) == TKey( kbPgDn ) )
+                {
+                    g_transcript_->pageBy( 1 );
+                    clearEvent( event );
+                    return;
+                }
             }
         }
 
