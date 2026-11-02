@@ -5162,3 +5162,65 @@ this box has proven at its own address.
   lineh N`, `entry limit` is gone -- no MLM message is spoken anymore.
   `entry submit len=N` and `focus entry hwnd=` keep their names; they
   are the two lines that will confirm this window takes its keys.
+
+## The textbox is the MLE again, and the pump is its keyboard (2026-11-02)
+
+The driver-drawn prompt failed the way hand-rolled editors do: growth
+worked in the log (`prompt grow lines 3 h 68`) while the screen showed
+lines scrolled wrong and a backspace that left a fragment behind
+(screenshot9.jpg). The user's call — native textbox, and the toolkit
+for the documentation. What the toolkit actually says:
+
+- **The era's entry widget is single-line.** IBM's own style list
+  (Watcom's pmwin.h:1157..1171) has no multiline member; the
+  `ES_MULTILINE` that lives in TOOLKIT/h/os2win.h:1316 is the Win32
+  emulation header's Windows-Edit-control value, not a PM thing. So
+  "textbox control, multiline" in PM of this era means exactly one
+  control: `WC_MLE`.
+- **Watcom's MLE numbers are IBM's numbers.** pmmle.h says
+  MLM_SETTEXTLIMIT 0x01b0, MLM_QUERYTEXTLENGTH 0x01c0, MLN_CHANGE
+  0x0007 — identical to Watcom's, so the hope that last round's dead
+  queries were a value skew is dead too.
+- **IBM's own samples never rely on what this box refused.** The
+  sty_* controls sample creates the MLE with MLS_WORDWRAP
+  (sty_init.c:147) and reads text by exactly one route:
+  MLM_SETIMPORTEXPORT then MLM_EXPORT (sty_file.c:494..501). It calls
+  MLM_QUERYTEXTLENGTH before exporting (sty_file.c:475) — the one
+  query measured dead here — so the driver asks for the whole buffer
+  and believes the count that comes back instead. No sample listens
+  for MLN_* either; notifications were never the foundation.
+
+The rebuild, therefore: the MLE holds the prompt's text and all of
+editing — caret, selection, backspace, clipboard, undo, word wrap —
+natively, and the driver asks it one question on a throttled beat
+(every 8th, ~100 ms): export, hash, count wrapped lines locally with
+the control's own font, size the strip. No notifications needed; the
+MLN doors stay open as mere kicks with a capped evidence log.
+
+Keys need no cooperation from the control at all: `deliverMessage` is
+the one door every event of the session comes through, and it takes
+the prompt's Enter there. The WM_CHAR path is rich (the flags family
+whose members are measured): bare Enter submitting, Shift+Enter
+passing through for the MLE's own newline, Alt chords forwarded,
+Ctrl-T and PgUp/PgDn kept. For a box that answers keys without ever
+making characters, WM_KEYDOWN/WM_KEYUP with Enter's proven scan 0x1C
+carry a fallback that matures at keyup — and a capped 48-line
+`kmsg` probe writes every key and control message raw, so one session
+says which layer the box feeds and what its parameters really carry.
+Clear stays mcispy's MLM_DELETE over the generous range, and the
+post-submit shrink happens at once, not a beat later.
+
+- **Log vocabulary**: new `kmsg id= src= mp1= mp2=` (48 cap), `prompt
+  probe export=N query=N text=` (a birth self-check: insert, export,
+  delete — the control proving it can hold and give back), `entry
+  note c=` (a control notification, if this box ever sends one);
+  `entry submit len=` returns, `prompt grow lines N h H` stays;
+  gone are the hand-drawn window's whole edit vocabulary.
+- **One session decides**: whether the kmsg lines carry WM_CHAR (rich
+  path alive, Shift+Enter native), only WM_KEYDOWN (fallback owns
+  Enter; probe says which half of mp1 holds the scan), or WM_COMMAND
+  ids (MMPM's oldest route — the probe names it and the next round
+  speaks it). And whether MLS_WORDWRAP really wraps the display: the
+  growth engine grows from the exported text either way, so a box
+  that grows over a non-wrapping control will be visibly wrong in
+  exactly that one way.
