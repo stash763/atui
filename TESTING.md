@@ -5102,3 +5102,63 @@ design; this entry replaces its engine.
   templates -- without complaint.
 - **Log vocabulary**: `entry grow len N lines L h H` (throttled, 16);
   the linecount pair is gone.
+
+## The prompt became the driver's own window; the dialogs learned their units (2026-11-02)
+
+The MLE got a second measurement and failed it the same way: a full
+typing session with the poll riding the wait beat logged `entry lineh
+20` at birth, then nothing -- zero `entry grow` lines across 500 beats
+(means `MLM_QUERYTEXTLENGTH` answered a constant zero with text going
+in), zero `entry submit` lines (means the subclass never saw a WM_CHAR
+-- not Enter, not Shift+Enter; MMPM/2's control works its keyboard from
+its own accelerator table and never hands the keys to the window chain
+the rest of PM uses), and the user watched every message stay one line.
+Three rounds of asking the box politely is three; the class is retired
+and the code deleted.  What replaced it answers to nothing but calls
+this box has proven at its own address.
+
+- **The prompt is a registered class of the driver, `AtuiPrompt`**: the
+  buffer is the driver's (4k chars, bare-LF paragraphs), the wrapped-
+  line cache is the driver's (greedy word fill; long words split by
+  measured average width; spaces at a wrap point belong to no line),
+  and every behavior -- Enter submits, Shift+Enter inserts the newline,
+  arrows/Home/End/Del move and edit, Shift extends a selection, Ctrl-A
+  selects, Ctrl-T toggles thinking, Ctrl-Backspace eats a word, PgUp/
+  PgDn page the transcript, Alt chords forward, click places the caret
+  by extent bisect, growth is computed at the keystroke that caused it
+  (the poll is gone; there is nothing left to poll) -- is taken from
+  `WM_CHAR` carrying ch+virt+flags+scan, the extraction and translation
+  (`pmVirtualKey`) through which every key this application ever saw
+  has already arrived.
+- **The link facts, probed, not assumed**: `os2386.lib` carries none of
+  the caret/key-queue family -- E2028 against `WinCreateCaret`,
+  `WinShowCaret`, `WinHideCaret`, `WinSetCaretPos`, `WinDestroyCaret`,
+  `WinGetKeyQueueState` -- but it carries every text-drawing import the
+  prompt uses: `GpiCharStringAt`, `GpiCharString`, `GpiSetColor`,
+  `GpiSetBackColor`, `WinFillRect`, `WinQuerySysColor`,
+  `GpiQueryCharStringPosAt` all compile and link clean (probe
+  carttest.c, 2026-11-02; deleted from the box after).  So the cursor
+  is a drawn `WinFillRect` block -- eFTE's own approach, which is why
+  its sources contain no caret import either -- and the clipboard is
+  the documented skipped phase (its WM_GETDATA family is unimported
+  there too; it joins the icon and hscrollbar in the later list).
+- **Header facts added to the pile**: Watcom's FONTMETRICS spells the
+  descent `lMaxDescender`; `WM_KEYDOWN`, `WM_KEYUP` and `WM_KILLFOCUS`
+  are not in Watcom's pmwin.h at all (`WM_SETFOCUS` is), so named keys
+  are taken from the WM_CHAR virt codes and the file's own `kWmKillFocus
+  = 0x0010` transcription; nothing in this build handles WM_KEYDOWN,
+  because the page proved PM synthesizes the WM_CHAR the named keys
+  ride -- including the XON byte PgUp historically carried.
+- **Dialog units, calibrated**: the too-large complaint pinned the
+  scale -- the accepted dialogs measure in the class of eFTE's proven
+  templates (its Find is 278x91, Find&Replace 278x100), so the three
+  new ones shrank from their guess (903: 330x230 -> 300x130; 904:
+  430x346 -> 330x166; 905: 430x250 -> 320x84) with control heights in
+  eFTE's language (statics 9, entries 11, buttons 14 dialog units) and
+  12-13 unit row pitch.  The ids and styles did not move; pmdlg.cpp
+  was not touched.
+- **Log vocabulary**: `prompt grow lines N h H` replaces `entry grow`
+  (still throttled to 16), `entry lineh N desc D` replaces `entry
+  lineh N`, `entry limit` is gone -- no MLM message is spoken anymore.
+  `entry submit len=N` and `focus entry hwnd=` keep their names; they
+  are the two lines that will confirm this window takes its keys.

@@ -107,49 +107,55 @@ END
    with the live ranges (the numbers are the app's; the boxes only
    display them).  The judging controls hide themselves when the build
    has no agent, and the range note of the command timeout spells out
-   the one field where 0 is an answer. */
+   the one field where 0 is an answer.
+     Size: the first fill measured too large at 1024x768 (user: "the
+   dialogs are too large"), so the canvas and row pitches now live at
+   the scale of the dialogs nobody complained about -- 901's 160x90,
+   902's 260x130, and eFTE's proven Find dialog at 278x91 -- with the
+   control heights of eFTE's template (statics ~9, entries 11, buttons
+   14). */
 DLGTEMPLATE 903 LOADONCALL MOVEABLE DISCARDABLE SEGALIGN
 BEGIN
-    DIALOG "Options - Settings", 903, 10, 10, 330, 230, 0x80000000, 0x00000003
+    DIALOG "Options - Settings", 903, 10, 10, 300, 130, 0x80000000, 0x00000003
     BEGIN
-        CONTROL "Mouse wheel, lines/notch:", 430, 12, 208, 150, 10,
+        CONTROL "Mouse wheel, lines/notch:", 430, 8, 116, 118, 9,
                 0xffff0005, 0x80000001
-        CONTROL "", 431, 170, 206, 50, 12,
+        CONTROL "", 431, 130, 114, 36, 11,
                 0xffff0006, 0x80030008
-        CONTROL "", 441, 232, 208, 90, 10,
+        CONTROL "", 441, 172, 116, 120, 9,
                 0xffff0005, 0x80000001
-        CONTROL "Request timeout, minutes:", 439, 12, 188, 150, 10,
+        CONTROL "Request timeout, minutes:", 439, 8, 103, 118, 9,
                 0xffff0005, 0x80000001
-        CONTROL "", 432, 170, 186, 50, 12,
+        CONTROL "", 432, 130, 101, 36, 11,
                 0xffff0006, 0x80020008
-        CONTROL "", 442, 232, 188, 90, 10,
+        CONTROL "", 442, 172, 103, 120, 9,
                 0xffff0005, 0x80000001
-        CONTROL "Before running something:", 443, 12, 166, 200, 10,
+        CONTROL "Before running something:", 443, 8, 90, 200, 9,
                 0xffff0005, 0x80000001
-        CONTROL "Always ask before a tool runs (ask_all)", 433, 16, 150,
-                300, 10, 0xffff0003, 0x80030004
-        CONTROL "In-project work is fine, ask outside (exact)", 434, 16,
-                136, 300, 10, 0xffff0003, 0x80000004
+        CONTROL "Always ask before a tool runs (ask_all)", 433, 12, 79,
+                280, 9, 0xffff0003, 0x80030004
+        CONTROL "In-project work is fine, ask outside (exact)", 434, 12,
+                69, 280, 9, 0xffff0003, 0x80000004
         CONTROL "A model judges what the facts cannot settle (agent)", 435,
-                16, 122, 300, 10, 0xffff0003, 0x80000004
-        CONTROL "Judging model:", 444, 12, 102, 110, 10,
+                12, 59, 280, 9, 0xffff0003, 0x80000004
+        CONTROL "Judging model:", 444, 8, 45, 88, 9,
                 0xffff0005, 0x80000001
-        CONTROL "", 436, 130, 100, 188, 12,
+        CONTROL "", 436, 100, 43, 192, 11,
                 0xffff0006, 0x80020008
-        CONTROL "Judging seconds:", 445, 12, 82, 110, 10,
+        CONTROL "Judging seconds:", 445, 8, 32, 88, 9,
                 0xffff0005, 0x80000001
-        CONTROL "", 437, 130, 80, 40, 12,
+        CONTROL "", 437, 100, 30, 32, 11,
                 0xffff0006, 0x80020008
-        CONTROL "", 446, 180, 82, 90, 10,
+        CONTROL "", 446, 140, 32, 150, 9,
                 0xffff0005, 0x80000001
-        CONTROL "Command timeout, sec:", 447, 12, 62, 110, 10,
+        CONTROL "Command timeout, sec:", 447, 8, 19, 88, 9,
                 0xffff0005, 0x80000001
-        CONTROL "", 438, 130, 60, 50, 12,
+        CONTROL "", 438, 100, 17, 40, 11,
                 0xffff0006, 0x80020008
-        CONTROL "", 448, 190, 62, 130, 10,
+        CONTROL "", 448, 148, 19, 144, 9,
                 0xffff0005, 0x80000001
-        DEFPUSHBUTTON "OK", 1, 110, 20, 60, 16, 0x80030400
-        PUSHBUTTON "Cancel", 2, 180, 20, 60, 16, 0x80020000
+        DEFPUSHBUTTON "OK", 1, 84, 3, 51, 14, 0x80030400
+        PUSHBUTTON "Cancel", 2, 141, 3, 51, 14, 0x80020000
     END
 END
 
@@ -157,53 +163,56 @@ END
    its three store verbs at the top, the five fields and the resend
    checkbox in the middle, the model list with Refresh and a status line
    below.  New/Delete/Make-active persist on the spot and Refresh does
-   not, so the button rows are the semantics; pmdlg.cpp says which. */
+   not, so the button rows are the semantics; pmdlg.cpp says which.
+   Row pitch 12-13 dialog units, the height of one line's control plus
+   its air, so nothing overlaps at the smaller canvas (see 903's note
+   for where the scale comes from). */
 DLGTEMPLATE 904 LOADONCALL MOVEABLE DISCARDABLE SEGALIGN
 BEGIN
-    DIALOG "Options - Providers", 904, 10, 10, 430, 346, 0x80000000, 0x00000003
+    DIALOG "Options - Providers", 904, 10, 10, 330, 166, 0x80000000, 0x00000003
     BEGIN
-        CONTROL "Pick a provider or a model to switch it now; OK saves the fields.", 450, 12, 330, 406, 10,
+        CONTROL "Pick a provider or a model to switch it now; OK saves the fields.", 450, 8, 155, 314, 9,
                 0xffff0005, 0x80000001
-        CONTROL "", 451, 12, 238, 190, 86,
+        CONTROL "", 451, 8, 129, 190, 24,
                 0xffff0007, 0x80230000
-        CONTROL "New", 452, 212, 304, 96, 16,
+        CONTROL "New", 452, 204, 142, 52, 11,
                 0xffff0003, 0x80030000
-        CONTROL "Delete", 453, 316, 304, 96, 16,
+        CONTROL "Delete", 453, 262, 142, 60, 11,
                 0xffff0003, 0x80020000
-        CONTROL "Make active", 454, 212, 280, 110, 16,
+        CONTROL "Make active", 454, 204, 128, 96, 11,
                 0xffff0003, 0x80020000
-        CONTROL "Name", 461, 12, 220, 54, 10,
+        CONTROL "Name", 461, 8, 117, 30, 9,
                 0xffff0005, 0x80000001
-        CONTROL "", 455, 72, 218, 346, 12,
+        CONTROL "", 455, 44, 115, 278, 11,
                 0xffff0006, 0x80030008
-        CONTROL "Url", 462, 12, 202, 54, 10,
+        CONTROL "Url", 462, 8, 104, 30, 9,
                 0xffff0005, 0x80000001
-        CONTROL "", 456, 72, 200, 346, 12,
+        CONTROL "", 456, 44, 102, 278, 11,
                 0xffff0006, 0x80020008
-        CONTROL "Key", 463, 12, 184, 54, 10,
+        CONTROL "Key", 463, 8, 91, 30, 9,
                 0xffff0005, 0x80000001
-        CONTROL "", 457, 72, 182, 346, 12,
+        CONTROL "", 457, 44, 89, 278, 11,
                 0xffff0006, 0x80020008
-        CONTROL "Model", 464, 12, 166, 54, 10,
+        CONTROL "Model", 464, 8, 78, 30, 9,
                 0xffff0005, 0x80000001
-        CONTROL "", 458, 72, 164, 218, 12,
+        CONTROL "", 458, 44, 76, 160, 11,
                 0xffff0006, 0x80020008
-        CONTROL "Temp", 465, 296, 166, 36, 10,
+        CONTROL "Temp", 465, 210, 78, 26, 9,
                 0xffff0005, 0x80000001
-        CONTROL "", 459, 338, 164, 80, 12,
+        CONTROL "", 459, 240, 76, 82, 11,
                 0xffff0006, 0x80020008
-        CONTROL "~R~esend thinking in history", 460, 14, 146, 300, 10,
+        CONTROL "~R~esend thinking in history", 460, 10, 66, 200, 10,
                 0xffff0003, 0x80030002
-        CONTROL "Available models", 466, 12, 128, 140, 10,
+        CONTROL "Available models", 466, 8, 52, 110, 9,
                 0xffff0005, 0x80000001
-        CONTROL "Refresh", 467, 328, 126, 90, 14,
+        CONTROL "Refresh", 467, 256, 51, 66, 12,
                 0xffff0003, 0x80020000
-        CONTROL "", 468, 12, 46, 406, 76,
+        CONTROL "", 468, 8, 30, 314, 20,
                 0xffff0007, 0x80220000
-        CONTROL "", 469, 12, 28, 406, 10,
+        CONTROL "", 469, 8, 19, 314, 9,
                 0xffff0005, 0x80000001
-        DEFPUSHBUTTON "OK", 1, 210, 6, 60, 16, 0x80030400
-        PUSHBUTTON "Cancel", 2, 280, 6, 60, 16, 0x80020000
+        DEFPUSHBUTTON "OK", 1, 120, 3, 51, 14, 0x80030400
+        PUSHBUTTON "Cancel", 2, 177, 3, 51, 14, 0x80020000
     END
 END
 
@@ -212,19 +221,19 @@ END
    call (bfDefault on Cancel). */
 DLGTEMPLATE 905 LOADONCALL MOVEABLE DISCARDABLE SEGALIGN
 BEGIN
-    DIALOG "Undo a file change", 905, 10, 10, 430, 250, 0x80000000, 0x00000003
+    DIALOG "Undo a file change", 905, 10, 10, 320, 84, 0x80000000, 0x00000003
     BEGIN
-        CONTROL "", 480, 12, 228, 406, 12,
+        CONTROL "", 480, 8, 72, 304, 9,
                 0xffff0005, 0x80000001
-        CONTROL "", 481, 12, 62, 406, 158,
+        CONTROL "", 481, 8, 20, 304, 50,
                 0xffff0007, 0x80230000
-        CONTROL "Restore", 482, 12, 36, 90, 16,
+        CONTROL "Restore", 482, 8, 3, 56, 14,
                 0xffff0003, 0x80030000
-        CONTROL "Discard", 483, 112, 36, 90, 16,
+        CONTROL "Discard", 483, 70, 3, 56, 14,
                 0xffff0003, 0x80020000
-        CONTROL "", 484, 12, 14, 330, 10,
+        CONTROL "", 484, 132, 6, 120, 9,
                 0xffff0005, 0x80000001
-        PUSHBUTTON "Cancel", 2, 350, 36, 68, 16, 0x80030400
+        PUSHBUTTON "Cancel", 2, 260, 3, 52, 14, 0x80030400
     END
 END
 
