@@ -5267,3 +5267,54 @@ entry fixes is that any of it had ever reached the box.
 - **Log vocabulary**: new first line `stamp M DD YYYY HH:MM:SS`.
 - **Verified**: chain pmdrv->pmlib->pmexe green; exe 1,520,035 bytes
   (was 1,523,329 -- a real link); both host gates unchanged (169/114).
+
+## The MLE speaks, and its two silences have shapes (2026-11-02)
+
+The stamped build (16:15:59) ran and talked for the first time, and
+the kmsg probe earned its keep: **WM_CHAR arrives at the pump** for
+the MLE's keys -- flags in mp1's low short (Shift 0x08, Ctrl 0x10,
+Alt 0x20, KeyUp 0x40 all observed in their proven positions, plus
+unexplored bits 0x04 and 0x80 that behave like gray/repeat markers),
+the character in mp2's low short, the BIOS scan in mp1's byte 4
+('g'=scan 0x22/char 0x67, 'h'=0x23/0x68: the extraction that has
+never lied). So the Enter gate, the Shift+Enter pass-through and the
+Alt chords all stand on the alive path.
+
+Two silences remain, and the log says exactly how each is shaped:
+
+- **`prompt probe export=0 query=5`** -- the MLE holds text and
+  measures it (QUERYTEXTLENGTH answers with the documented birth
+  limit in place: 5 after inserting "probe"), but exporting the
+  whole buffer over short text returns nothing. The samples never
+  ask that way: they query the length and export **exactly that
+  count** (sty_file.c:475 then :493, `cbExport = ulFileLen`, never
+  more). The read path now follows the sample literally: query, ask
+  for that many bytes, believe the count that comes back; a query of
+  zero means empty and skips the export entirely.
+- **No word wrap.** The era's lesson, from the toolkit's own
+  pmmle.h: text breaks at the **format rectangle**, not at the
+  window -- and the driver had handed the control 0x0 dimensions and
+  a hope. Birth now passes real ones (the group's measure less a
+  16-px over-counted gutter, the strip's height) with
+  MLFFMTRECT_MATCHWINDOW, and the first poll after the tiling runs
+  the full evidence probe: query the rectangle (passing *this file's*
+  struct to fill -- a pointer the control returns is never
+  dereferenced, whatever convention it uses), apply the documented
+  MLM_SETFORMATRECT with the measured size, re-query, and log the
+  raw wrap-state answer. The line reads
+  `prompt fmtrect q1=rc:WxH set=rc(WxH) q2=rc:WxH wrap=N`, and the
+  before/after pair is the control's own word on whether its wrap
+  engine has anything sane to break text at.
+
+EDM/2, the documentation the user pointed at, covers
+WinCreateWindow's classes (where MLECTLDATA comes from) but never
+documented the MLM_* messages -- the toolkit headers remain the
+authority, and this round stayed inside them.
+
+- **Log vocabulary**: `prompt probe ins= q= ie= exp= cb= text=`
+  replaces the old probe line (every return value visible);
+  `prompt fmtrect q1= set= q2= wrap=` (once per session, after the
+  first tiling); unused `gEntryFocusLogged` deleted with the focus
+  logging that went with the old editor.
+- **Verified**: pmdrv->pmlib->pmexe green, exe 1,520,692 bytes (was
+  1,520,035); host gates 169/114 unchanged.
