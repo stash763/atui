@@ -5224,3 +5224,46 @@ post-submit shrink happens at once, not a beat later.
   growth engine grows from the exported text either way, so a box
   that grows over a non-wrapping control will be visibly wrong in
   exactly that one way.
+
+## The stale-object round: the stamp, and the MLE's documented birth (2026-11-02)
+
+The MLE rebuild reached the box and changed nothing -- because it never
+left the library. The user's log showed the hand-drawn window's lines
+(`entry lineh` with no companion `prompt probe`, zero `kmsg`), and the
+linked executable answered the accusation with its size: 1,523,329
+bytes, *identical* to the previous round's build, timestamp updated by
+a relink of the stale object.
+
+The cause is the build chain, and the rule is now written where it
+lives: **`hardwspm.cpp` compiles only under `pmdrv`.** The `tvision`
+mode compiles the file with `ATUI_PM` undefined -- 3152 lines, 35
+included, no warnings: the empty translation unit that flattered the
+wrong chain -- and `pmlib` splices whatever `obj\pm\hardwspm.obj` the
+last `pmdrv` left. A driver change therefore means
+`pmdrv -> pmlib -> pmexe`, and a size that repeats between builds is
+the smoking gun of a relinked nothing.
+
+Two permanent answers came out of it:
+
+- **The log is stamped.** The first line of every run is now
+  `stamp <__DATE__> <__TIME__>` -- the compiler's own record of the
+  translation. Which binary produced which log stopped being a
+  question.
+- **The documented creation, from the EDM/2 reference the user
+  supplied.** WC_MLE takes MLECTLDATA as pCtrlData: import/export
+  format, the text limit before the window exists, and format-rect
+  flags. The driver passes it: MLFIE_CFTEXT, 4096 characters, and
+  MLFFMTRECT_MATCHWINDOW so the formatting rectangle follows the
+  window -- the wrap reflows with every tile of the strip. The struct
+  is transcribed from the toolkit's pmmle.h:70, not taken from
+  Watcom's header: Watcom's IPT is a bare LONG where IBM's is a pair
+  (pmwin.h:1870 vs pmmle.h), and the 4-byte shape would scatter every
+  field past it across the control's parse.
+
+The rebuild itself (word wrap style at birth, export-only reads, pump
+interception, kmsg probe) stands as journaled the same day; what this
+entry fixes is that any of it had ever reached the box.
+
+- **Log vocabulary**: new first line `stamp M DD YYYY HH:MM:SS`.
+- **Verified**: chain pmdrv->pmlib->pmexe green; exe 1,520,035 bytes
+  (was 1,523,329 -- a real link); both host gates unchanged (169/114).
