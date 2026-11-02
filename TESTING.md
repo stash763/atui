@@ -4959,3 +4959,34 @@ Measured on the new box the first evening:
 - `build.cmd` carries the new paths (WATCOM/INCLUDE/LIB on C:, `c:` +
   `cd \atui`), and `tools/atui-remote` roots at `c:\atui` (override with
   `ATUI_REMOTE_ROOT`).
+
+## Native chrome, first contact (2026-11-02): two measured gaps
+
+The chrome build reached the display with two defects, and the run log
+answered both without a second walk to the box.
+
+- **The entry field stopped at 32 characters.** That is PM's default text
+  limit for a fresh `WC_ENTRYFIELD`, not anything this code asked for;
+  the toolkit's own samples raise it with `EM_SETTEXTLIMIT`
+  (`samples/pm/dragdrop/dragdrop.c:619` lifts a path field to 256 by
+  `MPFROM2SHORT(n, 0), NULL`).  Matched, with the limit set to 1023 --
+  one short of what the Enter handler reads, so the field can never
+  hold more than a submit can carry.
+- **File-menu picks produced nothing at all.** The log was the proof:
+  a session of menu attempts with *zero* `command N ->` lines -- not a
+  wrong dialog, no delivery.  Menu `WM_COMMAND` goes to the frame's
+  **client** window, and the client is the group now; the case that
+  answers picks sat on what became the page, and `WinDefWindowProc`
+  eats what it is not asked about.  The `WM_COMMAND` case moved to the
+  group procedure, where PM actually sends it.
+
+While in the entry procedure: typed Alt chords are forwarded to the
+application exactly as the page forwarded them (the status line's
+Alt-H/Alt-X promises have always been keys, not menu clicks), so the
+field owning focus cannot swallow them.
+
+**Linking over a running session:** `atuipm.exe` cannot be replaced
+while it runs -- `E3008: cannot open atuipm.exe : Permission denied`
+from `pmexe` mode -- and there is no remote kill for a PM image.  The
+session has to be closed at the display first; the retry is a loop,
+not a walk.
