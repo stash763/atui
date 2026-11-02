@@ -90,6 +90,80 @@ void pmTranscriptPage( int direction );
    way the tvision intercept did while the prompt held the keys. */
 void pmToggleThinking( void );
 
+/* settings: the whole form as one struct in each direction.  The dialog
+    fills the values and pmSettingsApply() runs the tvision OK path --
+    clamps included, because an out-of-range or unparseable entry means
+    "unchanged" there and the native box keeps that promise.  Ranges
+    ride along for the hint texts; pmdlg.cpp cannot include the app's
+    headers across the library boundary. */
+typedef struct PmSettings
+    {
+    int  wheelLines, wheelMin, wheelMax;
+    int  requestMinutes, requestMin, requestMax;
+    int  permissionMode;         /* 0 ask_all, 1 exact, 2 agent */
+    int  agentAvailable;         /* 0: no agent radio, no judging fields */
+    int  judgeSeconds, judgeMin, judgeMax;
+    char judgeModel[64];
+    long commandTimeout, commandMin, commandMax;
+    } PmSettings;
+
+void pmSettingsSnapshot( PmSettings *out );
+void pmSettingsApply( const PmSettings *in );
+
+/* providers: the store, read and written by index (index identity is
+    the provider's name, re-resolved across add/remove exactly as
+    providerRowToIndex_ does for the tvision list).  The split of when
+    to persist mirrors the tvision dialog: field edits commit on OK,
+    New/Delete/Make-active and a model pick persist on the spot,
+    Refresh mutates the model list in memory only. */
+typedef struct PmProvider
+    {
+    char name[64];
+    char baseUrl[128];
+    char apiKey[64];
+    char model[128];
+    char temperature[16];        /* "%.2f" text; empty keeps the value */
+    int  resendThinking;
+    } PmProvider;
+
+int         pmProvCount( void );
+int         pmProvActive( void );            /* the active provider's index */
+const char *pmProvName( int index );         /* reused static string */
+void        pmProvGet( int index, PmProvider *out );
+void        pmProvSet( int index, const PmProvider *in );  /* in memory */
+void        pmProvSave( void );              /* settings::saveAll() */
+int         pmProvAdd( void );               /* commit first; new index */
+int         pmProvDelete( int index );       /* 0 = the last one, refused */
+void        pmProvSetActive( int index );    /* commit first; saves */
+int         pmProvModelCount( int index );
+const char *pmProvModelName( int index, int model );
+void        pmProvPickModel( int index, const char *model ); /* saves */
+/* Refresh is the tvision refreshModels(): the url/key as typed, the
+    store's list replaced with the answer, no save; modelWant is the
+    model field's text, kept as the chosen model when non-empty.
+    Returns the model count, or -1 with err filled. */
+int         pmProvRefresh( int index, const char *url, const char *key,
+                           const char *modelWant, char *err, int errLen );
+
+/* undo: the journal snapshot -- entries newest-first with interrupted
+    ones moved to the front, the tvision dialog's ordering -- rebuilt by
+    pmUndoCount(), which is also when the app may answer it.  Row
+    identity across the list stays what it was in tvision: the ordinal
+    the label starts with.  Restore keeps the permission policy on the
+    app's side of the seam: pmUndoNeedsConfirm() asks decide() the same
+    questions, pmUndoQuestion() is the text askYesNo_ showed, and
+    pmUndoRestore()/pmUndoDiscard() do the work and report through msg
+    (both also append to the transcript, as the tvision path did). */
+int          pmUndoCount( void );
+const char  *pmUndoLabel( int index );
+const char  *pmUndoTarget( int index );      /* full path, for questions */
+const char  *pmUndoStamp( int index );
+const char  *pmUndoHeader( void );           /* journal::describe() et al */
+int          pmUndoNeedsConfirm( int index );
+void         pmUndoQuestion( int index, char *buf, int bufLen );
+void         pmUndoRestore( int index, char *msg, int msgLen );
+void         pmUndoDiscard( int index, char *msg, int msgLen );
+
 } /* extern "C" */
 
 /* pmDialogsInstall() is defined by the driver's dialog unit (pmdlg.cpp) and

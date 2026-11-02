@@ -49,18 +49,24 @@ BEGIN
   END
 END
 
-/* The dialogs of the PM front (901 theme, 902 switch model), drawn by
+/* The dialogs of the PM front -- 901 theme, 902 switch model, 903
+   settings, 904 providers, 905 undo -- drawn by
    pmdlg.cpp and opened with WinDlgBox by these ids.  The dialect was
    measured on this box's RC/2: headerless, bare numerics, DLGTEMPLATE
    900.4 written from a probe of exactly this spelling (2026-10-31).  The
    numbers are PM's own, read from the box's headers, and they are not the
    Windows ones:
-     class atoms     Button 0xffff0003, Static 0xffff0005, ListBox 0xffff0007
+     class atoms     Button 0xffff0003, Static 0xffff0005, ListBox 0xffff0007,
+                     Entry 0xffff0006 (Watcom's WC_* numbers -- and they
+                     are exactly the ones 901 and 902 proved on the box for
+                     Button, Static and ListBox, which is the company its
+                     Entry keeps)
      WS_             VISIBLE 0x80000000, GROUP 0x10000, TABSTOP 0x20000
                      VSCROLL 0x200000 (from the toolkit's os2win.h -- the
                      Watcom copy does not carry the scroll pair at all)
      BS_             PUSHBUTTON 0, AUTOCHECKBOX 2, AUTORADIOBUTTON 4 (bit
                      fields, not Windows' IDs), DEFAULT 0x400
+     ES_             MARGIN 0x8, on every entry of 903/904
      SS_             TEXT 0x0001; DT_LEFT and DT_TOP are zero, so no style
                      word is written for a plain label beyond visibility
      frame controls  TITLEBAR 0x1, SYSMENU 0x2 -- two, no sizing border,
@@ -94,6 +100,131 @@ BEGIN
                 0xffff0007, 0x80230000
         DEFPUSHBUTTON "OK", 1, 140, 6, 51, 14, 0x80030400
         PUSHBUTTON "Cancel", 2, 200, 6, 51, 14, 0x80020000
+    END
+END
+
+/* 903 settings: one row per value, the hint column filled at runtime
+   with the live ranges (the numbers are the app's; the boxes only
+   display them).  The judging controls hide themselves when the build
+   has no agent, and the range note of the command timeout spells out
+   the one field where 0 is an answer. */
+DLGTEMPLATE 903 LOADONCALL MOVEABLE DISCARDABLE SEGALIGN
+BEGIN
+    DIALOG "Options - Settings", 903, 10, 10, 330, 230, 0x80000000, 0x00000003
+    BEGIN
+        CONTROL "Mouse wheel, lines/notch:", 430, 12, 208, 150, 10,
+                0xffff0005, 0x80000001
+        CONTROL "", 431, 170, 206, 50, 12,
+                0xffff0006, 0x80030008
+        CONTROL "", 441, 232, 208, 90, 10,
+                0xffff0005, 0x80000001
+        CONTROL "Request timeout, minutes:", 439, 12, 188, 150, 10,
+                0xffff0005, 0x80000001
+        CONTROL "", 432, 170, 186, 50, 12,
+                0xffff0006, 0x80020008
+        CONTROL "", 442, 232, 188, 90, 10,
+                0xffff0005, 0x80000001
+        CONTROL "Before running something:", 443, 12, 166, 200, 10,
+                0xffff0005, 0x80000001
+        CONTROL "Always ask before a tool runs (ask_all)", 433, 16, 150,
+                300, 10, 0xffff0003, 0x80030004
+        CONTROL "In-project work is fine, ask outside (exact)", 434, 16,
+                136, 300, 10, 0xffff0003, 0x80000004
+        CONTROL "A model judges what the facts cannot settle (agent)", 435,
+                16, 122, 300, 10, 0xffff0003, 0x80000004
+        CONTROL "Judging model:", 444, 12, 102, 110, 10,
+                0xffff0005, 0x80000001
+        CONTROL "", 436, 130, 100, 188, 12,
+                0xffff0006, 0x80020008
+        CONTROL "Judging seconds:", 445, 12, 82, 110, 10,
+                0xffff0005, 0x80000001
+        CONTROL "", 437, 130, 80, 40, 12,
+                0xffff0006, 0x80020008
+        CONTROL "", 446, 180, 82, 90, 10,
+                0xffff0005, 0x80000001
+        CONTROL "Command timeout, sec:", 447, 12, 62, 110, 10,
+                0xffff0005, 0x80000001
+        CONTROL "", 438, 130, 60, 50, 12,
+                0xffff0006, 0x80020008
+        CONTROL "", 448, 190, 62, 130, 10,
+                0xffff0005, 0x80000001
+        DEFPUSHBUTTON "OK", 1, 110, 20, 60, 16, 0x80030400
+        PUSHBUTTON "Cancel", 2, 180, 20, 60, 16, 0x80020000
+    END
+END
+
+/* 904 providers: the editor the tvision dialog is -- provider list and
+   its three store verbs at the top, the five fields and the resend
+   checkbox in the middle, the model list with Refresh and a status line
+   below.  New/Delete/Make-active persist on the spot and Refresh does
+   not, so the button rows are the semantics; pmdlg.cpp says which. */
+DLGTEMPLATE 904 LOADONCALL MOVEABLE DISCARDABLE SEGALIGN
+BEGIN
+    DIALOG "Options - Providers", 904, 10, 10, 430, 346, 0x80000000, 0x00000003
+    BEGIN
+        CONTROL "Pick a provider or a model to switch it now; OK saves the fields.", 450, 12, 330, 406, 10,
+                0xffff0005, 0x80000001
+        CONTROL "", 451, 12, 238, 190, 86,
+                0xffff0007, 0x80230000
+        CONTROL "New", 452, 212, 304, 96, 16,
+                0xffff0003, 0x80030000
+        CONTROL "Delete", 453, 316, 304, 96, 16,
+                0xffff0003, 0x80020000
+        CONTROL "Make active", 454, 212, 280, 110, 16,
+                0xffff0003, 0x80020000
+        CONTROL "Name", 461, 12, 220, 54, 10,
+                0xffff0005, 0x80000001
+        CONTROL "", 455, 72, 218, 346, 12,
+                0xffff0006, 0x80030008
+        CONTROL "Url", 462, 12, 202, 54, 10,
+                0xffff0005, 0x80000001
+        CONTROL "", 456, 72, 200, 346, 12,
+                0xffff0006, 0x80020008
+        CONTROL "Key", 463, 12, 184, 54, 10,
+                0xffff0005, 0x80000001
+        CONTROL "", 457, 72, 182, 346, 12,
+                0xffff0006, 0x80020008
+        CONTROL "Model", 464, 12, 166, 54, 10,
+                0xffff0005, 0x80000001
+        CONTROL "", 458, 72, 164, 218, 12,
+                0xffff0006, 0x80020008
+        CONTROL "Temp", 465, 296, 166, 36, 10,
+                0xffff0005, 0x80000001
+        CONTROL "", 459, 338, 164, 80, 12,
+                0xffff0006, 0x80020008
+        CONTROL "~R~esend thinking in history", 460, 14, 146, 300, 10,
+                0xffff0003, 0x80030002
+        CONTROL "Available models", 466, 12, 128, 140, 10,
+                0xffff0005, 0x80000001
+        CONTROL "Refresh", 467, 328, 126, 90, 14,
+                0xffff0003, 0x80020000
+        CONTROL "", 468, 12, 46, 406, 76,
+                0xffff0007, 0x80220000
+        CONTROL "", 469, 12, 28, 406, 10,
+                0xffff0005, 0x80000001
+        DEFPUSHBUTTON "OK", 1, 210, 6, 60, 16, 0x80030400
+        PUSHBUTTON "Cancel", 2, 280, 6, 60, 16, 0x80020000
+    END
+END
+
+/* 905 undo: the list and its two verbs; Cancel is the default because
+   the whole box is a question about a file, and tvision made the same
+   call (bfDefault on Cancel). */
+DLGTEMPLATE 905 LOADONCALL MOVEABLE DISCARDABLE SEGALIGN
+BEGIN
+    DIALOG "Undo a file change", 905, 10, 10, 430, 250, 0x80000000, 0x00000003
+    BEGIN
+        CONTROL "", 480, 12, 228, 406, 12,
+                0xffff0005, 0x80000001
+        CONTROL "", 481, 12, 62, 406, 158,
+                0xffff0007, 0x80230000
+        CONTROL "Restore", 482, 12, 36, 90, 16,
+                0xffff0003, 0x80030000
+        CONTROL "Discard", 483, 112, 36, 90, 16,
+                0xffff0003, 0x80020000
+        CONTROL "", 484, 12, 14, 330, 10,
+                0xffff0005, 0x80000001
+        PUSHBUTTON "Cancel", 2, 350, 36, 68, 16, 0x80030400
     END
 END
 

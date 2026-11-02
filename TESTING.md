@@ -5044,3 +5044,61 @@ changed class.
   (birth), `entry linecount try` / `entry linecount refused rc=N`,
   `entry lines N h H`, `entry vover N h H`.  `chrome entry H status H`
   now reports the one-line baseline the growth adds to.
+
+## Growth rides the beat, not the mail; and the dialogs went native (2026-11-02)
+
+The box spoke once about the MLE and then never again: the session that
+typed long prompts into it logged `entry lineh 20` at birth and not one
+`MLN_CHANGE`, `linecount`, `vover` or `entry submit` line afterwards.
+Notifications, both planned growth signals, delivered nothing across a
+whole session of typing.  The entry from before this one describes that
+design; this entry replaces its engine.
+
+- **Growth is a poll, not a post.** `waitForEvents` already beats every
+  10-20 ms next to `pmSyncScrollBar`; `pmPromptPoll` joined it.  One
+  proven message per beat (`MLM_QUERYTEXTLENGTH` -- cheap) and a width
+  compare; when either changed, the text exports through the proven
+  `MLM_SETIMPORTEXPORT`/`MLM_EXPORT` pair and the driver counts the
+  wrapped lines itself: split at hard newlines, greedy word-wrap with
+  `GpiQueryTabbedTextExtent` on the control's own PS and font, width
+  minus a generous 16 px gutter so a miscount errs tall (an MLE taller
+  than its text is invisible; one shorter hides the caret).  Words
+  longer than the line split as the MLE splits them.  The notification
+  handler stays -- a signal that arrives makes the poll act at once --
+  but nothing waits for mail anymore.  `MLM_QUERYLINECOUNT` left with
+  its unproven argument form; the forensic `entry linecount try` probe
+  it came with left too.
+- **Shift+Enter is the newline; Enter is the submit.** The Enter
+  intercept got the one exception asked for: `kKcShift` (0x0008, from
+  the same proven family as the `kKcAlt` whose chords forwarded and the
+  `kKcKeyUp` whose filtering work) chains, and the MLE inserts its own
+  hard newline.  Submitted text keeps its newlines -- the CR/LF export
+  hands back normalize to bare LF, and the model sees the paragraphs
+  the user typed.  The clear stopped being destroy-and-recreate:
+  mcispy's `MLM_DELETE` of 0..65536 (mcispy.c:227) empties the buffer
+  with focus and caret where they were.
+- **Settings, Providers and Undo are native now** (903/904/905): rc
+  templates in the measured dialect plus the first entry fields this rc
+  has (atom 0xffff0006, Watcom's `WC_ENTRYFIELD`, whose numbering the
+  proven Button/Static/ListBox atoms corroborate), dialog procedures in
+  pmdlg.cpp, and the whole data path on the app side of the seam --
+  `PmSettings`/`PmProvider` structs, the tvision OK/commit semantics
+  (clamps, empty-means-unchanged, the persist-on-the-spot verbs), the
+  undo snapshot rebuilt app-side with `decide()` keeping the policy and
+  PM's own `WinMessageBox` asking the questions `askYesNo_` used to.
+  List selections act on any notice the listboxes send, re-checking
+  `LM_QUERYSELECTION` idempotently -- after the MLE's silence, no
+  notification code is trusted and no unproven constant is named;
+  identity still travels as tvision's does, in the row text.  The kit
+  table has no zeros left.
+- **Provider dialog, one divergence**: it never opens with a network
+  fetch.  The tvision box auto-refreshed the model list when the active
+  provider had none -- a blocked dialog-open on an endpoint the PM box
+  has not yet proven reachable.  The Refresh button is right there.
+- **Build facts**: `PZ` is not a Watcom type (`PSZ` is, and the STRREC
+  copy uses it); Watcom has `GpiQueryTabbedTextExtent` but no
+  `GpiQueryTextExtent`, and `DID_UPDATE` and the `CN_*` codes appear in
+  neither header set.  rc wrote 6 demand objects -- menu plus five
+  templates -- without complaint.
+- **Log vocabulary**: `entry grow len N lines L h H` (throttled, 16);
+  the linecount pair is gone.

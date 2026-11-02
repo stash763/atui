@@ -3489,6 +3489,13 @@ void ProvidersDialog::handleEvent( TEvent& event )
 // Options > Providers: configure the remote endpoints (see ProvidersDialog).
 void showProvidersDialog_()
 {
+    // A windowed front with the native editor shows that instead; the
+    // tvision box stays the reference implementation for every front
+    // without the twin.  The post-dialog refresh lives in the caller
+    // (TApp::showProviders), so both paths end the same way.
+    if( gPmDialogs && gPmDialogs->providers && gPmDialogs->providers() )
+        return;
+
     ProvidersDialog *d = new ProvidersDialog();
     d->editing = (int) atui::net::activeProviderIndex();
     d->loadProviderList();
@@ -3509,6 +3516,201 @@ void TApp::showProviders()
     refreshSwitchModelMenu_();
     updateProviderStatus_();
     focusInput_();
+}
+
+/* The providers editor's data path for a native PM twin (pmdialogs.h).
+   The split of who persists when mirrors the tvision handlers exactly:
+   field edits land only when OK commits (pmProvSet + pmProvSave),
+   New/Delete/Make-active and a model pick persist on the spot, and
+   Refresh touches memory only.  commitFields' semantics are copied
+   whole -- an empty name or url means "leave it alone", clearing the
+   key is a real answer, temperature is text parsed with atof, and an
+   unlisted model id appends itself to the list on the way in. */
+static void copyField_( const std::string &src, char *dst, std::size_t cap )
+{
+    if( cap == 0 )
+        return;
+    std::size_t n = src.size();
+    if( n > cap - 1 )
+        n = cap - 1;
+    if( n > 0 )
+        memcpy( dst, src.data(), n );
+    dst[n] = '\0';
+}
+
+extern "C" int pmProvCount( void )
+{
+    return (int) atui::net::providers().size();
+}
+
+extern "C" int pmProvActive( void )
+{
+    return (int) atui::net::activeProviderIndex();
+}
+
+extern "C" const char *pmProvName( int index )
+{
+    static std::string s;
+    std::vector<atui::net::ProviderSettings> &all = atui::net::providers();
+    if( index < 0 || (std::size_t) index >= all.size() )
+        return "";
+    s = all[index].name;
+    return s.c_str();
+}
+
+extern "C" void pmProvGet( int index, PmProvider *out )
+{
+    if( out == 0 )
+        return;
+    memset( out, 0, sizeof( *out ) );
+    std::vector<atui::net::ProviderSettings> &all = atui::net::providers();
+    if( index < 0 || (std::size_t) index >= all.size() )
+        return;
+    const atui::net::ProviderSettings &p = all[index];
+    copyField_( p.name, out->name, sizeof( out->name ) );
+    copyField_( p.baseUrl, out->baseUrl, sizeof( out->baseUrl ) );
+    copyField_( p.apiKey, out->apiKey, sizeof( out->apiKey ) );
+    copyField_( p.model, out->model, sizeof( out->model ) );
+    std::snprintf( out->temperature, sizeof( out->temperature ), "%.2f",
+                   p.temperature );
+    out->resendThinking = p.thinkingResend ? 1 : 0;
+}
+
+extern "C" void pmProvSet( int index, const PmProvider *in )
+{
+    if( in == 0 )
+        return;
+    std::vector<atui::net::ProviderSettings> &all = atui::net::providers();
+    if( all.empty() )
+        return;
+    if( index < 0 || (std::size_t) index >= all.size() )
+        index = (int) atui::net::activeProviderIndex();
+    atui::net::ProviderSettings &p = all[index];
+
+    const std::string n( in->name ), u( in->baseUrl ), k( in->apiKey ),
+                      m( in->model ), tv( in->temperature );
+    if( !n.empty() && n != p.name )
+    {
+        if( atui::net::findProvider( n ) )
+            p.name = atui::net::uniqueProviderName( n );
+        else
+            p.name = n;
+    }
+    if( !u.empty() )
+        p.baseUrl = u;
+    p.apiKey = k;                       // clearing the key is allowed
+    atui::net::selectModel( p, m );
+    if( !tv.empty() )
+    {
+        double x = std::atof( tv.c_str() );
+        if( x >= 0.0 )
+            p.temperature = x;
+    }
+    p.thinkingResend = ( in->resendThinking & 0x0001 ) != 0;
+}
+
+extern "C" void pmProvSave( void )
+{
+    atui::settings::saveAll();
+}
+
+extern "C" int pmProvAdd( void )
+{
+    const std::size_t i = atui::net::addProvider( "provider" );
+    atui::settings::saveAll();
+    return (int) i;
+}
+
+extern "C" int pmProvDelete( int index )
+{
+    std::vector<atui::net::ProviderSettings> &all = atui::net::providers();
+    if( index < 0 || (std::size_t) index >= (int) all.size() )
+        return 0;
+    if( !atui::net::removeProvider( (std::size_t) index ) )
+        return 0;                       // the last one refuses
+    atui::settings::saveAll();
+    return 1;
+}
+
+extern "C" void pmProvSetActive( int index )
+{
+    std::vector<atui::net::ProviderSettings> &all = atui::net::providers();
+    if( index < 0 || (std::size_t) index >= all.size() )
+        return;
+    atui::net::setActiveProvider( (std::size_t) index );
+    atui::settings::saveAll();
+}
+
+extern "C" int pmProvModelCount( int index )
+{
+    std::vector<atui::net::ProviderSettings> &all = atui::net::providers();
+    if( index < 0 || (std::size_t) index >= all.size() )
+        return 0;
+    return (int) all[index].models.size();
+}
+
+extern "C" const char *pmProvModelName( int index, int model )
+{
+    static std::string s;
+    std::vector<atui::net::ProviderSettings> &all = atui::net::providers();
+    if( index < 0 || (std::size_t) index >= all.size() )
+        return "";
+    const std::vector<std::string> &m = all[index].models;
+    if( model < 0 || (std::size_t) model >= m.size() )
+        return "";
+    s = atui::tui::foldForTerminal( m[model] );  // the rows are folded,
+    return s.c_str();                             // pick returns them folded
+}
+
+extern "C" void pmProvPickModel( int index, const char *model )
+{
+    if( model == 0 || model[0] == '\0' )
+        return;
+    std::vector<atui::net::ProviderSettings> &all = atui::net::providers();
+    if( index < 0 || (std::size_t) index >= all.size() )
+        return;
+    atui::net::selectModel( all[index], std::string( model ) );
+    atui::settings::saveAll();
+}
+
+extern "C" int pmProvRefresh( int index, const char *url, const char *key,
+                              const char *modelWant, char *err, int errLen )
+{
+    std::string u( url != 0 ? url : "" );
+    while( !u.empty()
+           && ( u[u.size()-1] == ' ' || u[u.size()-1] == '\r'
+                || u[u.size()-1] == '\n' ) )
+        u.erase( u.size() - 1 );
+    const std::string k( key != 0 ? key : "" );
+    std::vector<std::string> ids;
+    std::string why;
+    bool fetched = false;
+#ifdef ATUI_HAVE_NETWORK
+    fetched = atui::net::fetchModels( u, k, ids, why );
+#endif
+    if( !fetched )
+    {
+        if( err != 0 && errLen > 0 )
+        {
+#ifdef ATUI_HAVE_NETWORK
+            const std::string m = "Refresh failed: " + why;
+#else
+            const std::string m = "Model list needs a network build.";
+#endif
+            copyField_( m, err, (std::size_t) errLen );
+        }
+        return -1;
+    }
+    std::vector<atui::net::ProviderSettings> &all = atui::net::providers();
+    if( index >= 0 && (std::size_t) index < all.size() )
+    {
+        atui::net::ProviderSettings &p = all[index];
+        const std::string want( modelWant != 0 ? modelWant : "" );
+        if( !want.empty() )
+            p.model = want;             // keep what the field says
+        atui::net::setModels( p, ids );
+    }
+    return (int) ids.size();
 }
 
 
@@ -3742,6 +3944,11 @@ long SettingsDialog::longIn( TInputLine *line, long keep )
 // the largest accepted value rather than silently meaning something else.
 void TApp::showSettings()
 {
+    // A windowed front with the native form shows that instead; the OK
+    // path ran whole inside the seam it called (pmSettingsApply).
+    if( gPmDialogs && gPmDialogs->settings && gPmDialogs->settings() )
+        return;
+
     SettingsDialog *d = new SettingsDialog;
     if( execDialog_( d ) == cmOK )
     {
@@ -3787,6 +3994,70 @@ void TApp::showSettings()
         atui::settings::saveAll();
     }
     destroy( d );
+}
+
+/* The settings form's data path for a native PM twin (pmdialogs.h).
+   The dialog owns the tvision numberIn quirk -- an entry with no
+   digits in it means "unchanged", and it answers by handing back the
+   snapshot value it was given -- so what arrives here is always a
+   number and the work is exactly the tvision OK path: clamp, assign,
+   map the radio, and skip the judging fields when there is no agent.
+   Note 0 in commandTimeout is still a real answer ("no limit"); only
+   digits decide, and the dialog kept the snapshot when there were
+   none.  The status line and the save finish the path, as the tvision
+   OK button did. */
+extern "C" void pmSettingsSnapshot( PmSettings *out )
+{
+    if( out == 0 )
+        return;
+    out->wheelLines = atui::settings::wheelLines();
+    out->wheelMin = atui::settings::kMinWheelLines;
+    out->wheelMax = atui::settings::kMaxWheelLines;
+    out->requestMinutes = atui::net::requestMinutes();
+    out->requestMin = atui::net::kMinRequestMinutes;
+    out->requestMax = atui::net::kMaxRequestMinutes;
+    out->permissionMode = (int) atui::tools::permissionMode();
+    out->agentAvailable = atui::tools::agentModeAvailable() ? 1 : 0;
+    out->judgeSeconds = atui::tools::judgeSeconds();
+    out->judgeMin = atui::tools::kMinJudgeSeconds;
+    out->judgeMax = atui::tools::kMaxJudgeSeconds;
+    copyField_( atui::tools::judgeModelOverride(), out->judgeModel,
+                sizeof( out->judgeModel ) );
+    out->commandTimeout = atui::tools::commandTimeoutSeconds();
+    out->commandMin = atui::tools::kMinCommandTimeout;
+    out->commandMax = atui::tools::kMaxCommandTimeout;
+}
+
+extern "C" void pmSettingsApply( const PmSettings *in )
+{
+    if( in == 0 )
+        return;
+    atui::settings::wheelLines() =
+        atui::settings::clampWheelLines( in->wheelLines );
+    atui::net::requestMinutes() =
+        atui::net::clampRequestMinutes( in->requestMinutes );
+    atui::tools::permissionMode() =
+        ( in->permissionMode == 1 )
+            ? atui::tools::pmExact
+            : ( in->permissionMode == 2 )
+                  ? atui::tools::pmAgent
+                  : atui::tools::pmAskAll;
+    if( in->agentAvailable )
+    {
+        const std::string model( in->judgeModel );
+        const size_t from = model.find_first_not_of( " \t" );
+        const size_t to   = model.find_last_not_of( " \t" );
+        atui::tools::judgeModelOverride() =
+            ( from == std::string::npos )
+                ? std::string()
+                : model.substr( from, to - from + 1 );
+        atui::tools::judgeSeconds() = atui::tools::clampJudgeSeconds(
+            in->judgeSeconds );
+    }
+    atui::tools::commandTimeoutSeconds() =
+        atui::tools::clampCommandTimeout( in->commandTimeout );
+    updatePermissionStatus_();
+    atui::settings::saveAll();
 }
 
 // --- undo a file change --------------------------------------------------------
@@ -4161,10 +4432,157 @@ void UndoDialog::handleEvent( TEvent& event )
 
 void showUndoDialog_()
 {
+    // A windowed front with the native list shows that instead.
+    if( gPmDialogs && gPmDialogs->undo && gPmDialogs->undo() )
+        return;
+
     UndoDialog *d = new UndoDialog();
     execDialog_( d );
     TObject::destroy( d );
     focusInput_();
+}
+
+/* The undo list's data path for a native PM twin (pmdialogs.h).  The
+   snapshot -- newest first, interrupted entries moved to the front,
+   the tvision dialog's ordering -- belongs to the app, because Entry
+   is not a type the dialog may see across the library boundary; its
+   rows carry identity the same way tvision's do, as the ordinal that
+   opens the label text.  Restore keeps the policy on this side:
+   pmUndoNeedsConfirm() asks tools::decide() exactly what
+   restoreEntry_ asks before it reaches askYesNo_, and the question
+   text is the same -- the native box renders it as a PM question.
+   Both actions append to the transcript, as the tvision path did, and
+   both leave the snapshot for the caller to rebuild with another
+   pmUndoCount(). */
+static std::vector<atui::core::journal::Entry> g_undoSnap_;
+
+extern "C" int pmUndoCount( void )
+{
+    g_undoSnap_.clear();
+    std::vector<atui::core::journal::Entry> items;
+    atui::core::journal::entries( items );
+    std::vector<atui::core::journal::Entry> ordered;
+    for( std::size_t i = 0; i < items.size(); ++i )
+        if( items[i].pending )
+            ordered.push_back( items[i] );
+    for( std::size_t i = 0; i < items.size(); ++i )
+        if( !items[i].pending )
+            ordered.push_back( items[i] );
+    g_undoSnap_.swap( ordered );
+    return (int) g_undoSnap_.size();
+}
+
+static const atui::core::journal::Entry *undoAt_( int index )
+{
+    if( index < 0 || (std::size_t) index >= g_undoSnap_.size() )
+        return 0;
+    return &g_undoSnap_[index];
+}
+
+extern "C" const char *pmUndoLabel( int index )
+{
+    static std::string s;
+    const atui::core::journal::Entry *e = undoAt_( index );
+    if( e == 0 )
+        return "";
+    s = undoRowLabel_( *e, index );
+    return s.c_str();
+}
+
+extern "C" const char *pmUndoTarget( int index )
+{
+    static std::string s;
+    const atui::core::journal::Entry *e = undoAt_( index );
+    if( e == 0 )
+        return "";
+    s = e->target;
+    return s.c_str();
+}
+
+extern "C" const char *pmUndoStamp( int index )
+{
+    static std::string s;
+    const atui::core::journal::Entry *e = undoAt_( index );
+    if( e == 0 )
+        return "";
+    s = e->stamp;
+    return s.c_str();
+}
+
+extern "C" const char *pmUndoHeader( void )
+{
+    static std::string s;
+    if( !atui::core::journal::enabled() )
+    {
+        s = "The undo journal is switched off ([undo] enabled), so atui "
+            "holds no copies of anything.";
+        return s.c_str();
+    }
+    s = atui::core::journal::describe();
+    return s.c_str();
+}
+
+extern "C" int pmUndoNeedsConfirm( int index )
+{
+    const atui::core::journal::Entry *e = undoAt_( index );
+    if( e == 0 )
+        return 0;
+    const atui::tools::Permission p = atui::tools::decide(
+        atui::tools::PermissionSubject( atui::tools::psPath, e->target ) );
+    return ( p.outcome != atui::tools::poRun
+             && p.rung != atui::tools::prNoUndoNet ) ? 1 : 0;
+}
+
+extern "C" void pmUndoQuestion( int index, char *buf, int bufLen )
+{
+    if( buf == 0 || bufLen <= 0 )
+        return;
+    buf[0] = '\0';
+    const atui::core::journal::Entry *e = undoAt_( index );
+    if( e == 0 )
+        return;
+    const atui::tools::Permission p = atui::tools::decide(
+        atui::tools::PermissionSubject( atui::tools::psPath, e->target ) );
+    atui::core::Fmt q;
+    q << "Restore '" << e->target << "'?\n\nIt held these bytes on "
+      << e->stamp << ", and atui's rules would not overwrite the file "
+      << "without asking a person:\n\n  " << atui::tools::decisionNote( p )
+      << "\n\nPut the saved copy back?";
+    copyField_( q.str(), buf, (std::size_t) bufLen );
+}
+
+extern "C" void pmUndoRestore( int index, char *msg, int msgLen )
+{
+    if( msg != 0 && msgLen > 0 )
+        msg[0] = '\0';
+    const atui::core::journal::Entry *e = undoAt_( index );
+    if( e == 0 )
+        return;
+    std::string err;
+    std::string out;
+    if( !atui::core::journal::restore( *e, err ) )
+        out = "Not restored: " + err;
+    else
+        out = "restored " + undoPath_( e->target );
+    if( g_transcript_ != 0 )
+        g_transcript_->appendStatus( out );
+    copyField_( out, msg, (std::size_t) msgLen );
+}
+
+extern "C" void pmUndoDiscard( int index, char *msg, int msgLen )
+{
+    if( msg != 0 && msgLen > 0 )
+        msg[0] = '\0';
+    const atui::core::journal::Entry *e = undoAt_( index );
+    if( e == 0 )
+        return;
+    std::string err;
+    std::string out;
+    if( !atui::core::journal::discard( *e, err ) )
+        out = "Not discarded: " + err;
+    else
+        out = "Discarded the copy of " + undoPath_( e->target );
+    copyField_( out, msg, (std::size_t) msgLen );
 }
 
 // Once per run, deal with writes the last run did not finish.
