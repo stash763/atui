@@ -1664,7 +1664,7 @@ exactly one screen model in the system -- the emulator's. Nothing about the
 existing workflow changes; `run` names the bridge instead of `./build/atui`.
 
     # one time: credentials in the environment, out of the shell history
-    export ATUI_REMOTE_HOST=10.196.88.129 ATUI_REMOTE_USER=atui ATUI_REMOTE_PASSWORD=...
+    export ATUI_REMOTE_HOST=10.196.88.148 ATUI_REMOTE_USER=atui ATUI_REMOTE_PASSWORD=...
 
     tui-test run --cols 80 --rows 25 -- tools/atui-remote
     tui-test expect text "ATUI-SCREEN-MARKER"   # asserts against the remote screen
@@ -4932,3 +4932,30 @@ block.
 `tools/os2/pmhello.*` -- the probe that proved the toolchain trio -- has been
 deleted now that the driver carries all of it; its lessons stand in the section
 above and in `hardwspm.cpp`'s comments.
+
+## The box moved (2026-11-01): 10.196.88.129/P4/D: is 10.196.88.148/GPCVM/C:
+
+The OS/2 machine changed hosts mid-project. Nothing about the software moved
+with it -- same OS/2 version, same toolkit, same Open Watcom 1.9 -- so this is
+a facts section about addresses and paths, and the older entries above keep
+their `d:\atui` spellings because they are what was measured where they were
+measured.
+
+Measured on the new box the first evening:
+
+- Telnet and the jailed FTP answer at **10.196.88.148**, same user and
+  password, and the jail now roots at **C:\atui** (the tree was copied over;
+  `atuipm.exe` and its 4:13p run log arrived in it intact).
+- The prompt reads `[<GPCVM>-C:\]` and the login drive is C:.
+- `WATCOM=C:\WATCOM` in the login environment, and its `binp` is on the PATH:
+  `wcc386 /?` answers "Open Watcom C32 ... Version 1.9" from a bare telnet
+  command. `lib386\os2` holds os2386.lib and tcpip32.lib; **stubl.lib is
+  absent, exactly as on the old box, where the link has always warned about
+  it and succeeded anyway.**
+- **D: is gone**, so the Warp Toolkit's RC.EXE is gone with it. What remains
+  is the system RC/2, `c:\os2\rc.exe`, "Version 4.00.011 Oct 10 2000";
+  `build.cmd` now names it, and the first `pmexe` run there is the dialect
+  test for atuipm.rc's headerless numerics.
+- `build.cmd` carries the new paths (WATCOM/INCLUDE/LIB on C:, `c:` +
+  `cd \atui`), and `tools/atui-remote` roots at `c:\atui` (override with
+  `ATUI_REMOTE_ROOT`).

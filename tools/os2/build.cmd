@@ -88,21 +88,20 @@ rem  build has finished by watching for output, so a build with every byte
 rem  redirected is indistinguishable from a hung one.
 rem ====================================================================
 
-set WATCOM=D:\WATCOM
+set WATCOM=C:\WATCOM
 rem INCLUDE is set rather than extended.  The login environment also names the
 rem IBM toolkit, which has its own sys\socket.h with different declarations;
 rem mixing them is silent and fatal, so nothing outside Watcom's own two
 rem directories is allowed to be found by accident.
-set INCLUDE=D:\WATCOM\H\OS2;D:\WATCOM\H
-set LIB=D:\WATCOM\LIB386\OS2
+set INCLUDE=C:\WATCOM\H\OS2;C:\WATCOM\H
+set LIB=C:\WATCOM\LIB386\OS2
 
-rem Switch drives first.  A telnet login starts on C: (the prompt is
-rem [<P4>-C:\]), where `cd \atui` is C:\atui: SYS0003, and the rest of the batch
-rem then runs in C:\ and reports failures that have nothing to do with the
-rem sources.  The drive letter is the one thing this file cannot learn by
-rem looking around, so it is written down; REMOTE_ROOT in tools/atui-remote says
-rem the same thing.
-d:
+rem Switch drives first.  The tree lives on C: (the box's prompt reads
+rem [<GPCVM>-C:\] and the root is C:\atui); the cd is here so the batch lands
+rem in the project whatever drive the login happened to start on.  The drive
+rem letter is the one thing this file cannot learn by looking around, so it is
+rem written down; REMOTE_ROOT in tools/atui-remote says the same thing.
+c:
 cd \atui
 if not exist obj mkdir obj
 if not exist obj\tv mkdir obj\tv
@@ -169,12 +168,14 @@ rem #include <os2.h> arrives too late to do anything -- which is exactly the
 rem situation once atui's sources and tvision's driver both want the kernel.
 set WPP=wpp386 @defs.rsp
 
-rem The resource compiler, named by path because this box carries several
-rem RC.EXE copies (C:\OS2 and an IBMCPP one among them) and the version
-rem question is not worth answering twice: this is the Warp 4 Toolkit copy
-rem that appended the probe's resource segment successfully (TESTING.md,
-rem "PM probe: green").
-set RCPROG=d:\IBMDev\DCOS2012003\TOOLKITS\WARPTLKT\TOOLKIT\BIN\RC.EXE
+rem The resource compiler.  The Warp 4 Toolkit copy the first PM probe was
+rem verified against lived on D:, and the whole drive is gone: the box moved
+rem (2026-11-01, now 10.196.88.148 with the tree on C:\atui) and what remains
+rem is the system RC/2 4.00.011 (its own /? says so), which understands the
+rem headerless numeric dialect atuipm.rc is written in.  The pmexe mode is the
+rem proof of that dialect; the toolkit copy stays the reference if it ever
+rem disagrees.
+set RCPROG=c:\os2\rc.exe
 
 set RC=0
 

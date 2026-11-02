@@ -345,6 +345,7 @@ void pickSwitchModel_( int index );
 void showSwitchModelDialog_();
 void showUndoDialog_();
 void maybeRecoverInterruptedWrites_();
+ushort execDialog_( TView *d );
 
 #ifdef ATUI_HAVE_NETWORK
 // --- tool approval (the turn asks, this thread answers) ----------------------
@@ -534,9 +535,7 @@ int showApprovalDialog_( const atui::tools::ApprovalRef &req )
     // atui does, and it is what makes the box clickable - a view executed on
     // TProgram::application gets keyboard but its mouse hit-testing is off by the
     // desktop's own frame, so clicks land nowhere.
-    const ushort r = TProgram::deskTop
-        ? TProgram::deskTop->execView( d )
-        : TProgram::application->execView( d );
+    const ushort r = execDialog_( d );
     TObject::destroy( d );
     // Coming down: redrawing what was under the box is tvision's job and it does
     // it -- into the driver's shadow, where anything matching what the shadow
@@ -549,6 +548,34 @@ int showApprovalDialog_( const atui::tools::ApprovalRef &req )
 }
 
 #endif // ATUI_HAVE_NETWORK
+
+// Every modal tvision dialog in the program runs through here, and for
+// the windowed front that is the one moment the keyboard changes hands.
+// The entry field owns it on the main screen; while a dialog drawn in
+// the page is running, its keys belong to the page window -- PM sends
+// WM_CHAR to the focus window, and a dialog whose window does not have
+// the focus is a picture of a dialog.  The driver counts, so a dialog
+// that opens a dialog leaves the keys parked on the page until the last
+// one closes, and returns them to the entry field exactly once.
+// Native PM dialogs never appear here: WinDlgBox runs its own modal loop
+// with its own focus, and the driver counts those through pmNoteDialog.
+ushort execDialog_( TView *d )
+{
+    const bool guard = THardwareInfo::windowed()
+                       && gPmDialogs != 0 && gPmDialogs->keysToPage != 0;
+    if( guard )
+        gPmDialogs->keysToPage( 1 );
+    // The desktop, not the application group: every dialog here is run
+    // on the desktop so its mouse hit-testing lands (see the note in
+    // showApprovalDialog_), falling back to the application only when
+    // there is no desktop yet.
+    const ushort answer = TProgram::deskTop
+        ? TProgram::deskTop->execView( d )
+        : TProgram::application->execView( d );
+    if( guard )
+        gPmDialogs->keysToPage( 0 );
+    return answer;
+}
 
 // The chat transcript. Replaces the plain TTerminal so we can render the
 // model's answers as styled markdown (headings, emphasis, syntax-highlighted
@@ -1956,6 +1983,20 @@ TDeskTop *TApp::initDeskTop( TRect r )
 
 TStatusLine *initStatusLine_( TRect r )
 {
+    // The windowed front has a status line already -- a native PM button
+    // along the bottom of the window, fed through the kit's status entry.
+    // Drawing a second one inside the grid would be tvision's idea of a
+    // status row on a screen that already owns the platform's, and every
+    // row it takes is a row the transcript loses.  The two update calls
+    // still run: on a windowed front they compose the same texts and hand
+    // them to the native line, which needs them as badly as the items did.
+    if( THardwareInfo::windowed() )
+    {
+        updateProviderStatus_();
+        updatePermissionStatus_();
+        return 0;
+    }
+
     r.a.y = r.b.y - 1;
     // The first item is the active provider/model; its text is rewritten by
     // updateProviderStatus_() whenever a provider or model is switched. (It is
@@ -2052,31 +2093,40 @@ TDeskTop *initDeskTop_( TRect r )
     // exactly ONE column wide: TScrollBar decides its orientation from its width
     // (size.x == 1 means vertical), so a wider box is drawn - and clicked - as a
     // horizontal bar. Its own drawing already includes both end arrows.
+    // The windowed front reserves neither the column nor the bottom row:
+    // the native scrollbar stands outside the page and the native entry
+    // field below it, so the desktop here is nothing but transcript. The
+    // two views that wore those parts on a terminal are not created at
+    // all -- which is the end of the "additional bar" too: what is never
+    // drawn cannot ghost, and no hide-state can leak.
+    const bool win = THardwareInfo::windowed();
     TRect sbRect( x2 - 1, panelTop_( y1 ), x2, y2 - 1 );
-    TRect trRect( x1, panelTop_( y1 ), x2 - 1, y2 - 1 );
+    TRect trRect( x1, panelTop_( y1 ), win ? x2 : x2 - 1,
+                  win ? y2 : y2 - 1 );
     TRect inRect( x1, y2 - 2, x2, y2 - 1 );
 
-    g_vBar_ = new TScrollBar( sbRect );
-    g_vBar_->options &= ~ofSelectable;  // mouse-driven only; keep keyboard focus
-                                        // on the prompt (see TranscriptView)
-    d->insert( g_vBar_ );
-    // The windowed front has the real thing: PM's native scrollbar stands
-    // immediately outside this column, and two bars side by side is the
-    // "additional bar" the screenshots showed. The view stays alive --
-    // the scroller's plumbing and the layout's reserved column are
-    // unchanged -- it simply never draws here.
-    if( THardwareInfo::windowed() )
-        g_vBar_->setState( sfVisible, False );
+    if( !win )
+    {
+        g_vBar_ = new TScrollBar( sbRect );
+        g_vBar_->options &= ~ofSelectable;  // mouse-driven only; keep keyboard focus
+                                            // on the prompt (see TranscriptView)
+        d->insert( g_vBar_ );
+    }
 
+    // The scroller plumbing tolerates a null bar the way TScroller reads
+    // it: every use of hScrollBar/vScrollBar in tscrolle.cpp tests first.
     g_transcript_ = new TranscriptView( trRect, g_vBar_ );
     g_transcript_->hideCursor();
     g_transcript_->setThinkingExpandAll( atui::settings::thinkingExpandAll() );
     d->insert( g_transcript_ );
 
-    // Inserted last, but it is the only selectable view in the desktop, so it
-    // receives the desktop's initial keyboard focus.
-    g_prompt_ = new PromptInput( inRect );
-    d->insert( g_prompt_ );
+    if( !win )
+    {
+        // Inserted last, but it is the only selectable view in the
+        // desktop, so it receives the desktop's initial keyboard focus.
+        g_prompt_ = new PromptInput( inRect );
+        d->insert( g_prompt_ );
+    }
 
     // Size the two panels to each other (prompt starts as separator + 1 row).
     relayoutPanels_();
@@ -2117,7 +2167,7 @@ TDeskTop *initDeskTop_( TRect r )
 // text or the desktop size changes.
 void relayoutPanels_()
 {
-    if( g_transcript_ == 0 || g_prompt_ == 0 ) return;
+    if( g_transcript_ == 0 ) return;
 
     // Sync with the real deskTop so a terminal resize is picked up the next
     // time we run (the periodic timer calls this even when idle).
@@ -2128,6 +2178,24 @@ void relayoutPanels_()
         {
             g_dX1 = 0; g_dY1 = 0; g_dX2 = ex; g_dY2 = ey;
         }
+    }
+
+    // The windowed front has nothing to split: the native entry field and
+    // status line live outside the grid, the native bar outside the page,
+    // and the desktop is transcript from edge to edge.  What is left of
+    // "layout" is following the desktop to a new size -- which arrives
+    // here through the heartbeat after TProgram::resizeScreen moved it --
+    // and re-wrapping the transcript to the new width, the same call the
+    // terminal front makes when its window changes.
+    if( THardwareInfo::windowed() )
+    {
+        const TRect full( g_dX1, panelTop_( g_dY1 ), g_dX2, g_dY2 );
+        if( !( g_transcript_->getBounds() == full ) )
+        {
+            g_transcript_->setBounds( full );
+            g_transcript_->reflow();
+        }
+        return;
     }
 
     const int x1 = g_dX1, y1 = g_dY1, x2 = g_dX2, y2 = g_dY2;
@@ -2475,13 +2543,17 @@ void pumpChat_()
 #endif // ATUI_HAVE_NETWORK
 }
 
-void processMessage_()
+// Submit one message: everything between "the text is ready" and "the
+// thread is running".  Reached from the tvision prompt's Enter and from
+// the windowed front's native entry field (pmPromptSubmit below takes the
+// field's text).  Answering true/false -- taken, or refused and why not
+// visible here -- is what lets each front keep its own promise about the
+// text: the tvision prompt keeps it on a refusal, the native field has
+// already let go of it and the transcript says "(busy)" in its place.
+bool submitMessage_( const String &msg )
 {
-    if( g_prompt_ == 0 || g_transcript_ == 0 ) return;
-
-    std::string text = g_prompt_->text();
-    String msg( text.c_str() );
-    if( msg.size() <= 0 ) return;
+    if( g_transcript_ == 0 ) return false;
+    if( msg.size() <= 0 ) return false;
 
 #ifdef ATUI_HAVE_NETWORK
     if( !g_turn_ )
@@ -2495,9 +2567,9 @@ void processMessage_()
     if( g_turnThread_.running() )
     {
         // Busy: a turn is in flight.  Refusing beats interleaving two conversations,
-        // and the text stays in the prompt for the next try.
+        // and on the terminal front the text stays in the prompt for the next try.
         g_transcript_->appendStatus( "(busy, try again)" );
-        return;
+        return false;
     }
 
     // A turn reads its endpoint when it starts, and where the platform has threads it
@@ -2509,7 +2581,7 @@ void processMessage_()
     if( atui::net::providerSettings().baseUrl.empty() )
     {
         g_transcript_->appendStatus( "(no provider configured - Alt-P)" );
-        return;
+        return false;
     }
 
     // The turn carries the conversation itself now (only rounds the model actually
@@ -2531,7 +2603,7 @@ void processMessage_()
     if( !threaded && !g_turn_->start( message, &g_queue_ ) )
     {
         g_transcript_->appendStatus( "(busy, try again)" );
-        return;
+        return false;
     }
 
     appendUser_( msg.c_str() );
@@ -2540,11 +2612,57 @@ void processMessage_()
     appendUser_( msg.c_str() );
     appendReply_( reply.c_str() );
 #endif
+    return true;
+}
+
+// Enter in the tvision prompt: take the field's text and submit it, then
+// collapse the prompt for the next input.  A refusal (false) leaves the
+// text where it is, the way it always has: what was not asked can be
+// asked again.  The native front clears its entry field as the Enter goes
+// down (hardwspm.cpp), so this clearing half belongs to the front that
+// still has a view to clear.
+void processMessage_()
+{
+    if( g_prompt_ == 0 ) return;
+
+    std::string text = g_prompt_->text();
+    String msg( text.c_str() );
+    if( msg.size() <= 0 ) return;
+
+    if( !submitMessage_( msg ) )
+        return;
 
     // Clear the prompt (collapses it back to a single row) for the next input.
     g_prompt_->clear();
     relayoutPanels_();
     g_prompt_->drawView();
+}
+
+/* The windowed front's native entry field (src/tui/pmdialogs.h), three
+   keys' worth: the driver's subclassed entry procedure recognizes them
+   and hands the meanings here, because the application owns the answers
+   -- what a submit does, which way PgUp pages, what Ctrl-T folds.  They
+   are defined in every build, the way pmTranscriptExtent and
+   pmTranscriptJump are: in a console build they are three functions
+   nobody calls, and the link never notices them. */
+extern "C" void pmPromptSubmit( const char *text )
+{
+    if( text == 0 )
+        return;
+    const String msg( text );
+    submitMessage_( msg );
+}
+
+extern "C" void pmTranscriptPage( int direction )
+{
+    if( g_transcript_ != 0 )
+        g_transcript_->pageBy( direction );
+}
+
+extern "C" void pmToggleThinking( void )
+{
+    if( g_transcript_ != 0 )
+        g_transcript_->toggleThinkingAll();
 }
 
 // The About box's words, one copy for both tellers: the tvision box below
@@ -2586,7 +2704,7 @@ void TApp::showHelp()
              << ") btn y=" << b->origin.y << "\n";
     g_keylog.flush();
 #endif
-    deskTop->execView( d );
+    execDialog_( d );
     destroy( d );
 #ifdef ATUI_DEBUG_KEYS
     g_keylog << "showHelp: done\n";
@@ -2722,15 +2840,55 @@ void refreshSwitchModelMenu_()
 // Status line: what a message will actually be sent to. TStatusLine lays its
 // items out from their text on every draw, so rewriting the string and
 // redrawing is enough.
-void updateProviderStatus_()
+// The two status texts, composed apart from who wears them: the tvision
+// status line puts each in its own item, and the windowed front concatenates
+// them onto its native one.  Composing once keeps the two fronts from ever
+// disagreeing about what the status says.
+static std::string providerStatusText_()
 {
-    if( g_statusProvider_ == 0 ) return;
     const atui::net::ProviderSettings &p = atui::net::providerSettings();
     // The model id usually comes from the server's /models, and a server that writes
     // UTF-8 should not be able to put a broken glyph in the one place that is always
     // on screen.
-    const std::string text = atui::tui::foldForTerminal(
+    return atui::tui::foldForTerminal(
         " " + menuText_( p.name, 16 ) + " | " + menuText_( p.model, 24 ) + " " );
+}
+
+static std::string permissionStatusText_()
+{
+    const atui::tools::PermissionMode mode = atui::tools::permissionMode();
+    std::string text = " perm: asks first ";
+    if( mode == atui::tools::pmExact )
+        text = " perm: in-project ok, asks outside ";
+    else if( mode == atui::tools::pmAgent )
+        text = atui::tools::permissionJudge()
+            ? " perm: in-project ok, a model checks the rest "
+            : " perm: in-project ok, asks about commands ";
+    return text;
+}
+
+// The native status line (the kit's, src/tui/pmdialogs.h): one string, the
+// two texts and the one hint that survives the native menu bar.  The menu
+// owns the Alt chords now, so this says the one thing the menu cannot:
+// which key folds the thinking blocks.
+static void pushNativeStatus_()
+{
+    if( gPmDialogs == 0 || gPmDialogs->status == 0 )
+        return;
+    const std::string line = providerStatusText_() + permissionStatusText_()
+                           + " Ctrl-T thinking";
+    gPmDialogs->status( line.c_str() );
+}
+
+void updateProviderStatus_()
+{
+    const std::string text = providerStatusText_();
+    if( THardwareInfo::windowed() )
+    {
+        pushNativeStatus_();
+        return;
+    }
+    if( g_statusProvider_ == 0 ) return;
     delete[] g_statusProvider_->text;
     g_statusProvider_->text = newStr( text.c_str() );
     if( TProgram::statusLine ) TProgram::statusLine->drawView();
@@ -2742,15 +2900,13 @@ void updateProviderStatus_()
 // actually happen, which is being asked.
 void updatePermissionStatus_()
 {
+    const std::string text = permissionStatusText_();
+    if( THardwareInfo::windowed() )
+    {
+        pushNativeStatus_();
+        return;
+    }
     if( g_statusPermission_ == 0 ) return;
-    const atui::tools::PermissionMode mode = atui::tools::permissionMode();
-    std::string text = " perm: asks first ";
-    if( mode == atui::tools::pmExact )
-        text = " perm: in-project ok, asks outside ";
-    else if( mode == atui::tools::pmAgent )
-        text = atui::tools::permissionJudge()
-            ? " perm: in-project ok, a model checks the rest "
-            : " perm: in-project ok, asks about commands ";
     delete[] g_statusPermission_->text;
     g_statusPermission_->text = newStr( text.c_str() );
     if( TProgram::statusLine ) TProgram::statusLine->drawView();
@@ -2856,7 +3012,7 @@ void showSwitchModelDialog_()
                             cmCancel, bfNormal ) );
     d->select();    // the list gets the focus: arrows, then Space or Enter
 
-    if( TProgram::deskTop->execView( d ) == cmOK )
+    if( execDialog_( d ) == cmOK )
     {
         ushort which = 0xFFFF;
         list->getData( &which );
@@ -3339,7 +3495,7 @@ void showProvidersDialog_()
     d->loadFields();
     if( atui::net::providerSettings().models.empty() ) d->refreshModels();
 
-    if( TProgram::deskTop->execView( d ) == cmOK )
+    if( execDialog_( d ) == cmOK )
     {
         d->commitFields();
         atui::settings::saveAll();
@@ -3387,7 +3543,7 @@ void TApp::showTheme()
     d->insert( ok );
     d->insert( cancel );
 
-    if( deskTop->execView( d ) == cmOK )
+    if( execDialog_( d ) == cmOK )
     {
         ushort chosen = 0;
         pick->getData( &chosen );
@@ -3587,7 +3743,7 @@ long SettingsDialog::longIn( TInputLine *line, long keep )
 void TApp::showSettings()
 {
     SettingsDialog *d = new SettingsDialog;
-    if( deskTop->execView( d ) == cmOK )
+    if( execDialog_( d ) == cmOK )
     {
         atui::settings::wheelLines() = atui::settings::clampWheelLines(
             SettingsDialog::numberIn( d->wheel, atui::settings::wheelLines() ) );
@@ -3753,9 +3909,7 @@ ushort showModalBox_( const std::string &title, const std::string &body,
         x = (short) ( x + 13 );
     }
 
-    const ushort r = TProgram::deskTop
-        ? TProgram::deskTop->execView( d )
-        : TProgram::application->execView( d );
+    const ushort r = execDialog_( d );
     TObject::destroy( d );
     return r;
 }
@@ -4008,8 +4162,7 @@ void UndoDialog::handleEvent( TEvent& event )
 void showUndoDialog_()
 {
     UndoDialog *d = new UndoDialog();
-    TProgram::deskTop ? TProgram::deskTop->execView( d )
-                      : TProgram::application->execView( d );
+    execDialog_( d );
     TObject::destroy( d );
     focusInput_();
 }
@@ -4148,6 +4301,13 @@ int run_app()
             g_prompt_->setText( g_startupMessage );
             g_prompt_->drawView();
             processMessage_();
+        }
+        else if( THardwareInfo::windowed() )
+        {
+            // The windowed front has no prompt view to fill -- but the
+            // entry field's submit path is open, and it means exactly
+            // this: the Enter key, pressed from the command line.
+            pmPromptSubmit( g_startupMessage.c_str() );
         }
         g_startupMessage.clear();
     }

@@ -7,7 +7,7 @@ DOS and other serial/console sessions tomorrow. tui-test already renders a
 terminal, waits on it, searches it and clicks it, so the bridge is a telnet
 client that runs as the program tui-test starts:
 
-    tui-test run --cols 80 --rows 25 -- tools/atui-remote --host 10.196.88.129
+    tui-test run --cols 80 --rows 25 -- tools/atui-remote --host 10.196.88.148
 
 Every tui-test verb (text, find, expect, cells, key, type, resize, screenshot)
 then acts on the remote screen, and there is still only one screen model in the
@@ -1428,7 +1428,7 @@ def cmd_get(args):
 # The target reports its own status by writing a marker into the log; the exit
 # code of this command is that status, so `atui-remote build && ...` behaves.
 
-REMOTE_ROOT = "d:\\atui"
+REMOTE_ROOT = os.environ.get("ATUI_REMOTE_ROOT", "c:\\atui")
 MANIFEST_NAME = ".atui-sync.json"
 BUILD_RC_MARK = "ATUI-BUILD-RC="
 BUILD_ID_MARK = "ATUI-BUILD-ID="
@@ -1730,8 +1730,14 @@ def cmd_build(args):
     # out its deadline over an empty id.  A space before the `&&` would become
     # part of the value, so there is none.
     nonce = "%04x" % (int.from_bytes(os.urandom(2), "big"))
-    command = "d: && cd %s && set ATUI_BUILD_ID=%s&& %s %s" % (
-        args.remote_root, nonce, args.batch, args.batch_args)
+    # The drive letter comes from the root (the box moved to C: on 2026-11-01
+    # and a written-down `d:` silently ended the && chain before the batch --
+    # no log, no nonce, an hour of polling), and the login still needs it:
+    # `cd C:\atui` from another drive changes that drive's directory but does
+    # not switch to it, and build.cmd would then resolve from the wrong tree.
+    drive = args.remote_root[:1].lower()
+    command = "%s: && cd %s && set ATUI_BUILD_ID=%s&& %s %s" % (
+        drive, args.remote_root, nonce, args.batch, args.batch_args)
     if len(command) > 300:
         warn("build: command is %d characters; the target's command processor "
              "silently drops lines past about 315" % len(command))
@@ -1917,7 +1923,7 @@ def build_parser():
 
     q = sub.add_parser("probe", help="ask a real target the port's questions")
     add_common(q, defaults=False)
-    q.add_argument("--probe-file", default="d:\\atui\\atui-esc.bin")
+    q.add_argument("--probe-file", default="c:\\atui\\atui-esc.bin")
 
     u = sub.add_parser("put", help="FTP one file to the target")
     add_common(u, defaults=False)

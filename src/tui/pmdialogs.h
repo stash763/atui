@@ -33,6 +33,24 @@ struct PmDialogs
     int (*settings)( void );
     int (*providers)( void );
     int (*undo)( void );
+
+    /* The two the window's chrome asks of the driver -- not dialogs, but
+       the same one-pointer seam and the same reason: the implementation
+       needs PM, and the caller is compiled for every front.
+
+       status: replaces the tvision status line on the windowed front. The
+       application composes the whole line (" provider | model  perm: ...")
+       and the driver hands it to the native status window; every other
+       front keeps drawing its own.
+
+       keysToPage: the keyboard's traffic light. With the native entry
+       field holding focus, a tvision modal dialog (the approval box, the
+       providers editor while its kit field is still null) would starve --
+       its keys belong to the page window then. on=1 parks focus on the
+       page, on=0 hands it back to the entry field; nested modals nest the
+       call, the driver counts. */
+    void (*status)( const char *text );
+    void (*keysToPage)( int on );
 };
 
 extern const PmDialogs *gPmDialogs;   // null until the PM driver installs one
@@ -57,6 +75,20 @@ int          pmModelCount( void );
 const char  *pmModelLabel( int index );
 int          pmModelActive( void );
 void         pmModelChosen( int index );
+
+/* prompt: the native entry field's Enter key. The driver reads the
+   field, clears it, and hands the text here -- pmPromptSubmit is what
+   the tvision prompt's Enter did (submitMessage_), on the pump's own
+   thread, while the application waits for its next event. */
+void pmPromptSubmit( const char *text );
+
+/* transcript: PgUp/PgDn rolled or typed while the entry field holds the
+   keyboard belong to the transcript; direction -1 pages up, +1 down. */
+void pmTranscriptPage( int direction );
+
+/* Ctrl-T with the entry field focused: the thinking blocks toggle, the
+   way the tvision intercept did while the prompt held the keys. */
+void pmToggleThinking( void );
 
 } /* extern "C" */
 
