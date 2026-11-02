@@ -4990,3 +4990,57 @@ while it runs -- `E3008: cannot open atuipm.exe : Permission denied`
 from `pmexe` mode -- and there is no remote kill for a PM image.  The
 session has to be closed at the display first; the retry is a loop,
 not a walk.
+
+## The prompt wraps: entry field becomes an MLE (2026-11-02)
+
+Asks from the display: a prompt longer than the 1023 just raised to
+still wasn't enough -- 4k for now -- and it should word wrap and grow
+while typing.  A `WC_ENTRYFIELD` is a single line by construction; the
+growing wrapped box the asks describe is `WC_MLE`, so the prompt
+changed class.
+
+- **Where the API facts live.** Watcom's own `pmwin.h` carries the
+  whole MLE message set (`MLM_*`, lines 1761-1816) -- the toolkit's
+  `pmwin.h` carries none, and the toolkit's `pmmle.h` carries styles,
+  `MLN_*` and the `MLEOVERFLOW` struct but no messages.  Watcom has no
+  header for the struct, so it is copied into hardwspm.cpp with its
+  provenance.  The toolkit book (`book/pm3.inf`) lists
+  `MLM_QUERYLINECOUNT` (returns `ulLines`) and `MLM_SETTEXTLIMIT`
+  (returns `ulFit`) in its table of contents, bodies compressed with
+  the rest of the book -- those two argument forms stay undocumented
+  even on the mirrors, and the code treats them as such.
+- **Proven surface, from the controls sample**: creation
+  (`sty_dlg.c:1705`, `WC_MLE` with `MLS_WORDWRAP`), and the read path
+  `MLM_QUERYTEXTLENGTH` / `MLM_SETIMPORTEXPORT` / `MLM_EXPORT`
+  (`sty_file.c:475-501`).  Enter stops at the submit and never reaches
+  the MLE's newline-insertion; CR/LF pasted in become spaces.  There
+  is no proven clear message (`MLM_CLEAR`'s form is not in the
+  mirrors), so a submit clears by destroying and re-creating the
+  control -- once per message, with the calls that just worked.
+- **Growth takes two signals.** `MLN_CHANGE` re-asks
+  `MLM_QUERYLINECOUNT` and the strip becomes one line plus a measured
+  line height per extra wrapped line; the MLE's own
+  `MLN_OVERFLOW`/`MLN_PIXVERTOVERFLOW` notifications -- mp2 pointing
+  at `MLEOVERFLOW`, the control stating in pixels how far its wrapped
+  text stands short -- grow it regardless.  The line count is believed
+  only when sane (1..512), and a forensic log line goes down before
+  the first query: if this PM's MLE dislikes the `MPVOID` shorthand
+  the log's last word names it, and deleting that one call leaves the
+  overflow notifications growing the strip alone.  The line height is
+  measured, not assumed: `WinGetPS` on the control plus
+  `GpiQueryFontMetrics`, whose `lMaxBaselineExt` is that window's own
+  font's cell.
+- **Cell arithmetic survives**: the group's `WM_SIZE` computes rows
+  from the prompt's wanted height, fixes the page at exactly
+  rows x cell, and hands the pixel remainder to the prompt -- a
+  slightly taller prompt is invisible, a dead gray band is not.
+  Growth clamps so the page keeps `kMinRows`; frame snap and group
+  adjust read the same (dynamic) `gEntryH`, so all three agree.
+- **Dialog status, as code**: the kit's native dialogs are about,
+  theme and switch-model; Settings, Providers and Undo carry kit
+  fields of 0 and draw their tvision twins by design until that phase
+  lands.
+- **Log vocabulary added**: `entry limit 4096 fit N`, `entry lineh N`
+  (birth), `entry linecount try` / `entry linecount refused rc=N`,
+  `entry lines N h H`, `entry vover N h H`.  `chrome entry H status H`
+  now reports the one-line baseline the growth adds to.
