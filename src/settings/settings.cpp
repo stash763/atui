@@ -141,6 +141,8 @@ bool loadAll()
                                        thinkingExpandAll() );
     wheelLines() = clampWheelLines( ini.getInt( "ui", "wheel_lines",
                                                 wheelLines() ) );
+    promptLines() = clampPromptLines( ini.getInt( "ui", "prompt_lines",
+                                                  promptLines() ) );
     return had;
 }
 
@@ -160,6 +162,19 @@ int clampWheelLines( int lines )
 {
     if( lines < kMinWheelLines ) return kMinWheelLines;
     if( lines > kMaxWheelLines ) return kMaxWheelLines;
+    return lines;
+}
+
+int &promptLines()
+{
+    static int lines = kDefaultPromptLines;
+    return lines;
+}
+
+int clampPromptLines( int lines )
+{
+    if( lines < kMinPromptLines ) return kMinPromptLines;
+    if( lines > kMaxPromptLines ) return kMaxPromptLines;
     return lines;
 }
 
@@ -212,6 +227,7 @@ bool saveAll()
     ini.setString( "ui", "theme", tui::themeName( tui::currentTheme() ) );
     ini.setBool( "ui", "thinking_expand", thinkingExpandAll() );
     ini.setInt( "ui", "wheel_lines", wheelLines() );
+    ini.setInt( "ui", "prompt_lines", promptLines() );
 
     return ini.save();
 }

@@ -92,6 +92,31 @@ int &wheelLines();
 // a config file, from a dialog, from an edit by hand - comes through here.
 int clampWheelLines( int lines );
 
+// Supported range for promptLines(): the height cap, in wrapped lines, of the
+// PM front's prompt strip. The strip grows with the text being typed and stops
+// here; below the cap nothing ever scrolls, above it the text box scrolls to
+// follow the caret. Two lines is the smallest strip that can show a wrap
+// happening, twenty is taller than the prompt on any machine this ships to
+// should ever be.
+const int kMinPromptLines = 2;
+const int kMaxPromptLines = 20;
+
+// What the prompt caps at on a fresh install: ten lines keeps a normal
+// multi-paragraph message fully visible while leaving most of a 768-pixel
+// screen to the transcript.
+const int kDefaultPromptLines = 10;
+
+// How tall the prompt strip may grow, in wrapped lines. Backed by a
+// process-wide value; seeded by loadAll() from [ui] prompt_lines, written by
+// saveAll(), and set by Options > Settings. The PM driver reads it on every
+// resize of the strip, so a change applies as soon as the text reflows.
+// Reference it as a variable.
+int &promptLines();
+
+// Same clamping discipline as the wheel: a value from a hand-edited config
+// file or a mistyped dialog entry should still leave a usable window.
+int clampPromptLines( int lines );
+
 } // namespace atui::settings
 } // namespace atui
 

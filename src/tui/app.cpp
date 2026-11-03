@@ -4026,6 +4026,9 @@ extern "C" void pmSettingsSnapshot( PmSettings *out )
     out->commandTimeout = atui::tools::commandTimeoutSeconds();
     out->commandMin = atui::tools::kMinCommandTimeout;
     out->commandMax = atui::tools::kMaxCommandTimeout;
+    out->promptLines = atui::settings::promptLines();
+    out->promptMin = atui::settings::kMinPromptLines;
+    out->promptMax = atui::settings::kMaxPromptLines;
 }
 
 extern "C" void pmSettingsApply( const PmSettings *in )
@@ -4056,8 +4059,19 @@ extern "C" void pmSettingsApply( const PmSettings *in )
     }
     atui::tools::commandTimeoutSeconds() =
         atui::tools::clampCommandTimeout( in->commandTimeout );
+    atui::settings::promptLines() =
+        atui::settings::clampPromptLines( in->promptLines );
     updatePermissionStatus_();
     atui::settings::saveAll();
+}
+
+// The PM driver's one-way question during growth: how tall may the prompt
+// strip get. Read on every resize, so a change in Options lands with the
+// next reflow; the driver clamps again because it will not trust a number
+// it did not measure. (Named and linked exactly like the transcript pair.)
+extern "C" int pmKitPromptLines( void )
+{
+    return atui::settings::promptLines();
 }
 
 // --- undo a file change --------------------------------------------------------

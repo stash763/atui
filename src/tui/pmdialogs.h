@@ -105,6 +105,7 @@ typedef struct PmSettings
     int  judgeSeconds, judgeMin, judgeMax;
     char judgeModel[64];
     long commandTimeout, commandMin, commandMax;
+    int  promptLines, promptMin, promptMax;  /* prompt strip height cap */
     } PmSettings;
 
 void pmSettingsSnapshot( PmSettings *out );

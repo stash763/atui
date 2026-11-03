@@ -5401,3 +5401,38 @@ them.
   kill/ps from a text session).
 - **Verified**: pmdrv/pmlib green; pmexe pending the closed window;
   host gates 169/114.
+
+## Nothing scrolls below the cap: predictive growth and a setting (2026-11-03)
+
+The 23:15 build wrapped at full width -- the format rectangle held --
+but the user reported the first line disappearing while typing,
+findable again with the up arrow.  That is the MLE's native caret
+scroll showing through the growth engine's lag: the poll counts every
+~100 ms, a keystroke wraps sooner, the control scrolls the instant the
+caret lands in content the window has no room for, and it does not
+undo that scroll when the window grows a beat later.  Growth that
+arrives after the character is growth in the wrong tense.
+
+- **Fix, in the tense**: pmPromptPreage_ runs the sizing engine on
+  the future -- the exported text plus one stand-in character, 'x'
+  for a printable key and '\n' for Shift+Enter -- before the pump
+  dispatches it.  If that count wants a taller strip, the strip is
+  already taller when the character lands, so the caret never lacks
+  room and nothing ever scrolls below the cap.  Backspace and paste
+  stay the poll's business to correct.
+- **The cap, a setting** (user: "stays visible up to say 10 lines,
+  then begin scrolling.  This number should be configurable"):
+  settings [ui] prompt_lines, 2..20, default 10, same accessor and
+  clamp discipline as wheel_lines; Settings dialog 903 grows a row
+  (130 -> 143; entry 440, label 450, note 449); the driver reads it
+  through pmKitPromptLines on every grow and clamps again -- the
+  promised scrolling past the cap is then the MLE's own, native.
+  gPromptLines at or above the cap skips the keystroke path on one
+  integer compare, so typing a full 4k message past the cap costs
+  nothing per keystroke.
+- **Link-recipe lesson**: pmlib splices tvision objects only; an
+  app-side change (app.cpp, settings.cpp) needs obj\at rebuilt --
+  `build one src\tui\app.cpp` -- because pmexe links obj\at\*.obj.
+  E2028 on the new seam symbol was the whole diagnosis.
+- **Verified**: host gates 169/114; pmdrv/pmlib/pmexe green; the box
+  display awaits the wrap-then-scroll test and the new Settings row.
