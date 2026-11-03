@@ -5363,3 +5363,41 @@ ENABLEREFRESH, and imports through MLM_SETIMPORTEXPORT + MLM_IMPORT
   read `prompt probe` counts from `exp=`, not `cb=`, on this box.
 - **Verified**: pmdrv->pmlib->pmexe green; exe 1,520,154 bytes;
   host gates 169/114.
+
+## Screenshot10: the prompt grew, and the MLE told us where it wraps (2026-11-02)
+
+First successful round trip of the whole loop: the stamped run grew
+the strip (`prompt grow lines 2 h 48`, page `resize 80x25 ->
+80x23`), and screenshot10.jpg showed exactly what was still wrong --
+inside the grown strip the MLE wrapped every few characters into a
+scrolled single-column stack, complete with its own little vertical
+scrollbar, every line above the caret vanished from view.
+
+That is the format rectangle stating its terms. Text breaks at the
+rectangle, not the window; with no creation data the rectangle is
+born from the 0x0 window and stays a stub no matter how the tiling
+resizes the control. MLECTLDATA -- the creation structure the
+WinCreateWindow class reference names, transcribed in IBM's layout --
+is put back with the measured width (group less a 16px over-counted
+gutter) and MLFFMTRECT_MATCHWINDOW so the rectangle follows every
+tile. Two verdicts come from the same evidence:
+
+- removing MLECTLDATA last round was wrong for the wrong reason: the
+  no-wrap report it replaced was really the export bug wearing a
+  wrap costume -- that birth had a real rectangle, and only the
+  strip's failure to grow hid it;
+- the pm/controls sample is right that no message choreography is
+  needed -- its wrapping MLE ships with just MLS_WORDWRAP -- but its
+  window was never born at 0x0; ours is, and creation data is the
+  documented way to speak to that moment.
+
+Colors come along from the sample too (sty_init.c:159: CLR_BLACK on
+CLR_WHITE via MLM_SETTEXTCOLOR/SETBACKCOLOR, plain LONG messages):
+the MLE's own defaults are a black box, and the user has now seen
+them.
+
+- **Operational**: the link step refuses a running exe -- closing
+  the window at the display is the unlock (the box has no usable
+  kill/ps from a text session).
+- **Verified**: pmdrv/pmlib green; pmexe pending the closed window;
+  host gates 169/114.
