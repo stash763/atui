@@ -5436,3 +5436,44 @@ arrives after the character is growth in the wrong tense.
   E2028 on the new seam symbol was the whole diagnosis.
 - **Verified**: host gates 169/114; pmdrv/pmlib/pmexe green; the box
   display awaits the wrap-then-scroll test and the new Settings row.
+
+## The read that lied empty: one arming, two witnesses (2026-11-03)
+
+The predictive build reached FIVE lines on the box -- the tense was
+right -- but the user report was "works okay up to 3, then new lines
+do not expand, and if you keep going it resets to 1 line".  The log
+told the whole story in three acts:
+
+- `prompt grow lines 5 / 4 / 5`: the poll recounted the text as it
+  IS and shrank back the line the keystroke path had grown for the
+  text as it is ABOUT TO BE.  Two honest counters, one strip,
+  oscillation at every line boundary.
+- `prompt grow lines 1 h 28` with no `entry submit` anywhere: a read
+  answered EMPTY with five lines in the box, and the engine
+  obediently collapsed.  Worse, every read after it answered empty
+  too -- no further growth happened for the rest of the session.
+  The keystroke path had turned ~10 reads/second into one per key,
+  each re-arming MLM_SETIMPORTEXPORT; under that flood the control's
+  read path died and stayed dead.
+- three is what the user counted while the strip thrashed 4-5-4 --
+  reports describe what a screen does, not what a log says.
+
+- **One arming**: MLM_SETIMPORTEXPORT names the buffer once at birth
+  (the probe call is the natural moment) and every later read is
+  just QUERYTEXTLENGTH + EXPORT.  This is the samples' own usage --
+  their chunked export loops arm once and export repeatedly -- and
+  it takes the per-read arming out of the poison question entirely.
+- **Two witnesses**: pmPromptApply_ grows on the first sighting and
+  shrinks only on two consecutive equal smaller counts
+  (`prompt hold %ld saw %ld` marks the wait).  A lone lie cannot
+  collapse the box; a real backspace still lands inside ~160 ms.
+  The poll's hash gate now carries `&& gPromptSaw == 0` -- unchanged
+  text must still be counted a second time or the witness never
+  appears.
+- **Suspect reads**: an empty read while gPromptLen knows of text
+  sets gPromptSuspect -- the keystroke path stops reading (the 100 ms
+  poll, the rate that served every earlier session, keeps looking),
+  and `prompt empty read at len` logs the box's own words.
+- **Operational**: app-side files unchanged; pmdrv/pmlib/pmexe only.
+- **Verified**: pmdrv/pmlib/pmexe green, atuipm.exe 12:44p; the box
+  display holds the verdict.
