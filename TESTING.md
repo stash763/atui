@@ -5318,3 +5318,48 @@ authority, and this round stayed inside them.
   logging that went with the old editor.
 - **Verified**: pmdrv->pmlib->pmexe green, exe 1,520,692 bytes (was
   1,520,035); host gates 169/114 unchanged.
+
+## Crash forensics and the controls sample's verdict (2026-11-02)
+
+The 17:02:34 build died between `wait #1` and `wait #2`, and the
+inquest was short: the only new code that ran in that interval was
+the first poll's format-rectangle probe -- MLM_QUERYFORMATRECT,
+MLM_SETFORMATRECT, MLM_QUERYWRAP, three messages whose NUMBERS the
+headers carry and whose PARAMETER CONVENTIONS nothing on the mirrors
+documents. One of them received a value where it expected a write
+pointer and obeyed literally. All three are gone. The lesson is the
+same one MCI taught and belongs at the top of this file's MLE
+chapter: **a message number is not an interface; the convention is,
+and only observation documents it.**
+
+The same log delivered the export verdict on the way down:
+`prompt probe ins=5 q=5 ie=1 exp=5 cb=0 text=probe` -- the text
+sitting in the buffer, the count returned in the MRESULT, zero left
+in the cb parameter. The read takes the return value first with the
+sample's cb convention as fallback, and with it the growth engine
+finally has its bytes.
+
+The user's direction then settled the wrap question. The pm/controls
+sample went through whole this time -- every MLM_* call in it
+inventoried -- and it contains no format-rectangle message, no wrap
+message, and no control data, anywhere. Its two creations say all:
+
+- the **wrapping** MLE (sty_dlg.c:1703): `WS_VISIBLE | MLS_WORDWRAP |
+  MLS_READONLY` at 0,0,0,0, **control data NULL** -- shipped working;
+- the **scrolling editor** MLE (sty_init.c:147):
+  `MLS_HSCROLL | MLS_VSCROLL` -- the same control asked not to wrap.
+
+So the MLECTLDATA this file had passed at birth -- zeroed the first
+time, measured the second, both wrapping nothing -- was the only
+home-invention left on the prompt. It is gone: the prompt is created
+exactly the way the proven variant is, text limit kept as a plain
+MLM_SETTEXTLIMIT after birth (a LONG-argument message has no
+convention to get wrong). The sample's other patterns noted for the
+record: it batches file loads with MLM_DISABLEREFRESH/
+ENABLEREFRESH, and imports through MLM_SETIMPORTEXPORT + MLM_IMPORT
+-- neither is a prompt need.
+
+- **Log vocabulary**: `prompt fmtrect ...` is dead with its probe;
+  read `prompt probe` counts from `exp=`, not `cb=`, on this box.
+- **Verified**: pmdrv->pmlib->pmexe green; exe 1,520,154 bytes;
+  host gates 169/114.
