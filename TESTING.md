@@ -5477,3 +5477,38 @@ told the whole story in three acts:
 - **Operational**: app-side files unchanged; pmdrv/pmlib/pmexe only.
 - **Verified**: pmdrv/pmlib/pmexe green, atuipm.exe 12:44p; the box
   display holds the verdict.
+
+## The pitch was the thief: baseline+descent, and a Courier prompt (2026-11-03)
+
+The one-arming build read perfectly -- the log grew the strip
+2-3-4-5 with no hold, no lie, no oscillation -- and the user still
+watched text scroll up below the cap.  Two clean logs saying
+"resized" while the screen says "scrolled" have one reading: the
+resizes were too short.  And the birth line had been confessing all
+along: `entry lineh 20 desc 5` -- the budget added `lMaxBaselineExt`
+per line, but a line is pitch = baseline extent PLUS descent.  Every
+line past the first was 5px short; the caret landed in the clipped
+sliver and the control scrolled, correctly, inside a strip too small
+to hold it.
+
+- **Pitch**: gMleLineH := lMaxBaselineExt + lMaxDescender, measured on
+  the entry's PS after the font lands; +4px of slack on the strip
+  total (the tiling absorbs the remainder into the prompt anyway);
+  log line becomes `entry pitch P base B desc D`.
+- **The font, on the user's ask**: WC_MLE now sets Courier at birth.
+  The route is pmrexx's getfixedfont (pmrxsubs.c:261) -- enumerate
+  QF_PUBLIC "Courier", keep the entry at the display's font
+  resolution (DevQueryCaps CAPS_HORIZONTAL/VERTICAL_FONT_RES), 8pt if
+  present, stamp lMatch into an FATTRS (Watcom's own pmwin.h:214 --
+  nothing transcribed), GpiCreateLogFont, and MLM_SETFONT with the
+  FATTRS address: the parameter convention proven at sty_user.c:892,
+  mcispy.c:600 and pmrexxio.c:599.  pmrexx asks bold; fsSelection 0.
+  No Courier on the box means no change and `entry font ... match=0`
+  in the log.  A fixed font is also arithmetic: kerning leaves the
+  suspect list for the width count entirely.
+- **Over-count widened**: the line count and the birth format rect
+  now give 24px to border + margins + caret (was 16) -- counts err
+  tall, tall errs invisible, short errs scroll.
+- **Operational**: Watcom needed INCL_DEV for DevQueryCaps/CAPS_*;
+  pmdrv/pmlib/pmexe only, 1522359 bytes 6:06p.
+- **Verified**: compiles clean; the box display holds the verdict.
