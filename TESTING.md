@@ -5653,3 +5653,35 @@ an hour earlier was itself the villain:
   pair for the submit path untouched.
 - **Verified**: pmdrv/pmlib/pmexe green, 1523638 bytes 9:03p; the
   box display holds the verdict.
+
+## The export counts breaks the query doesn't; the guard dies (2026-11-03)
+
+The n+1 allowance lasted exactly one user session:
+
+    prompt grow lines 3 h 76
+    prompt export mismatch q=12 exp=14 run 1
+    prompt export mismatch q=13 exp=15 run 2
+    prompt export mismatch q=14 exp=16 run 1     <- keystrokes reset
+    prompt export mismatch q=15 exp=17 run 2     ...it again
+
+- **The rule, at last**: the query counts each paragraph break as
+  ONE character; the export materializes every break as a full
+  CR/LF pair.  `exp = n + (breaks)` -- one extra byte with one
+  line, two with two.  No fixed tolerance can be right, and the
+  mismatch guard was guessing with units it didn't share: it froze
+  every read of any multi-line prompt, and only the release valve
+  (reset by every keystroke) let growth through at random.  Two
+  rounds of "grows inconsistently" were that guard.
+- **The guard is deleted, not widened**: the two messages speak
+  different currencies and neither is wrong.  The export's own
+  count is the truth of what it wrote -- commit it, whatever it
+  is.  What stays proven and load-bearing: arm the export at
+  exactly n (asking more than the export's own count is the one
+  thing answered with zero -- birth probe), and the control
+  writes past a smaller armed cb without flinching (14 bytes
+  against cb=12) -- so gMleBuf is now sized for the worst case,
+  every character a break (2n+8).
+- **The wobble guard survives**: it cross-examines two answers of
+  the SAME message, where disagreement really is a miscount.
+- **Verified**: pmdrv/pmlib/pmexe green, 1523446 bytes 11:33p; the
+  box display holds the verdict.
