@@ -5814,3 +5814,18 @@ takes its RGB directly, is why half the paint did work.)  Watcom
 SPM_HPSYSTEM, so the pairing goes through WinGetPS.  A capped
 `status paint WxH cch=N` probe joins the log to confirm the paint
 itself runs.
+
+The 14:23 log ran that paint -- 654x22, cch=79, WinGetPS and all
+-- and still drew nothing, so the next probe asked WinDrawText
+itself: `n=0 err=81001` -- 0x80000 class bits over
+**PMERR_INVALID_HWND (0x1001)**: bare color values send
+WinDrawText down a system-information path this PS cannot answer.
+(The palette-index theory died on the way to this: the documented
+RGB crossing is `GpiQueryColorIndex(hps, 0, rgb)`, and eFTE never
+passes colors at all -- g_pm.cpp:798 draws with **DT_TEXTATTRS and
+0,0**, the PS's own attributes.  That is the combination now
+shipped: theme RGBs crossed to indices through GpiQueryColorIndex,
+GpiSetColor/GpiSetBackColor/BM_OVERPAINT on the PS, WinDrawText
+with DT_TEXTATTRS, its font the PS default.  GpiSetDrawMode -- the
+DM_DRAW theory's hammer -- is absent from Watcom's GPI library, as
+WinSetTimer was from pmwin.)
