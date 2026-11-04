@@ -5546,3 +5546,37 @@ was short only its own margins' few pixels TOTAL.
   table never gets a chance to do nothing.
 - **Operational**: pmdrv/pmlib/pmexe, 1522691 bytes 7:25p.
 - **Verified**: compiles clean; the box display holds the verdict.
+
+## The collapse's third witness; Enter keys cannot hide (2026-11-03)
+
+Session log at line 8 of the prompt:
+
+    prompt hold 8 saw 7
+    prompt hold 8 saw 1        <- no read said 1 honestly
+    prompt grow lines 1 h 36   <- two witnesses to a lie folded the strip
+    ...
+    prompt grow lines 8 h 176  <- the very next beat read 8 again: the
+                                  text was never gone
+
+- **A failed measurement is not a line count**: pmPromptLines_'s
+  can't-measure path returned 1, and during a page-rebuild storm
+  WinGetPS can miss -- two misses inside one witness window collapsed
+  the strip.  It answers 0 now, meaning "no answer", and the engine
+  applies only real counts.
+- **Third witness anyway**: a shrink toward a one-line strip of a
+  three-plus-line prompt needs three consecutive matching readings;
+  ordinary two-witness shrinks are unchanged (gPromptSawRun).  Two
+  consecutive agreements are a maybe; three are a fact.
+- **Empty reads now quote the control**: `prompt empty read at len L
+  q=Q exp=E cb=C` distinguishes the query lying zero from the export
+  giving nothing against a positive query.
+- **Font enumeration takes its second shape**: NULL answered q=0
+  twice -- the empty-string name, the GPI enumeration idiom, is
+  retried when NULL comes back empty.  The log will say which spoke.
+- **Enter's keys get an uncapped witness of their own** (ek lines,
+  cap 32, every layer): both sessions that needed evidence about
+  Shift+Enter were the ones where the 48-line raw-key cap had already
+  run out before the combo was pressed -- the question cannot be
+  asked twice if the log forgets.  Raw kmsg cap raised to 256 too.
+- **Verified**: pmdrv/pmlib/pmexe green, 1523137 bytes 7:49p; the box
+  display holds the verdict.
