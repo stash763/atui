@@ -5512,3 +5512,37 @@ to hold it.
 - **Operational**: Watcom needed INCL_DEV for DevQueryCaps/CAPS_*;
   pmdrv/pmlib/pmexe only, 1522359 bytes 6:06p.
 - **Verified**: compiles clean; the box display holds the verdict.
+
+## No Courier, the true pitch, and a newline by our own hand (2026-11-03)
+
+The pitch build said the truth the pitch theory had half-guessed:
+`entry font q=0 res=120x120 match=0` -- this eComStation HAS NO
+COURIER -- and `entry pitch 25 base 20 desc 5` stayed the box's
+proportional default.  The user report fit the budget arithmetic to
+the pixel: at 7 lines the strip showed 2 blank lines below the caret
+-- the +5/line overcorrection (baseline+descent) against a draw
+pitch of exactly 20.  Session one's scroll and session two's blanks
+solve together: the control advances a line by lMaxBaselineExt and
+was short only its own margins' few pixels TOTAL.
+
+- **Pitch**: gMleLineH := base alone; the strip adds 8px of slack once
+  (margins), not per line.  Birth log grew a fixedness proof:
+  `w i=.. W=..` measured on the entry's own PS -- equal widths are a
+  fixed font standing, and the same handles the count measures with
+  are the ones speaking.
+- **The font, from the box upward**: the by-name Courier ask is
+  retired; the driver enumerates the public fonts (QF_PUBLIC, NULL),
+  keeps fmDefn & FM_TYPE_FIXED at the display's font resolution and
+  takes the smallest at or near 8 point, family name logged
+  (`entry font q=... pick=N <facename>`).  pmrexx's inverted `== 0`
+  test is noted as what it is -- its family query papered over it.
+  No fixed font at the res in sight is a logged no-op.
+- **Shift+Enter**: the dispatch-and-hope round is over -- the kmsg
+  probe caught no 0x0D at the pump while the user pressed the combo
+  repeatedly, and the MLE's own command table answers the shifted
+  Enter with silence.  The pump now INSERTS the CR/LF itself via
+  MLM_INSERT -- the message the birth probe has proven since day one
+  -- after sizing the strip for it, and swallows the key so the
+  table never gets a chance to do nothing.
+- **Operational**: pmdrv/pmlib/pmexe, 1522691 bytes 7:25p.
+- **Verified**: compiles clean; the box display holds the verdict.
