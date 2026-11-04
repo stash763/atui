@@ -5761,3 +5761,40 @@ the biggest finding of the PM port so far:
   named), dirty/runs on the wait heartbeat, status push count.
 - **Verified**: host gates green; pmdrv/pmlib/pmexe green,
   1525415 bytes 2:56a; the box display holds the verdict.
+
+## The empty-string hand-over (2026-11-04)
+
+The 2:56a build's probes answered the submit question exactly -- and
+the answer was a re-entrancy bug with a perfect fingerprint:
+
+- The band pushed `len=14`: **"submit refused"**. The driver's
+  `entry submit len=4` was real, but `submitMessage_` received an
+  **empty string** and took its silent `msg.size() <= 0` exit.
+- The culprit line: `gMleBuf[ got ] = '\0'` in the read. The submit's
+  own `MLM_DELETE` fires `MLN_CHANGE` at the group; the group's poll
+  answers *synchronously, inside the delete*, reads the just-empty
+  field, and its zero-byte export writes `'\0'` at `gMleBuf[0]` --
+  while `pmPromptSubmitNow_` is still holding `gMleBuf` for the
+  hand-over.  The log order is the crime scene: submit len=4, then
+  an empty read at len 4, then the delete's own log line, then the
+  refusal.
+- The fix: the submit text is **copied to `gSubmitBuf` before the
+  delete**, and `pmPromptPoll` stands down while `gInSubmit` is set.
+  Notifications can knock; nobody answers while a hand-over is in
+  flight.
+- **`MLM_DELETE`'s MRESULT is a count, not a status**: `r=4` for 4
+  characters deleted -- what this round's log called "clear failed"
+  was the first successful clear the box ever gave.  The exact-size
+  delete works; the accusation is reworded to `clear r= chars=`.
+- The heartbeat said `runs=49` frozen for 3000 beats: tvision had
+  written nothing all session -- which exonerates the flush and the
+  show (they work when asked) and convicts the refusal (nothing was
+  ever appended to draw).  appendStatus does paint -- its throttle
+  (`streamMayWait_`) requires an open block and status blocks are
+  born closed.
+- Next witness: if the endpoint is not configured, the transcript
+  will now actually say `(no provider configured - Alt-P)`; if it
+  is, the first live turn streams to the screen.
+
+- **Verified**: pmdrv/pmlib/pmexe green (host gates untouched --
+  driver-only change); the box display holds the verdict.
