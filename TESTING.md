@@ -5581,8 +5581,7 @@ Session log at line 8 of the prompt:
 - **Verified**: pmdrv/pmlib/pmexe green, 1523137 bytes 7:49p; the box
   display holds the verdict.
 
-## Enter's character was wearing its scan code; the ruler that
-voted zero (2026-11-03)
+## Enter's character wore its scan code; the ruler voted zero (2026-11-03)
 
 The 7:49p session finally spoke, in the raw-key log, the sentence
 every earlier session had been missing:
@@ -5624,4 +5623,33 @@ two halves of the promise finally have two halves to run.
   captured message; the ek probe, now reading the low byte and
   working for the first time, counts them next session.
 - **Verified**: pmdrv/pmlib/pmexe green, 1523628 bytes 8:46p; the
+  box display holds the verdict.
+
+## The newline works; its byte accounting did not (2026-11-03)
+
+First session with a working Shift+Enter (the ek probe fired for
+every press, one WM_CHAR per press, flags 0x114e/0x14e -- both
+shapes the pre-guard handler takes).  Growth followed the presses
+inconsistently, and the log says exactly why -- the guard written
+an hour earlier was itself the villain:
+
+    prompt grow lines 2 h 56          <- first press: perfect
+    prompt export mismatch q=5 exp=6  <- every read after
+
+- **The box counts a trailing hard break in two different coins**:
+  MLM_QUERYTEXTLENGTH counts it as one character ("1234" + break
+  = 5) while MLM_EXPORT materializes the full CR/LF pair (6).
+  Deterministic, every read -- the shape of the truth, not a lie.
+  The mismatch guard refused exp != n, discarded honest reads, and
+  growth waited on the release valve; worse, every new keystroke
+  satisfies the valve's reset condition, so a person typing after
+  a newline re-armed the freeze indefinitely.  That is precisely
+  "grows inconsistently."
+- **Fix**: exp == n + 1 is believed and committed (clamp raised to
+  n+1; gMleBuf has two bytes of headroom).  The mismatch guard now
+  fires only on answers that are neither n nor n+1.  The line
+  counter already counts a trailing break as an open empty
+  paragraph -- the caret's new line -- and pmUnCrlf_ folds the
+  pair for the submit path untouched.
+- **Verified**: pmdrv/pmlib/pmexe green, 1523638 bytes 9:03p; the
   box display holds the verdict.
