@@ -5721,3 +5721,43 @@ what it was.
 - **Verified**: host gates 169/169 and 114/114 (app.cpp touched);
   pmdrv/pmlib/pmexe green, 1524545 bytes 1:34a; the box display
   holds the verdict.
+
+## The screen never showed: flush without show (2026-11-04)
+
+Three reports from the themed build -- prompt text gray instead of
+white, "Enter does not submit", status band empty. The log and
+screenshot11 say two of them are one bug and a half, and the half is
+the biggest finding of the PM port so far:
+
+- **VioWrtCellStr fills the buffer; VioShowBuf tells the window.**
+  The flush pushed dirty rows into the associated page buffer and
+  never showed them; only window events (first paint, resize,
+  un-minimize) delivered a WM_PAINT, and WM_PAINT shows the whole
+  page -- so every screen the user ever saw in a PM session had been
+  drawn by a resize.  Enter DID submit (log: entry submit len=4,
+  twice); the appended transcript lines were in the buffer,
+  invisible.  flushScreen now ends with the VioShowBuf half of the
+  pair, eFTE's habit -- and the honest explanation for why "the
+  transcript updates" was never verified in any PM session until
+  now.
+- **The delete that deletes nothing**: MLM_DELETE(0, 65536) --
+  mcispy's shape -- is refused outright on this box for over-running
+  the text: screenshot11 shows the prompt still holding "2314..."
+  after "2314" was submitted, and the second Enter submitted the
+  same four characters.  pmrexx deletes by exact size
+  (pmrexx.c:837); the exact size here is the byte count less one
+  per CR/LF pair, and a non-zero answer now logs clear failed.
+- **The band's one sentence is driver-owned now**: pmStatusKit
+  writes a local buffer and the paint reads it -- no window-text
+  store in between.  And its first words were a construction-order
+  trap: the application object (which pushes the provider status)
+  is built before the screen exists, so that push hit a null kit
+  and evaporated; the driver asks for it back -- pmKitStatusRefresh
+  -- right after installing the kit.
+- **White, and witnessed**: foreground nibble 7 is 0xFFFFFF (the
+  engine draws attribute-7 text white; 0xA8A8A8 read dim against
+  the page), and a refused submit says so on the band instead of
+  looking like a dead Enter.  Probes added: flush refuse (sizes
+  named), dirty/runs on the wait heartbeat, status push count.
+- **Verified**: host gates green; pmdrv/pmlib/pmexe green,
+  1525415 bytes 2:56a; the box display holds the verdict.

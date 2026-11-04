@@ -2650,8 +2650,18 @@ extern "C" void pmPromptSubmit( const char *text )
     if( text == 0 )
         return;
     const String msg( text );
-    submitMessage_( msg );
-}
+    if( !submitMessage_( msg )
+        && gPmDialogs != 0 && gPmDialogs->status != 0 )
+        {
+        // Refusals say why on the status band — busy, no provider --
+        // because a silent false from here looked exactly like a dead
+        // Enter key (the 1:34a session: the driver logged the submit,
+        // the screen showed nothing).
+        gPmDialogs->status( "submit refused" );
+        return;
+        }
+    updateProviderStatus_();    // the band is the session's dashboard:
+}                               // it says provider and mode again
 
 extern "C" void pmTranscriptPage( int direction )
 {
@@ -4084,6 +4094,16 @@ extern "C" int pmKitPromptLines( void )
 extern "C" int pmKitWindowAttr( void )
 {
     return currentTheme() == ThemeDark ? 0x87 : 0x07;
+}
+
+// The driver calls this once, right after installing the kit: the
+// application object (and with it the desktop's one status push) is
+// constructed before the screen exists, so that first push had no window
+// to talk to and the band kept its birth word.  Here there is a window,
+// and the provider, mode and hint go down at last.
+extern "C" void pmKitStatusRefresh( void )
+{
+    updateProviderStatus_();
 }
 
 // --- undo a file change --------------------------------------------------------
