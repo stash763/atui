@@ -5580,3 +5580,48 @@ Session log at line 8 of the prompt:
   asked twice if the log forgets.  Raw kmsg cap raised to 256 too.
 - **Verified**: pmdrv/pmlib/pmexe green, 1523137 bytes 7:49p; the box
   display holds the verdict.
+
+## Enter's character was wearing its scan code; the ruler that
+voted zero (2026-11-03)
+
+The 7:49p session finally spoke, in the raw-key log, the sentence
+every earlier session had been missing:
+
+    kmsg id=0x7a mp1=0x1c01014e mp2=0x1e1c0d
+
+That is Enter -- and this machine packs the **scan code (0x1C) into
+the high byte of the character word**: character 0x0D with a 0x1C
+riding above it.  Every comparison of mine read 16 bits
+(`ch == 0x0D` saw 0x1C0D and denied), so the Enter submit, the
+Shift+Enter insert, and Ctrl+T (whose word is 0x1414) had **never
+once matched** -- not in the handler, not in the ek probe.  Digit
+keys had masked the same packing all along: their scan byte arrives
+zero at the keydown instant, so `0x30..0x39` looked clean.  The
+character is now read as the low byte, CHAR1FROMMP, everywhere.
+And Enter moves before the key-up guard: this box posts Enter's
+lone WM_CHAR with the guard's key-up bit set (one message per
+press, where digits make a down/up pair), and the guard was eating
+it.  Shift marks itself in the flags (0x14e carries 0x08), so the
+two halves of the promise finally have two halves to run.
+
+- **The third liar was the ruler**: the 8-line collapse recurred at
+  three witnesses -- and the new triple-prove showed *no empty read
+  at all*: the text read whole while the counter answered 1.  The
+  counter measures words with GpiQueryTabbedTextExtent; a GPI that
+  answers **zero** during the page-rebuild churn measures any text
+  as one line, and it lied three consecutive times.  pmPromptLines_
+  now refuses a dead ruler: a zero-width space, or a printable word
+  measuring zero, returns 0 -- no answer, no vote.
+- **Reads cross-examine themselves**: two back-to-back messages on
+  one thread cannot see the text change, so a shrinking length gets
+  an immediate second query (wobble: disagreement keeps the last
+  good buffer) and an export returning other-than-queried counts
+  the same (mismatch: truncated exports are discarded whole).
+  Release valves: four consecutive identical suspisions are
+  believed -- Backspace held really is nine lines in a second.
+- **Honest caveat**: the raw log capped at 256 before the session
+  ended, so "Enter produces exactly one WM_CHAR" rests on the one
+  captured message; the ek probe, now reading the low byte and
+  working for the first time, counts them next session.
+- **Verified**: pmdrv/pmlib/pmexe green, 1523628 bytes 8:46p; the
+  box display holds the verdict.
