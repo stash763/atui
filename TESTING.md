@@ -5685,3 +5685,39 @@ The n+1 allowance lasted exactly one user session:
   the SAME message, where disagreement really is a miscount.
 - **Verified**: pmdrv/pmlib/pmexe green, 1523446 bytes 11:33p; the
   box display holds the verdict.
+
+## The chrome takes the theme; the button becomes a band (2026-11-04)
+
+Two pieces of native chrome were ignoring the application they sit
+in: the prompt was born CLR_BLACK on CLR_WHITE whatever the theme,
+and the status line was a WC_BUTTON -- "a big button that covers the
+bottom of the window", in the user's words, because that is exactly
+what it was.
+
+- **One attribute is the whole seam**: the app answers
+  `pmKitWindowAttr()` with the palette attribute normal window text
+  wears in the current theme -- classic 0x07, dark 0x87 (theme.cpp's
+  own remap of exactly that byte) -- and the driver turns the two
+  nibbles into RGB through a sixteen-entry table (the VGA palette;
+  background index 7 reads white, which is what the classic page
+  already shows).  MLM_SETTEXTCOLOR/MLM_SETBACKCOLOR, proven
+  messages, carry them to the MLE; the status band reads the two
+  variables at every paint.
+- **Theme changes arrive live**: the native theme dialog calls
+  `pmChromeRefresh()` after pmThemeApply -- prompt colors and status
+  band repaint without a restart; birth reads the theme too, so a
+  dark start is dark from the first frame.
+- **The status strip is a window that paints**: class AtuiStatus --
+  WM_ERASEBACKGROUND claims, WM_PAINT fills the theme background and
+  WinDrawTexts the window's text left with a margin, vertically
+  centered (timeserv's and pnt.c's shapes).  pmStatusKit writes the
+  text and invalidates.  No WM_TEXTUPDATE: that message appears in
+  no header and no sample on the mirrors, and a guessed message is
+  how this file has GPV'd a box before -- the kit invalidates by
+  hand instead, with two proven calls.
+- **One PM-1.x reflex corrected on the way**: 32-bit WinBeginPaint
+  takes a PRECTL, not a PAINTSTRUCT -- the file's own page paint
+  said so, and the compiler said so louder.
+- **Verified**: host gates 169/169 and 114/114 (app.cpp touched);
+  pmdrv/pmlib/pmexe green, 1524545 bytes 1:34a; the box display
+  holds the verdict.

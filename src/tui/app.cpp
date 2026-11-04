@@ -4074,6 +4074,18 @@ extern "C" int pmKitPromptLines( void )
     return atui::settings::promptLines();
 }
 
+// The palette attribute (BIOS fg|bg nibbles) the current theme gives
+// normal window text -- the native chrome's two colors come from this one
+// number, so the prompt and the status band move with the theme.  It is
+// theme.cpp's own mapping for a plain window line (classic 0x07, black on
+// the white background; dark 0x87, light gray on dark gray, the dark
+// theme's stated remap of exactly that byte); the driver turns the nibbles
+// into RGB and asks nothing else of palette semantics.
+extern "C" int pmKitWindowAttr( void )
+{
+    return currentTheme() == ThemeDark ? 0x87 : 0x07;
+}
+
 // --- undo a file change --------------------------------------------------------
 //
 // core/journal.h keeps a copy of every file atui is about to change; this is the
