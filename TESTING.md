@@ -5798,3 +5798,19 @@ the answer was a re-entrancy bug with a perfect fingerprint:
 
 - **Verified**: pmdrv/pmlib/pmexe green (host gates untouched --
   driver-only change); the box display holds the verdict.
+
+## The letterless band (2026-11-04)
+
+Screenshots 11 and 12, read side by side, say the status band has
+never drawn a glyph -- not the provider status, not even its birth
+word.  The fill works (the band is theme-gray); only the text is
+missing.  The difference between the working timeserv call and
+ours: its WinDrawText runs on a `WinGetPS` presentation space
+(udtime.c:155), and ours on the PS that `WinBeginPaint(hwnd, 0)`
+manufactures -- a PS with no system information, on which
+WinDrawText draws *nothing at all, silently*.  (WinFillRect, which
+takes its RGB directly, is why half the paint did work.)  Watcom
+1.9's headers carry WinGetPS but neither WinSetParamPM nor
+SPM_HPSYSTEM, so the pairing goes through WinGetPS.  A capped
+`status paint WxH cch=N` probe joins the log to confirm the paint
+itself runs.
