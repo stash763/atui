@@ -1782,16 +1782,19 @@ public:
             }
         }
 
-        // The windowed front (PM) builds no in-grid menu bar, so the keys that
-        // menu bar used to own -- Options and the model switcher -- are bound
-        // here instead.  The PM menu bar's picks arrive as exactly these Alt
-        // chords (and a user typing them on a real keyboard gets the same
-        // command; the chords are free without a menu bar).  The comparison is
-        // TKey against TKey, the one the status line makes too: it holds for
-        // the driver's injection encoding of scan+Alt with no character, which
-        // is what KbdCharIn delivers for Alt chords on VIO as well.  Alt-H,
-        // Alt-A and Alt-X are deliberately absent -- the status line binds
-        // those for every front, and binding them twice would fire twice.
+        // The windowed front (PM) builds no in-grid menu bar, and its status
+        // line is the native band -- initStatusLine_ returns 0 there -- so
+        // every binding those two own on the other fronts is owned here: the
+        // PM menu's picks arrive as exactly these Alt chords (and a user
+        // typing them on a real keyboard gets the same command; the chords
+        // are free without a menu bar).  The comparison is TKey against TKey,
+        // the one the status line makes too: it holds for the driver's
+        // injection encoding of scan+Alt with no character, which is what
+        // KbdCharIn delivers for Alt chords on VIO as well.  Alt-X belongs
+        // here above all: it is how the closed window asks the application
+        // to end, and with the status line absent it was bound to nothing --
+        // every close waited out the driver's five-second watchdog and died
+        // to the force timer (measured: the whole 5-6 seconds, every time).
         if( event.what == evKeyDown && THardwareInfo::windowed() )
         {
             static const struct { ushort key, cmd; } kAltCommands[] =
@@ -1801,6 +1804,9 @@ public:
                 { kbAltI, CmdSettings    },
                 { kbAltT, CmdTheme       },
                 { kbAltS, CmdSwitchModel },
+                { kbAltH, CmdHelp        },
+                { kbAltA, CmdHelp        },
+                { kbAltX, cmQuit         },
                 };
             for( unsigned i = 0;
                  i < sizeof( kAltCommands ) / sizeof( kAltCommands[ 0 ] ); ++i )
