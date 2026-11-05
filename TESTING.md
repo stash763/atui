@@ -5874,3 +5874,27 @@ frame and no seam can show; the text is black, its GPI colors the
 nearest palette indices with the background crossed from the
 system's real window color through GpiQueryColorIndex.  White-on-
 theme-gray was fighting the desktop; the desktop won, correctly.
+
+## The five-second window (2026-11-04)
+
+"5-6 seconds between clicking close and atuipm closing" was the
+force-exit watchdog (kQuitForceMs = 5000) paying out in full every
+single session -- the logs end `quit key sent` ... `force exit` with
+the app never leaving the loop.  The closed window asks the app to
+quit by injecting Alt-X, and Alt-X was bound to **nothing**: the
+cmQuit hotkey lives in the TStatusLine, and the windowed front's
+initStatusLine_ returns 0 (the native band replaced it).  The
+kAltCommands table that proves the mechanism works (Alt-I opens
+settings through it) had Alt-H/Alt-A/Alt-X "deliberately absent --
+the status line binds those for every front", which was false for
+exactly this front.  The table gains the three orphans; close,
+File-Exit, Help and about all answer at once.  Diagnosis by reading
+the TKey normalization table (scan-with-no-character codes imply
+Alt, so injected chords do match hotkeys -- the encoding was never
+the problem; the binding was) and by the one number that never
+moved: five seconds, every time.
+
+Bridge footnote from the same hunt: `build --batch-args one src\...`
+needs the target in ONE quoted argument; split, the tool errors
+usage while the pipeline's exit status sails on and a stale-object
+relink wears the timestamp of a fresh build.
