@@ -5853,3 +5853,24 @@ The dual query settled the resize artifact and taught a new quirk:
   theme's strip color), WM_ERASEBACKGROUND becomes an honest
   claim, and each tiling invalidates the group so every vacated
   sliver gets its fill.
+
+## The band's fill that never filled (2026-11-04)
+
+"The background stops at 'thinking'" decoded the last color
+complaint completely: `WinFillRect` with a raw RGB (0x545454) is
+**another silent no-op of this box** -- and always was.  The dark
+band I had been citing from screenshots 12-14 was never painted by
+the fill: it was the text's own background rectangle, the one the
+DT_TEXTATTRS/BM_OVERPAINT pair draws tightly around the glyphs --
+which is exactly why it ends at "thinking".  (The corruption fix
+survived for the same honest reason as the group paint's
+validation, not its fill.)
+
+The band's look went to where the user pointed and where OS/2
+convention agrees: the system theme.  Both fills (band and group)
+now pass **SYSCLR_WINDOW** -- the color spec WinFillRect actually
+understands, timeserv's pairing -- so the status area matches the
+frame and no seam can show; the text is black, its GPI colors the
+nearest palette indices with the background crossed from the
+system's real window color through GpiQueryColorIndex.  White-on-
+theme-gray was fighting the desktop; the desktop won, correctly.
