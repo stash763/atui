@@ -805,7 +805,7 @@ public:
                 if( nt < 0 ) nt = 0;
                 if( nt > maxTop ) nt = maxTop;
                 follow_ = ( nt >= maxTop );
-                if( nt != delta.y ) scrollTo( 0, nt );
+                scrollTopTo( nt );
                 clearEvent( event );
                 return;
             }
@@ -847,7 +847,27 @@ public:
         if( nt < 0 ) nt = 0;
         if( nt > maxTop ) nt = maxTop;
         follow_ = ( nt >= maxTop );
-        if( nt != delta.y ) scrollTo( 0, nt );
+        scrollTopTo( nt );
+    }
+
+    // Move the top line to `nt`.  TScroller's own scrollTo is a pure
+    // scrollbar conversation -- it sets the bar's value and lets
+    // scrollDraw read it back into delta -- so with no bar (the windowed
+    // front, where the scrollbar is the driver's native one) it silently
+    // does nothing, and every scroll that ran through it died: the
+    // follow of the stream, the page keys, the wheel, even the thumb's
+    // direct jump.  With no bar there is nothing to converse with:
+    // delta.y is the whole of the scroller's position, so move it and
+    // repaint.  The bar's path is untouched, character for character.
+    void scrollTopTo( int nt )
+    {
+        if( vScrollBar != 0 )
+            scrollTo( 0, nt );
+        else if( nt != delta.y )
+        {
+            delta.y = nt;
+            drawView();
+        }
     }
 
     // The PM front's native scrollbar (hardwspm.cpp) asks these two:
@@ -868,7 +888,7 @@ public:
         if( line < 0 ) line = 0;
         if( line > maxTop ) line = maxTop;
         follow_ = ( line >= maxTop );
-        if( line != delta.y ) scrollTo( 0, line );
+        scrollTopTo( line );
     }
 
     // The scrollbar moved the view (click or drag on the bar). Keep the
@@ -876,12 +896,29 @@ public:
     // returning the thumb to the end resumes following the stream. Without
     // this, only the wheel kept follow_ correct and a bar-clicked-away view
     // still yanked back to the bottom on the next repaint.
+    //
+    // With no bar there is no value to read, and the base implementation
+    // reads the missing bar as zero -- which pins the view to its top on
+    // every call, and TScroller::changeBounds calls this from every
+    // resize: the prompt growing was enough to strand a reading mid-
+    // transcript. With no bar, delta is the truth: clamp it to what the
+    // content allows, keep follow honest, repaint.
     virtual void scrollDraw()
     {
-        TScroller::scrollDraw();
+        if( vScrollBar != 0 )
+        {
+            TScroller::scrollDraw();
+            int maxTop = (int) lines_.size() - size.y;
+            if( maxTop < 0 ) maxTop = 0;
+            follow_ = ( delta.y >= maxTop );
+            return;
+        }
         int maxTop = (int) lines_.size() - size.y;
         if( maxTop < 0 ) maxTop = 0;
+        if( delta.y > maxTop )
+            delta.y = maxTop;
         follow_ = ( delta.y >= maxTop );
+        drawView();
     }
 
     // Re-clamp the scroll position after the view was resized (e.g. the prompt
@@ -1241,7 +1278,7 @@ private:
         int maxTop = contentH - size.y;
         if( maxTop < 0 ) maxTop = 0;
         if( follow_ || delta.y > maxTop )
-            scrollTo( 0, maxTop );
+            scrollTopTo( maxTop );
         // While a batch is open the caller is still appending; it repaints once at the
         // end of the batch instead of once per record.
         if( batchDepth_ == 0 )
@@ -1763,7 +1800,17 @@ public:
         // child.
         if( event.what == evKeyDown && g_transcript_ != 0 && deskTop != 0 )
         {
-            TView *focus = validView( deskTop->current );
+            // The windowed front has no focusable view at all -- the
+            // transcript declines focus by design and the native entry
+            // holds the real keyboard -- so the focus test below could
+            // never pass there, and the page keys the driver forwards
+            // for the transcript's sake (the MLE router's, the native
+            // bar's injected pages) died at the gate.  On that front the
+            // keys arrive by policy, not by accident: whoever sends them
+            // means the transcript.
+            TView *focus = THardwareInfo::windowed()
+                             ? g_transcript_
+                             : validView( deskTop->current );
             if( focus == g_transcript_ || focus == g_prompt_ ||
                 focus == g_vBar_ )
             {

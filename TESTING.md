@@ -5898,3 +5898,27 @@ Bridge footnote from the same hunt: `build --batch-args one src\...`
 needs the target in ONE quoted argument; split, the tool errors
 usage while the pipeline's exit status sails on and a stale-object
 relink wears the timestamp of a fresh build.
+
+## The scroller that could not scroll (2026-11-04)
+
+All three PM scroll complaints -- no follow, dead scrollbar, PgUp
+answering nothing -- were one class of bug with two doors. The
+windowed desktop builds its transcript with **no tvision scrollbar**
+(the native one is the driver's), but `TScroller::scrollTo` is a pure
+scrollbar conversation: it sets the bar's value and lets scrollDraw
+read it back into delta.  With the bar null every call met a
+do-nothing null-guard -- the stream's follow, the page keys, the
+wheel, even the thumb's direct `scrollToLine`.  And worse:
+`TScroller::scrollDraw` reads a missing bar as **zero**, and
+changeBounds calls it on every resize -- so the prompt growing
+quietly pinned the view to its top.  TranscriptView now owns a
+scrollTopTo: the bar's path untouched, the barless path moves
+delta.y and repaints; scrollDraw answers the same with delta as the
+truth.  The second door: the PgUp gate tested the tvision focus
+against three views, and on the windowed front none exists -- the
+transcript declines focus by design, the prompt and bar are never
+created -- so injected page keys died at the gate; the front passes
+it by policy, since whoever sends those keys means the transcript.
+Unix never lost the bar path; its "partial" following is the
+streaming layout's 120 ms throttle, unless measurement says
+otherwise.
