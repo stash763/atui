@@ -5829,3 +5829,27 @@ GpiSetColor/GpiSetBackColor/BM_OVERPAINT on the PS, WinDrawText
 with DT_TEXTATTRS, its font the PS default.  GpiSetDrawMode -- the
 DM_DRAW theory's hammer -- is absent from Watcom's GPI library, as
 WinSetTimer was from pmwin.)
+
+## The group that never painted (2026-11-04)
+
+The dual query settled the resize artifact and taught a new quirk:
+
+- **`WinQueryWindowRect` on this box answers size, not position**
+  -- every child reads (0,0,w,h) regardless of where it stands.
+  `WinQueryWindowPos` is the authority, and it says the tiling is
+  perfect: status (0,0), entry (0,22), page (0,58), every step of
+  every drag correct.  The first tile probe's alarming "everything
+  at y=0" was the lying query, not a failed move.  (It does no
+  harm in the paints, which want the window's own coordinates --
+  but it is a loaded footgun for anyone who reaches for it.)
+- **A group window gets no background from PM.** With the tiling
+  correct, the fossils of screenshots 13/14 (status text riding
+  the entry strip, a scrollbar arrow stranded in the band) are
+  simply regions a child vacated mid-drag that nobody owned: the
+  group never painted them, and stale screen bits stayed.  The
+  class already had CS_SIZEREDRAW -- the invalidations were
+  arriving at a window procedure with nothing to answer them.
+  pmGroupProc now answers WM_PAINT (fill the client with the
+  theme's strip color), WM_ERASEBACKGROUND becomes an honest
+  claim, and each tiling invalidates the group so every vacated
+  sliver gets its fill.
