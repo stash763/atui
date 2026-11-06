@@ -87,6 +87,7 @@ set(ATUI_SOURCES
     "${ATUI_SRC_DIR}/platform/screen.cpp"
     "${ATUI_SRC_DIR}/platform/screen_x11.cpp"
     "${ATUI_SRC_DIR}/platform/screen_mac.cpp"
+    "${ATUI_SRC_DIR}/platform/screen_os2.cpp"
     "${ATUI_SRC_DIR}/platform/screen_none.cpp"
     "${ATUI_SRC_DIR}/tools/screenshot_tool.cpp"
     "${ATUI_SRC_DIR}/tools/windows_tool.cpp"

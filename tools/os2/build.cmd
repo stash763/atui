@@ -197,6 +197,7 @@ if "%1"=="atunon" goto atunon
 if "%1"=="pmdrv" goto pmdrv
 if "%1"=="pmlib" goto pmlib
 if "%1"=="pmexe" goto pmexe
+if "%1"=="pmprobe" goto pmprobe
 
 echo ================== tvision library ==================
 rem Only source/tvision, and not geninc.cpp.  This is what the Borland build in
@@ -515,6 +516,12 @@ rem The native dialogs ride the same mark (ATUI_PM) for the same reason:
 rem they speak PM and must be inert everywhere else.
 %WPP% -DATUI_PM -fo=obj\pm\ tvision\source\tvision\pmdlg.cpp >> %LOG% 2>&1
 if errorlevel 1 goto tvone_failed
+rem The PM screen backend, one file and one define: it is the ATUI_PM
+rem half of the platform seam (src/platform/screen.h), and pmexe pairs
+rem it with dropping screen_none.obj -- exactly one backend per image.
+rem The recipe inside it was measured by probe_pmcap before it shipped.
+%WPP% -DATUI_PM -DATUI_HAVE_OS2_PM -fo=obj\pm\ src\platform\screen_os2.cpp >> %LOG% 2>&1
+if errorlevel 1 goto tvone_failed
 echo [pmdrv] OK
 goto summary
 
@@ -567,11 +574,17 @@ if not exist obj\tvisionpm.lib goto one_failed
 set EXENAME=atuipm.exe
 if not "%2"=="" set EXENAME=%2
 if exist link.rsp del link.rsp
+if not exist obj\pm\screen_os2.obj goto pmexe_nodrv
 echo system os2v2_pm > link.rsp
 echo name %EXENAME% >> link.rsp
 echo op m >> link.rsp
 echo option stack=256k >> link.rsp
-for %%f in (obj\at\*.obj) do echo file %%f >> link.rsp
+rem The PM screen backend in, the none-backend out: screen_none.obj is
+rem in obj\at because `atui` compiles the whole directory, and both
+rem backends in one link is the duplicated-symbol duel this build has
+rem learned to refuse by name.
+for %%f in (obj\at\*.obj) do if not "%%f"=="obj\at\screen_none.obj" echo file %%f >> link.rsp
+echo file obj\pm\screen_os2.obj >> link.rsp
 echo library obj\tvisionpm.lib >> link.rsp
 echo library os2386.lib >> link.rsp
 echo library tcpip32.lib >> link.rsp
@@ -582,6 +595,38 @@ if errorlevel 1 goto one_failed
 if errorlevel 1 goto one_failed
 dir %EXENAME%
 echo [pmexe] OK: never start it from telnet; run it at the box display
+goto summary
+:pmexe_nodrv
+echo [pmexe] FAILED: obj\pm\screen_os2.obj is missing -- run pmdrv first
+goto one_failed
+
+:pmprobe
+rem The PM capture probe (tools/os2/probe_pmcap.cpp): session questions
+rem asked of the live box -- WinOpen, window enumeration, the whole
+rem DevOpenDC/GpiBitBlt/GpiQueryBitmapBits recipe -- before any of them
+gets a shipping backend.  It links bmpout.cpp, so the BMP it measures is
+one the application's own writer produced.  PM image: start it at the
+rem box's own display, never from telnet; its answers land in
+rem C:\atui\probe_out.txt, and probe_full.bmp / probe_win.bmp fetch back.
+echo ================== pmcap probe ==================
+if not exist obj\pc mkdir obj\pc
+if exist obj\pc\*.obj del obj\pc\*.obj
+rem tools/os2 mirrors to the target root (DEFAULT_MAPS), so the probe is
+rem a sibling of build.cmd here, not of its home directory.
+%WPP% -fo=obj\pc\ src\platform\bmpout.cpp probe_pmcap.cpp >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+if exist link.rsp del link.rsp
+echo system os2v2_pm > link.rsp
+echo name pmcap.exe >> link.rsp
+echo op m >> link.rsp
+echo option stack=256k >> link.rsp
+for %%f in (obj\pc\*.obj) do echo file %%f >> link.rsp
+echo library os2386.lib >> link.rsp
+echo library stubl.lib >> link.rsp
+wlink @link.rsp >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+dir pmcap.exe
+echo [pmprobe] OK: run at the box display; read C:\atui\probe_out.txt after
 goto summary
 
 :one

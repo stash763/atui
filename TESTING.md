@@ -5982,3 +5982,62 @@ Try it on a Linux box (X11 session): `cmake -B build` should report
 one approval, and a BMP lands as `atui_shot_1.bmp`.  The OS/2 PM
 capture (DevOpenDC/BitBlt over WinGetPS, Gotcha!'s proven recipe) is
 the next phase; then the hands half -- launch, keys, clicks.
+
+## The PM backend lands: eyes on the box (2026-11-05)
+
+`screen_os2.cpp` joins the desktop seam, and the first round lands
+with the probe (`tools/os2/probe_pmcap.cpp`, `build.cmd pmprobe`)
+asking every question of the live box before anything shipped.  What
+the box answered:
+
+*   **Capture works from the telnet session.**  WinInitialize returns
+    an anchor, and the whole Gotcha! recipe -- DevOpenDC(OD_MEMORY,
+    "Display") -> GpiCreatePS(GPIA_ASSOC) -> GpiQueryDeviceBitmap-
+    Formats -> GpiCreateBitmap -> WinGetPS -> GpiBitBlt(SRCCOPY) ->
+    GpiQueryBitmapBits -- runs clean from an IFS session on this eCS.
+    The PM rule (never start a PM *application* from telnet) stands --
+    that is the message loop's problem, not the API's -- but a probe
+    that queries, grabs and exits is safe, and it is how this phase
+    was measured without touching the box's keyboard.
+*   The device answers **one packed plane at 32 bits**; rows come
+    bottom-up, bytes B-G-R, and the flip to the BMP writer's order is
+    the only translation in between.  The recipe's 16->24 quirk stays
+    in for the drivers that need it.
+*   Enumeration hangs off `QW_TOP` (first child) plus `QW_NEXT` --
+    these headers have **no QW_CHILD at all**, and none is needed.
+    `WinQueryClassName(HWND)` names what it finds: XWPCenterFrame,
+    wpFolder window, AltTabWindow, numeric frame classes.
+*   **Titles live on the client child, not the frame.**  Every frame
+    read empty (measured); the first non-empty child text is the
+    title, and both probe and backend read that way.
+*   `WinIsWindow` takes the anchor too in Watcom's headers --
+    `WinIsWindow(hab, hwnd)`, an argument the Warp-era references
+    leave out until the compiler says otherwise.
+*   A global focus query (WinGetFocus) is Warp 4 territory and absent
+    from the headers this port links, so PM listings carry no ACTIVE
+    marker.  A feature, not a gap: nothing pretends.
+
+And the hunt the probe itself needed: the first grabs came back near-
+black with a scattering of white pixels, then the "taskbar" grab came
+back uniformly black, and both were correct.  `win #0` was
+ECSBALL_SCREENSAVER_CLASS at full screen -- **the box was screensaved,
+and the sparse white pixels were the bouncing-ball animation itself**.
+The capture reads what the framebuffer holds, the framebuffer was
+showing a screensaver, and the evidence was in the picture the whole
+time; color-diversity counts, not brightness, became the probe's pass
+test from that moment.
+
+Wiring follows the driver's own pattern: `pmdrv` compiles the one file
+with -DATUI_HAVE_OS2_PM into obj\pm (inert in the VIO tree, as every
+backend file is everywhere it is not for), and `pmexe` links it in
+while **dropping obj\at\screen_none.obj by name** -- both backends in
+one link is the duplicate-symbol duel this build refuses loudly.  A
+missing obj\pm\screen_os2.obj stops the link with instructions rather
+than a surprise.  Host gates unchanged: 179/179 net, 124/124
+no-transport; pmdrv/pmexe RC=0, atuipm.exe now answers `windows` and
+`screenshot`.
+
+At the box's own display: start atuipm, and the model sees the desktop
+-- ask it to list the windows, then to capture one.  This is the first
+build where the PM image has eyes; the hands (launch, keys, clicks)
+are the next phase.
