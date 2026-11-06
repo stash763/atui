@@ -3,6 +3,9 @@
 #include "tools/time_tool.h"
 #include "tools/edit_file_tool.h"
 #include "tools/run_command_tool.h"
+#include "tools/screenshot_tool.h"
+#include "tools/windows_tool.h"
+#include "platform/screen.h"
 
 #include <mutex>
 
@@ -107,6 +110,14 @@ void registerDefaults()
     r.add( &g_timeTool );
     r.add( &g_editFileTool );     // file-system write: gated by approval
     r.add( &g_runCommandTool );   // shell exec: gated by approval
+    // The desktop pair, and only where a desktop answers: offering a
+    // screenshot tool to a machine with no screen would hand the model a
+    // way to fail. The question is asked once at startup because the
+    // answer is a property of the session atui was started in.
+    if( atui::platform::captureAvailable() )
+        r.add( &g_screenshotTool );
+    if( atui::platform::windowsAvailable() )
+        r.add( &g_windowsTool );
 }
 
 } // namespace atui::tools

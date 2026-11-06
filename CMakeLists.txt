@@ -79,6 +79,17 @@ set(ATUI_SOURCES
     "${ATUI_SRC_DIR}/tools/time_tool.cpp"
     "${ATUI_SRC_DIR}/tools/edit_file_tool.cpp"
     "${ATUI_SRC_DIR}/tools/run_command_tool.cpp"
+    # The desktop seam (platform/screen.h): screenshot and window listing,
+    # one backend per graphical platform, each empty where it is not for.
+    # The tools take the results into the model's world; the tools exist
+    # only where a backend answers.
+    "${ATUI_SRC_DIR}/platform/bmpout.cpp"
+    "${ATUI_SRC_DIR}/platform/screen.cpp"
+    "${ATUI_SRC_DIR}/platform/screen_x11.cpp"
+    "${ATUI_SRC_DIR}/platform/screen_mac.cpp"
+    "${ATUI_SRC_DIR}/platform/screen_none.cpp"
+    "${ATUI_SRC_DIR}/tools/screenshot_tool.cpp"
+    "${ATUI_SRC_DIR}/tools/windows_tool.cpp"
     # Provider settings singleton: it holds strings and reads a file, so it has no
     # transport dependency and is always built -- which is what lets the endpoint
     # field be validated before anything tries to connect.
@@ -139,6 +150,7 @@ if(ATUI_BUILD_TESTS)
         "${ATUI_TESTS_DIR}/markdown_test.cpp"
         "${ATUI_TESTS_DIR}/ascii_fold_test.cpp"
         "${ATUI_TESTS_DIR}/signals_test.cpp"
+        "${ATUI_TESTS_DIR}/screen_test.cpp"
     )
 endif()
 
@@ -183,6 +195,24 @@ if(ATUI_HAVE_NETWORK)
             PRIVATE
                 ws2_32
         )
+    endif()
+endif()
+
+# The desktop seam's backends (platform/screen.h). X11 is looked for rather
+# than assumed -- a headless build host or a distro without the X headers
+# must still build atui, and screen_none.cpp is the answer it gets; the
+# capability question at runtime says the same thing to the model. macOS
+# needs no search: /usr/sbin/screencapture is part of the OS. The OS/2 PM
+# backend, when it lands, belongs to the Watcom build, not to CMake.
+option(ATUI_X11 "Native X11 screen capture and window listing" ON)
+if(APPLE)
+    target_compile_definitions(atui PRIVATE ATUI_HAVE_MAC_CAPTURE=1)
+elseif(ATUI_X11 AND UNIX AND NOT CMAKE_SYSTEM_NAME STREQUAL "OS2")
+    find_package(X11)
+    if(X11_FOUND)
+        target_compile_definitions(atui PRIVATE ATUI_HAVE_X11=1)
+        target_include_directories(atui PRIVATE ${X11_INCLUDE_DIR})
+        target_link_libraries(atui PRIVATE ${X11_LIBRARIES})
     endif()
 endif()
 

@@ -5922,3 +5922,63 @@ it by policy, since whoever sends those keys means the transcript.
 Unix never lost the bar path; its "partial" following is the
 streaming layout's 120 ms throttle, unless measurement says
 otherwise.
+
+## The desktop pair: screenshot and windows (2026-11-05)
+
+Eyes, first; hands later.  A new seam, `src/platform/screen.h`:
+capture the screen or one window to a BMP, and enumerate windows
+(handle, geometry, title, class, active/iconic).  Backends self-guard
+and are selected by defines, the thread-seam way: `screen_x11.cpp`
+(ATUI_HAVE_X11, from `find_package(X11)`, option ATUI_X11, every
+non-Apple UNIX), `screen_mac.cpp` (ATUI_HAVE_MAC_CAPTURE, always on
+Apple: shells to `/usr/sbin/screencapture -x -t bmp`), and
+`screen_none.cpp` when neither answers.  The two tools register **only
+where the capability does**: a model should never be handed a tool
+whose machine has no screen.  `windows` is read-only and runs free;
+`screenshot` asks every time (subject is the screen itself, not the
+output path, so no policy can reason it away).
+
+Host gates: 179/179 net, 124/124 no-transport -- ten new cases cover
+the BMP writer's bytes (54-byte header, padded bottom-up BGR rows),
+the reader's two header kinds (Windows 40-byte and the 12-byte
+OS/2 COREHEADER with signed, top-down height, which is what macOS
+actually writes for `-t bmp`), the window query, the listing's folded
+text.  The portable files are `-std=c++98 -pedantic` clean; Watcom
+1.9 compiles the whole new directory with no warnings and relinks
+both executables (build.cmd grows a src\platform loop; on the box the
+none-backend is live until the PM one lands, so no tools register
+there yet and nothing changes).
+
+Measured on the Mac against XQuartz, the only live X server within
+reach -- and it disagreed with the plan, so the plan moved:
+
+*   `XGetImage` on the **root** returns BLACK under XQuartz even with
+    two windows up: macOS's WindowServer composites and the X server
+    never owns a root framebuffer there.
+*   `XGetImage` on the **window** returns its real contents under the
+    same compositor (xterm's cells, its scrollbar bevels; 152
+    distinct colors from a 484x286 grab).  captureWindow therefore
+    reads the window, not the screen rectangle under it: window
+    contents beat a guarantee about stale pixels, and on compositing
+    Linux servers the redirected pixmap is current anyway.
+*   `WM_STATE` is not a predefined atom (Xatom.h really has no
+    XA_WM_STATE); the ICCCM makes the WM intern it, so ask with
+    `XInternAtom(..., False)` and None honestly means "nobody has
+    states".  Same guard for `_NET_ACTIVE_WINDOW` / `_NET_WM_NAME`:
+    a property request with atom None is a protocol error.
+*   Titles come UTF-8 from the desktop regardless of any terminal
+    codepage, so the listing folds with `foldToAscii` (always), not
+    `foldForTerminal` (platform-maybe).
+
+Known, by architecture rather than surprise: a first capture from a
+terminal on macOS needs Screen Recording permission and otherwise
+succeeds with a black picture; Wayland without XWayland has nothing
+for an X11 backend to open, and says so; XQuartz screen capture
+stays black for the root-framebuffer reason above -- Mac builds get
+the macOS backend anyway.
+
+Try it on a Linux box (X11 session): `cmake -B build` should report
+`Found X11`, then start atui and ask the model to list the windows;
+one approval, and a BMP lands as `atui_shot_1.bmp`.  The OS/2 PM
+capture (DevOpenDC/BitBlt over WinGetPS, Gotcha!'s proven recipe) is
+the next phase; then the hands half -- launch, keys, clicks.

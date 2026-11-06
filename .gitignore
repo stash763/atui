@@ -33,3 +33,8 @@ build-*.log
 *.run.txt
 build-asan/
 build-nothreads/
+
+# what the screenshot tool writes into the working directory, and the
+# BMP the self-test round-trips through (transient by design)
+atui_shot_*.bmp
+atui_screen_test.bmp

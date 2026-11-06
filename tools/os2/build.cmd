@@ -274,6 +274,7 @@ rem that combination does not work when skipping is required), so this is the pl
 rem loop the other directories use.
 for %%f in (src\net\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% %NET% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
 for %%f in (src\settings\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% %NET% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
+for %%f in (src\platform\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% %NET% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
 for %%f in (src\tools\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% %NET% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
 for %%f in (src\tui\*.cpp) do (echo [at] %%f & echo ---- %%f ---- >> %LOG% & %WPP% %NET% -fo=obj\at\ %%f >> %LOG% 2>&1 || set RC=1)
 if "%RC%"=="1" goto one_failed
