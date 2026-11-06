@@ -6041,3 +6041,26 @@ At the box's own display: start atuipm, and the model sees the desktop
 -- ask it to list the windows, then to capture one.  This is the first
 build where the PM image has eyes; the hands (launch, keys, clicks)
 are the next phase.
+
+## The maroon chip: inline code goes dark-on-dark (2026-11-05)
+
+The box's first tool-call table came back with `` `class` `` spans
+rendered as unreadable maroon (screenshot15). The dark theme's
+`rCodeInline` was brown-on-dark-gray -- every other role in that table
+is a *bright* foreground because the table says so in its own comment,
+and the old contrast test (fg != bg) cannot see the difference between
+"different" and "readable".  Brown's bright value is yellow, which is
+what rString already uses on that gray; that is the chip now.
+
+The test grew the rule the box taught: role colors are graded on
+*brightness gap*, not difference -- against the page palette the OS/2
+driver actually renders in the legacy model, against the explicit RGB
+of the dark theme in the modern one (the modern classic theme is
+palette-index colors by design, its brightness belongs to the
+terminal).  Dim roles -- reasoning, quotes, strike, comments, the
+separator -- keep the right to recede, but a gap of 10, not zero.
+The test's first run caught a bug in itself (a helper returning `bool`
+where an absolute gap was wanted), which is the usual service a
+test gives on its first day.
+
+180/180, 125/125; theme.cpp + pmexe RC=0 on the box.

@@ -381,6 +381,112 @@ int test_theme_role_contrast()
     return 0;
 }
 
+// Brightness of an attribute's two colors, answered per color model.
+// The nibble table below is the page palette the OS/2 driver actually
+// shows (src/platform/screen_os2.cpp's kAtuiFgPal family, index 7 the
+// engine draws white), which is the point: contrast is measured
+// against what the machine renders, not against a terminal's guess.
+unsigned nibbleLum( int nib )
+{
+    static const unsigned kLum[ 16 ] = {
+        0, 18, 62, 80, 25, 43, 70, 255,
+        42, 106, 152, 233, 115, 166, 242, 255
+    };
+    return kLum[ nib & 0x0F ];
+}
+
+unsigned rgbLum( unsigned rgb )   // 0xRRGGBB
+{
+    return ( ( ( rgb >> 16 ) & 0xFF ) * 30
+           + ( ( rgb >> 8 ) & 0xFF ) * 59
+           + ( rgb & 0xFF ) * 11 ) / 100;
+}
+
+unsigned roleContrast( TColorAttr attr, unsigned &fgL, unsigned &bgL )
+{
+#if defined( TVISION_LEGACY_COLORS )
+    fgL = nibbleLum( attr & 0x0F );
+    bgL = nibbleLum( ( attr >> 4 ) & 0x0F );
+#else
+    fgL = rgbLum( attr.getForeground().asRGB() );
+    bgL = rgbLum( attr.getBackground().asRGB() );
+#endif
+    int d = (int)fgL - (int)bgL;
+    return d < 0 ? -d : d;
+}
+
+// The failure path says which role in which theme, plus the two
+// luminances that disagreed, for the day this test fails for a reason
+// nobody predicted.
+int lumFail( int t, int r, unsigned fgL, unsigned bgL )
+{
+    return -(0x40000000 + ((t * 100 + r) * 256 + (int)fgL) * 256
+              + (int)bgL);
+}
+
+int test_theme_role_luminance()
+{
+    // screenshot15 taught this one: the dark theme handed inline code
+    // chips brown on dark gray, fg != bg said nothing, and the box drew
+    // maroon mush. A theme may dim a role on purpose -- reasoning,
+    // quotes, strikethrough, the separator are meant to recede -- but
+    // every other role has to clear a real brightness gap, because at
+    // the low end of the palette "different colors" and "readable"
+    // are not the same statement.
+    const int dimRoles[] = { atui::tui::rThinking, atui::tui::rQuote,
+                             atui::tui::rStrike, atui::tui::rDim,
+                             atui::tui::rInputSep, atui::tui::rComment };
+    const int dimCount = (int)( sizeof dimRoles / sizeof dimRoles[ 0 ] );
+
+#if defined( TVISION_LEGACY_COLORS )
+    // Every role of both themes: in sixteen colors every attribute is
+    // the box's own nibble palette, and this is exactly the pair the
+    // OS/2 page will render.
+    const int firstTheme = atui::tui::ThemeClassic;
+#else
+    // The modern model's classic theme is the stock Turbo Vision look
+    // -- palette-index colors whose final RGB belongs to whichever
+    // terminal draws them, so their brightness is not this build's to
+    // grade. The dark theme is explicit RGB, and that promise holds
+    // everywhere the model exists.
+    const int firstTheme = atui::tui::ThemeDark;
+#endif
+
+    for( int t = firstTheme; t <= atui::tui::ThemeDark; ++t )
+    {
+        atui::tui::setTheme( atui::tui::Theme( t ) );
+        for( int r = 0; r < atui::tui::rRoleCount; ++r )
+        {
+            unsigned fgL = 0, bgL = 0;
+            const unsigned gap =
+                roleContrast( atui::tui::roleAttr( atui::tui::Role( r ) ),
+                              fgL, bgL );
+            bool dimmed = false;
+            for( int d = 0; d < dimCount; ++d )
+                if( dimRoles[ d ] == r )
+                    dimmed = true;
+            if( dimmed )
+            {
+                // Receding is allowed, gone is not: a dim role still
+                // has to clear a token gap, just not the full one.
+                if( gap < 10 )
+                {
+                    atui::tui::setTheme( atui::tui::ThemeClassic );
+                    return lumFail( t, r, fgL, bgL );
+                }
+                continue;
+            }
+            if( gap < 40 )
+            {
+                atui::tui::setTheme( atui::tui::ThemeClassic );
+                return lumFail( t, r, fgL, bgL );
+            }
+        }
+    }
+    atui::tui::setTheme( atui::tui::ThemeClassic );
+    return 0;
+}
+
 int test_theme_palette_contrast()
 {
     // The application palette colors everything atui does not paint itself:
@@ -2924,6 +3030,7 @@ void init()
     register_test( "theme: dark recolor", &test_theme_dark_recolor );
     register_test( "theme: switch", &test_theme_switch );
     register_test( "theme: role contrast", &test_theme_role_contrast );
+    register_test( "theme: role luminance", &test_theme_role_luminance );
     register_test( "theme: palette contrast", &test_theme_palette_contrast );
     register_test( "provider: singleton mutable", &test_provider_singleton_mutable );
     register_test( "provider: store add/switch/delete", &test_provider_store );

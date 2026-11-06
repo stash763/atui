@@ -190,7 +190,12 @@ const uchar kRoleDark[rRoleCount] =
     /* rBold */        biosAttr( biosWhite,        biosBlack    ),
     /* rItalic */      biosAttr( biosLightCyan,    biosBlack    ),
     /* rBoldItalic */  biosAttr( biosWhite,        biosBlack    ),
-    /* rCodeInline */  biosAttr( biosBrown,        biosDarkGray ),
+    /* rCodeInline */  biosAttr( biosYellow,       biosDarkGray ),
+    /* The brown this replaces was a dark foreground on a dark
+       background -- maroon chips on the box's page, unreadable at any
+       distance (screenshot15). The table's own rule holds: foregrounds
+       are the bright value of their hue; brown's bright value is
+       yellow, which is also what rString uses on the same gray. */
     /* rLink */        biosAttr( biosLightBlue,    biosBlack    ),
     /* rQuote */       biosAttr( biosDarkGray,     biosBlack    ),
     /* rMarker */      biosAttr( biosLightCyan,    biosBlack    ),
