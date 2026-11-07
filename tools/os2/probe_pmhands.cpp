@@ -442,8 +442,13 @@ int main( int argc, char **argv )
         arenaTests( frame );
     crossProcessRead();
 
+    // E, the notepad-shaped PM editor that ships with every OS/2: no
+    // extra DLLs, no game state, closes on WM_CLOSE -- the mahjong
+    // board the first draft named turned out to throw errors here,
+    // and a launch tool's test target should be the simplest thing
+    // that has a window (named by the operator who found E.EXE).
     char progBuf[ 256 ];
-    const char *prog = "c:\\os2\\clocksprg.exe";
+    const char *prog = "c:\\os2\\e.exe";
     if( argc > 1 && argv[ 1 ][ 0 ] != '\0' )
     {
         std::strncpy( progBuf, argv[ 1 ], sizeof progBuf - 1 );
