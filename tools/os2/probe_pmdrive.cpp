@@ -126,6 +126,8 @@ void describeWindow( const char *tag, HWND hwnd )
 
 void dumpChildren( HWND frame )
 {
+    if( frame == 0 )
+        return;
     int kids = 0;
     HWND c = WinQueryWindow( frame, QW_TOP );
     for( int i = 0; c != 0 && i < 16; ++i )
@@ -344,29 +346,56 @@ HWND waitForDialog( const TopList &before, unsigned timeoutMs )
 // provide on its own.
 void driveAtui()
 {
+    // The chat client nests WPS frame -> AtuiGroup -> AtuiApp, so a
+    // top-level-only search (the first draft's mistake, and the same
+    // reason the cross-process read never found anyone) misses it.
+    // Walk two levels of children with case-off matching.
     HWND app = 0;
     HWND w = WinQueryWindow( HWND_DESKTOP, QW_TOP );
     for( int i = 0; w != 0 && i < 96 && app == 0; ++i )
     {
-        CHAR cls[ 48 ];
-        cls[ 0 ] = '\0';
-        WinQueryClassName( w, (LONG)sizeof cls - 1, cls );
-        if( std::strcmp( cls, "AtuiApp" ) == 0 )
-            app = w;
+        HWND c = WinQueryWindow( w, QW_TOP );
+        for( int k = 0; c != 0 && k < 16 && app == 0; ++k )
+        {
+            if( c != w )
+            {
+                CHAR cls[ 48 ];
+                cls[ 0 ] = '\0';
+                WinQueryClassName( c, (LONG)sizeof cls - 1, cls );
+                if( stricmp( cls, "AtuiApp" ) == 0 )
+                    app = c;
+                // one level deeper still, in case the group nests
+                HWND g = WinQueryWindow( c, QW_TOP );
+                for( int m = 0; g != 0 && m < 16 && app == 0; ++m )
+                {
+                    CHAR gcls[ 48 ];
+                    gcls[ 0 ] = '\0';
+                    WinQueryClassName( g, (LONG)sizeof gcls - 1, gcls );
+                    if( stricmp( gcls, "AtuiApp" ) == 0 )
+                        app = g;
+                    g = WinQueryWindow( g, QW_NEXT );
+                }
+            }
+            c = WinQueryWindow( c, QW_NEXT );
+        }
         w = WinQueryWindow( w, QW_NEXT );
     }
     if( app == 0 )
     {
-        say( "atui: no AtuiApp window -- start atuipm at the display "
-             "and rerun\n" );
+        say( "atui: no AtuiApp window -- is atuipm up at the display? "
+             "(a new build of atuipm must be running for the search "
+             "classes to exist at all)\n" );
         return;
     }
     describeWindow( "atui client:", app );
+    dumpChildren( app );
+    dumpChildren( WinQueryWindow( app, QW_PARENT ) );
 
-    // The MLE: the driver's prompt child.  Class string of the system
-    // multiline edit is "MLE"; if a future driver nests deeper, the
-    // MLM_QUERYTEXTLENGTH probe below still separates real MLEs from
-    // windows merely nearby.
+    // The MLE: the driver's prompt child.  A system class answers
+    // WinQueryClassName as "#n", and WC_MLE -- 0xffff000a in Watcom's
+    // pmwin.h:131 -- reports as "#10" (measured against the running
+    // chat client; "MLE" kept in the test for machines that answer
+    // in words).
     HWND mle = 0;
     HWND c = WinQueryWindow( app, QW_TOP );
     for( int i = 0; c != 0 && i < 12 && mle == 0; ++i )
@@ -374,7 +403,8 @@ void driveAtui()
         CHAR cls[ 48 ];
         cls[ 0 ] = '\0';
         WinQueryClassName( c, (LONG)sizeof cls - 1, cls );
-        if( std::strcmp( cls, "MLE" ) == 0 )
+        if( std::strcmp( cls, "MLE" ) == 0
+            || std::strcmp( cls, "#10" ) == 0 )
             mle = c;
         c = WinQueryWindow( c, QW_NEXT );
     }
@@ -388,7 +418,8 @@ void driveAtui()
             CHAR cls[ 48 ];
             cls[ 0 ] = '\0';
             WinQueryClassName( c, (LONG)sizeof cls - 1, cls );
-            if( std::strcmp( cls, "MLE" ) == 0 )
+            if( std::strcmp( cls, "MLE" ) == 0
+                || std::strcmp( cls, "#10" ) == 0 )
                 mle = c;
             c = WinQueryWindow( c, QW_NEXT );
         }
@@ -398,37 +429,54 @@ void driveAtui()
         say( "atui: no MLE child found\n" );
         return;
     }
-    const LONG len0 =
-        (LONG)LONGFROMMP( WinSendMsg( mle, MLM_QUERYTEXTLENGTH,
-                                      MPFROMLONG( 0 ), MPFROMLONG( 0 ) ) );
-    say( "atui: MLE h=%p text length before = %ld\n", (void *)mle, len0 );
+    // The one legal cross-process text read: window text via the
+    // marshaled query API.  Whether an MLE mirrors typed text into
+    // its window-text object is a guess -- but it is a cheap one,
+    // and last round's evidence (letters A/B/C heard by the pump)
+    // died behind a minimized window before any capture could see
+    // them.  "ABC" here means the earlier rounds' keys DID land and
+    // only the witness was missing; empty means they truly didn't.
+    CHAR ptxt[ 128 ];
+    ptxt[ 0 ] = '\0';
+    const LONG ptl =
+        WinQueryWindowText( mle, (LONG)sizeof ptxt - 1, ptxt );
+    say( "atui: prompt window-text = %ld chars '%s'\n",
+         (long)ptl, ptxt );
+    // Round 2, informed by the chat client's own key log: last run's
+    // posted WM_CHARs ALL reached its pump (six kmsg lines, mp2 values
+    // matching the posts exactly) and the pump dispatched them to the
+    // MLE -- which swallowed every one.  Same window, same queue,
+    // same message, no insertion.  The remaining difference between
+    // those posts and the user's keystrokes is focus: atuipm was
+    // started at this display but nothing has activated it since, and
+    // toolkit edit controls are known to guard insertion on holding
+    // the real keyboard focus.
+    //
+    // So: name the focus, activate, and type again -- with pixels as
+    // the meter (MLM read-back is out of reach across processes: the
+    // export messages move raw pointers PM does not marshal).
+    HWND focusNow = WinQueryFocus( HWND_DESKTOP );
+    CHAR fcls[ 48 ];
+    fcls[ 0 ] = '\0';
+    if( focusNow != 0 )
+        WinQueryClassName( focusNow, (LONG)sizeof fcls - 1, fcls );
+    say( "atui: focus now = %p class '%s' (mle is %p)\n",
+         (void *)focusNow, fcls, (void *)mle );
 
-    const char *msg = " HELLO";
-    for( const char *p = msg; *p != '\0'; ++p )
-        WinSendMsg( mle, WM_CHAR, MPFROMLONG( 0 ),
-                    MPFROMLONG( (unsigned char)*p ) );
-    pumpMs( 400 );
+    const BOOL act = WinSetFocus( HWND_DESKTOP, mle );
+    say( "atui: WinSetFocus(desktop, mle) rc=%d err=0x%x\n", (int)act,
+         (unsigned long)WinGetLastError( g_hab ) );
+    pumpMs( 300 );
+    focusNow = WinQueryFocus( HWND_DESKTOP );
+    say( "atui: focus after activation = %p\n", (void *)focusNow );
 
-    const LONG len1 =
-        (LONG)LONGFROMMP( WinSendMsg( mle, MLM_QUERYTEXTLENGTH,
-                                      MPFROMLONG( 0 ), MPFROMLONG( 0 ) ) );
-    say( "atui: text length after typing ' HELLO' = %ld -- %s\n",
-         len1, len1 == len0 + 6 ? "TYPING WORKS"
-                                : "no change (keys did not land)" );
-
-    // Leave the prompt as found: delete exactly what was inserted.
-    if( len1 > len0 )
-        WinSendMsg( mle, MLM_DELETE, MPFROMLONG( len0 ),
-                    MPFROMLONG( len1 - len0 ) );
-    pumpMs( 200 );
-    const LONG len2 =
-        (LONG)LONGFROMMP( WinSendMsg( mle, MLM_QUERYTEXTLENGTH,
-                                      MPFROMLONG( 0 ), MPFROMLONG( 0 ) ) );
-    say( "atui: length after cleanup = %ld (restore %s)\n", len2,
-         len2 == len0 ? "ok" : "LEFT SOMETHING" );
-
-    // And the pixels of the chat window, top frame downward: the
-    // group window is the driver's, its parent is the WPS frame.
+    // The witness: the outer frame's rectangle, captured before
+    // anything is typed.  Last round this rectangle was showing a
+    // file-manager window -- the chat client was minimized -- and
+    // every "the keys did not land" verdict from those frames is
+    // void: they photographed the wrong window.  The baseline makes
+    // that failure mode impossible to fall into twice: if the
+    // baseline is not the chat UI, nothing after it means anything.
     HWND grp = WinQueryWindow( app, QW_PARENT );
     HWND shot = grp != 0 ? grp : app;
     HWND outer = WinQueryWindow( shot, QW_PARENT );
@@ -436,13 +484,99 @@ void driveAtui()
         shot = outer;
     SWP swp;
     WinQueryWindowPos( shot, &swp );
-    say( "atui: capturing frame h=%p x=%ld y=%ld %ldx%ld -> "
-         "drive_atui.bmp\n", (void *)shot, (long)swp.x, (long)swp.y,
-         (long)swp.cx, (long)swp.cy );
-    if( captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy,
-                              "c:\\atui\\drive_atui.bmp" ) )
-        say( "atui: pixels written (typed text was deleted before the "
-             "shot -- the shot proves window capture, not typing)\n" );
+    say( "atui: baseline frame h=%p x=%ld y=%ld %ldx%ld vis=%d -> "
+         "drive_atui0.bmp\n", (void *)shot, (long)swp.x, (long)swp.y,
+         (long)swp.cx, (long)swp.cy,
+         (int)WinIsWindowVisible( shot ) );
+    captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy,
+                          "c:\\atui\\drive_atui0.bmp" );
+
+    // Round 3, letters as labels, plus a control nobody can blame on
+    // focus: stuffing the control through the marshaled window-text
+    // door (WinSetWindowText with SPBR_TEXT on an MLE) proves pixels
+    // can arrive at all.  Focus is now proven reachable (screensaver
+    // off, focus sat on the MLE by itself, WinSetFocus(desktop,mle)
+    // rc=1), yet two rounds of posted keys typed nothing while the
+    // pump's own kmsg log proves they reached it -- so the remaining
+    // suspects are the mp1/mp2 encodings, and the driver's
+    // transcription of the box's pmwin.h points right at them: WM_CHAR
+    // flags live in mp1's low short (KC_CHAR 0x0001, KC_KEYUP 0x0040,
+    // shift family 0x0008/0x0010/0x0020) and every earlier post
+    // carried mp1=0 -- "not a character" to a control that checks.
+    // One letter per encoding, typed in order: the letters that
+    // appear spell which encodings work, and their order proves
+    // posted/sent interleaving preserves sequence.
+    struct Variant { char letter; ULONG flags; int scan; int virt;
+                     int mode; const char *tag; };
+    const Variant variants[] = {
+        { 'A', 0x0000, 0x00, 0x0000, 0, "post mp1=0" },
+        { 'B', 0x0001, 0x00, 0x0000, 0, "post KC_CHAR" },
+        { 'C', 0x0001, 0x23, 0x0000, 0, "post KC_CHAR+scan(h)" },
+        { 'D', 0x0146, 0x00, 0x0000, 0, "post flags 0x146" },
+        { 'E', 0x0001, 0x00, 0x0000, 1, "SEND KC_CHAR" },
+        { 'F', 0x0146, 0x00, 0x0000, 1, "SEND flags 0x146" },
+        { 'G', 0x0001, 0x00, 0x0000, 2, "SEND WM_CHAR 0x1E47" },
+    };
+    for( int v = 0; v < (int)(sizeof variants / sizeof variants[0]);
+         ++v )
+    {
+        const Variant &x = variants[ v ];
+        // mp1: flags in the low short, scan byte fourth (the shape
+        // the pump itself reads: CHAR4FROMMP(mp1) for the scan).
+        const MPARAM mp1 = MPFROM2SHORT( (SHORT)x.flags, (SHORT)x.scan );
+        // mp2: character in the low byte, virtual key in the high
+        // short; 0 means "no virtual key", which the pump's page-key
+        // tests (0x11/0x12) pass through untouched.  Mode 2 packs
+        // the physical shape the driver's raw log saw: scan riding
+        // in the byte just above the character (0x1e1c0d for Enter).
+        MPARAM mp2;
+        if( x.mode == 2 )
+            mp2 = MPFROMLONG( ( (ULONG)0x1E << 8 )
+                              | (unsigned char)x.letter );
+        else
+            mp2 = MPFROM2SHORT( (SHORT)x.letter, (SHORT)x.virt );
+        const MRESULT r =
+            ( x.mode == 0 )
+                ? (MRESULT)(ULONG)( WinPostMsg( mle, WM_CHAR, mp1, mp2 )
+                                    ? 1 : 0 )
+                : WinSendMsg( mle, WM_CHAR, mp1, mp2 );
+        say( "atui: typed '%c' via %s (mode %d, r=0x%lx)\n", x.letter,
+             x.tag, x.mode, (unsigned long)(ULONG)r );
+        pumpMs( 200 );   // keeps the interleaved sends/posts in order
+    }
+    pumpMs( 800 );
+
+    say( "atui: all variants typed -> drive_atui6.bmp "
+         "(read the prompt: the letters that appear name the "
+         "accepted encodings)\n" );
+    captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy,
+                          "c:\\atui\\drive_atui6.bmp" );
+
+    // Control experiment: the marshaled door.  WM_SETTEXT is a system
+    // message whose pointer parameters PM copies across address
+    // spaces legally, and WinSetWindowText asks exactly that.  If
+    // THIS paints and the letters did not, the control guards keys
+    // but not text-set; if neither paints, the control (or its host)
+    // is deaf to outside writers entirely -- different tool design.
+    const BOOL swr = WinSetWindowText( mle, (PSZ)"WXYZ" );
+    say( "atui: WinSetWindowText(WXYZ) rc=%d err=0x%x\n", (int)swr,
+         (unsigned long)WinGetLastError( g_hab ) );
+    pumpMs( 600 );
+    captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy,
+                          "c:\\atui\\drive_atui8.bmp" );
+    WinSetWindowText( mle, (PSZ)"" );   // clean the house either way
+    pumpMs( 400 );
+
+    // Cleanup attempt through the same door: backspace as the pump
+    // sees it -- KC_CHAR plus the backspace character.  Whether the
+    // strip empties is itself measured; the frame is the witness.
+    for( int i = 0; i < 6; ++i )
+        WinPostMsg( mle, WM_CHAR, MPFROM2SHORT( 0x0001, 0 ),
+                    MPFROM2SHORT( 0x08, 0 ) );
+    pumpMs( 800 );
+    say( "atui: posted 6 backspaces -> drive_atui7.bmp\n" );
+    captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy,
+                          "c:\\atui\\drive_atui7.bmp" );
 }
 
 void clickButtonNamed( HWND hDlg, const char *wanted )
@@ -485,6 +619,49 @@ int main( int argc, char **argv )
     {
         std::fclose( g_out );
         return 2;
+    }
+
+    if( argc > 2 && std::strcmp( argv[ 1 ], "--kill" ) == 0 )
+    {
+        // taskkill on this box is a GUI task list, not a command; the
+        // direct API is the way.  A wedged PM app leaves its window
+        // object behind until its process actually dies.
+        const ULONG pid = (ULONG)strtoul( argv[ 2 ], 0, 10 );
+        // The names in the modern docs (KPT_TERM/KPT_NOW) postdate
+        // this header set; the classic single option bit (the old
+        // KILLPROCESSON, value 1) is what this kernel must accept,
+        // and the Warp-era pair is tried first for the same door.
+        APIRET rc = DosKillProcess( 0x0001 | 0x0002, pid );
+        if( rc != 0 )
+            rc = DosKillProcess( 0x0001, pid );
+        say( "kill %lu rc=%lu\n", pid, (unsigned long)rc );
+        std::fclose( g_out );
+        WinTerminate( g_hab );
+        return (int)( rc != 0 );
+    }
+
+    if( argc > 1 && std::strcmp( argv[ 1 ], "--shot" ) == 0 )
+    {
+        // Whole-screen look plus the top-window census: which window
+        // actually covers what, and whether the chat client is even
+        // still there.  Cheap to run from anywhere, and the picture
+        // answers questions the per-window queries keep getting wrong.
+        HWND w = WinQueryWindow( HWND_DESKTOP, QW_TOP );
+        for( int i = 0; w != 0 && i < 64; ++i )
+        {
+            describeWindow( "top:", w );
+            w = WinQueryWindow( w, QW_NEXT );
+        }
+        SWP dsk;
+        WinQueryWindowPos( HWND_DESKTOP, &dsk );
+        say( "shot: desktop %ldx%ld -> drive_desktop.bmp\n",
+             (long)dsk.cx, (long)dsk.cy );
+        captureScreenRectBmp( 0, 0, dsk.cx, dsk.cy,
+                              "c:\\atui\\drive_desktop.bmp" );
+        say( "done\n" );
+        std::fclose( g_out );
+        WinTerminate( g_hab );
+        return 0;
     }
 
     if( argc > 1 && std::strcmp( argv[ 1 ], "--atui" ) == 0 )
