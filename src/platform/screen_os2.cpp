@@ -20,6 +20,13 @@
 //     The device answered one packed plane at 32 bits; the 16->24
 //     quirk the recipe papers over stays in, cheap, because other
 //     display drivers answer it.
+//   * The source PS is HWND_DESKTOP, and only the source rectangle
+//     moves.  A later round of ground truth (2026-11-07, the drive
+//     probe against a live E plus the always-on taskbar) found
+//     WinGetPS(window) blitting pure black with rc clean -- success
+//     that captures nothing -- while the desktop PS carried the real
+//     257-color screen.  rc clean is not the same as pixels right,
+//     and the ground-truth pass is what tells them apart.
 //   * GpiQueryBitmapBits hands rows bottom-up, bytes B-G-R-(-pad):
 //     the flip to the BMP writer's top-down order and the channel swap
 //     are both here, and nothing else is between the box and the file.
@@ -136,7 +143,7 @@ std::string windowClass( HWND hwnd )
     return std::string();
 }
 
-bool grabWindowBits( HWND hwnd, LONG w, LONG h,
+bool grabScreenBits( LONG sx, LONG sy, LONG w, LONG h,
                      std::vector<unsigned char> &rgb,
                      int &outW, int &outH, std::string &err )
 {
@@ -225,12 +232,19 @@ bool grabWindowBits( HWND hwnd, LONG w, LONG h,
     else
     {
         HBITMAP hbmOld = GpiSetBitmap( hpsMem, hbm );
-        HPS hpsSrc = WinGetPS( hwnd );
+        // The source is the shared screen PS, never WinGetPS(window):
+        // measured 2026-11-07 against ground truth, a window's own PS
+        // blits pure black on this machine (the always-on taskbar
+        // captured as one color), while the desktop PS delivers the
+        // real 257-color desktop.  Same lesson X11 taught, opposite
+        // answer: the shared framebuffer is the source that works
+        // here, and the window contributes only its screen rectangle.
+        HPS hpsSrc = WinGetPS( HWND_DESKTOP );
         if( hpsSrc != 0 )
         {
             aptl[ 0 ].x = 0;    aptl[ 0 ].y = 0;
             aptl[ 1 ].x = w;    aptl[ 1 ].y = h;
-            aptl[ 2 ].x = 0;    aptl[ 2 ].y = 0;
+            aptl[ 2 ].x = sx;   aptl[ 2 ].y = sy;
             const LONG blt = GpiBitBlt( hpsMem, hpsSrc, 3, aptl,
                                         ROP_SRCCOPY, BBO_IGNORE );
             if( blt != GPI_ERROR )
@@ -274,7 +288,7 @@ bool grabWindowBits( HWND hwnd, LONG w, LONG h,
             WinReleasePS( hpsSrc );
         }
         else
-            err = "WinGetPS failed (the window is gone, or PM said no)";
+            err = "WinGetPS(HWND_DESKTOP) failed (PM said no)";
         GpiSetBitmap( hpsMem, hbmOld );
     }
 
@@ -346,7 +360,7 @@ CaptureResult captureScreen( const std::string &path )
     std::vector<unsigned char> rgb;
     int bw = 0, bh = 0;
     std::string err;
-    if( !grabWindowBits( HWND_DESKTOP, w, h, rgb, bw, bh, err ) )
+    if( !grabScreenBits( 0, 0, w, h, rgb, bw, bh, err ) )
     {
         res.error = err;
         return res;
@@ -384,16 +398,28 @@ CaptureResult captureWindow( const std::string &handle,
 
     SWP swp;
     WinQueryWindowPos( hwnd, &swp );
-    if( swp.cx <= 0 || swp.cy <= 0 )
+    // The rectangle gets clamped to the screen: the source of pixels
+    // is the framebuffer, so whatever hangs off the edge has none.
+    // Parked windows sit at -32000, and the clamp answers them with
+    // the honest complaint that nothing of them shows.
+    const LONG sxMax = WinQuerySysValue( HWND_DESKTOP, SV_CXSCREEN );
+    const LONG syMax = WinQuerySysValue( HWND_DESKTOP, SV_CYSCREEN );
+    LONG x0 = swp.x < 0 ? 0 : swp.x;
+    LONG y0 = swp.y < 0 ? 0 : swp.y;
+    LONG x1 = swp.x + swp.cx > sxMax ? sxMax : swp.x + swp.cx;
+    LONG y1 = swp.y + swp.cy > syMax ? syMax : swp.y + swp.cy;
+    if( x1 - x0 <= 0 || y1 - y0 <= 0 )
     {
-        res.error = "window " + handle + " has no size to capture";
+        res.error = "window " + handle
+                  + " shows nothing on this screen (off the edge, or "
+                    "on another virtual desktop)";
         return res;
     }
 
     std::vector<unsigned char> rgb;
     int bw = 0, bh = 0;
     std::string err;
-    if( !grabWindowBits( hwnd, swp.cx, swp.cy, rgb, bw, bh, err ) )
+    if( !grabScreenBits( x0, y0, x1 - x0, y1 - y0, rgb, bw, bh, err ) )
     {
         res.error = err;
         return res;

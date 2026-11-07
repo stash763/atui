@@ -199,6 +199,7 @@ if "%1"=="pmlib" goto pmlib
 if "%1"=="pmexe" goto pmexe
 if "%1"=="pmprobe" goto pmprobe
 if "%1"=="pmhands" goto pmhands
+if "%1"=="pmdrive" goto pmdrive
 
 echo ================== tvision library ==================
 rem Only source/tvision, and not geninc.cpp.  This is what the Borland build in
@@ -824,6 +825,32 @@ wlink @link.rsp >> %LOG% 2>&1
 if errorlevel 1 goto one_failed
 dir pmhands.exe
 echo [pmhands] OK: run at the box display; read C:\atui\hands_out.txt after
+goto summary
+
+:pmdrive
+rem The PM drive probe (tools/os2/probe_pmdrive.cpp): the hands against
+rem a foreign application -- launch E by session spawn, find it by what
+rem is new, read real control ids, set the title, type keys, capture
+rem the pixels as proof, and dismiss the save-changes dialog by
+rem clicking its own button.  Observable from telnet; answers land in
+rem C:\atui\drive_out.txt, pixels in C:\atui\drive_shot.bmp.
+echo ================== pmdrive probe ==================
+if not exist obj\pd mkdir obj\pd
+if exist obj\pd\*.obj del obj\pd\*.obj
+%WPP% -fo=obj\pd\ src\platform\bmpout.cpp probe_pmdrive.cpp >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+if exist link.rsp del link.rsp
+echo system os2v2_pm > link.rsp
+echo name pmdrive.exe >> link.rsp
+echo op m >> link.rsp
+echo option stack=256k >> link.rsp
+for %%f in (obj\pd\*.obj) do echo file %%f >> link.rsp
+echo library os2386.lib >> link.rsp
+echo library stubl.lib >> link.rsp
+wlink @link.rsp >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+dir pmdrive.exe
+echo [pmdrive] OK: run from telnet; read C:\atui\drive_out.txt after
 goto summary
 
 :summary
