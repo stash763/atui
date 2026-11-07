@@ -198,6 +198,7 @@ if "%1"=="pmdrv" goto pmdrv
 if "%1"=="pmlib" goto pmlib
 if "%1"=="pmexe" goto pmexe
 if "%1"=="pmprobe" goto pmprobe
+if "%1"=="pmhands" goto pmhands
 
 echo ================== tvision library ==================
 rem Only source/tvision, and not geninc.cpp.  This is what the Borland build in
@@ -797,6 +798,33 @@ echo [netall] FAILED
 goto summary
 
 
+
+:pmhands
+rem The PM hands probe (tools/os2/probe_pmhands.cpp): the application-
+rem control questions -- own-window realization, the QWS_ID round-trip,
+rem sent and posted WM_CHAR, WM_COMMAND at the owner, MLM_SETTEXT, the
+rem WinStartApp cast with find-by-new-window and WM_CLOSE teardown, and
+rem one read against a foreign process's window.  It pumps messages and
+rem shows windows: PM rule, start it at the box's own display, never
+rem from telnet.  Answers land in C:\atui\hands_out.txt.
+echo ================== pmhands probe ==================
+if not exist obj\ph mkdir obj\ph
+if exist obj\ph\*.obj del obj\ph\*.obj
+%WPP% -fo=obj\ph\ probe_pmhands.cpp >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+if exist link.rsp del link.rsp
+echo system os2v2_pm > link.rsp
+echo name pmhands.exe >> link.rsp
+echo op m >> link.rsp
+echo option stack=256k >> link.rsp
+for %%f in (obj\ph\*.obj) do echo file %%f >> link.rsp
+echo library os2386.lib >> link.rsp
+echo library stubl.lib >> link.rsp
+wlink @link.rsp >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+dir pmhands.exe
+echo [pmhands] OK: run at the box display; read C:\atui\hands_out.txt after
+goto summary
 
 :summary
 echo ================== summary ==================
