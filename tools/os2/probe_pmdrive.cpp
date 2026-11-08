@@ -491,92 +491,90 @@ void driveAtui()
     captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy,
                           "c:\\atui\\drive_atui0.bmp" );
 
-    // Round 3, letters as labels, plus a control nobody can blame on
-    // focus: stuffing the control through the marshaled window-text
-    // door (WinSetWindowText with SPBR_TEXT on an MLE) proves pixels
-    // can arrive at all.  Focus is now proven reachable (screensaver
-    // off, focus sat on the MLE by itself, WinSetFocus(desktop,mle)
-    // rc=1), yet two rounds of posted keys typed nothing while the
-    // pump's own kmsg log proves they reached it -- so the remaining
-    // suspects are the mp1/mp2 encodings, and the driver's
-    // transcription of the box's pmwin.h points right at them: WM_CHAR
-    // flags live in mp1's low short (KC_CHAR 0x0001, KC_KEYUP 0x0040,
-    // shift family 0x0008/0x0010/0x0020) and every earlier post
-    // carried mp1=0 -- "not a character" to a control that checks.
-    // One letter per encoding, typed in order: the letters that
-    // appear spell which encodings work, and their order proves
-    // posted/sent interleaving preserves sequence.
-    struct Variant { char letter; ULONG flags; int scan; int virt;
-                     int mode; const char *tag; };
-    const Variant variants[] = {
-        { 'A', 0x0000, 0x00, 0x0000, 0, "post mp1=0" },
-        { 'B', 0x0001, 0x00, 0x0000, 0, "post KC_CHAR" },
-        { 'C', 0x0001, 0x23, 0x0000, 0, "post KC_CHAR+scan(h)" },
-        { 'D', 0x0146, 0x00, 0x0000, 0, "post flags 0x146" },
-        { 'E', 0x0001, 0x00, 0x0000, 1, "SEND KC_CHAR" },
-        { 'F', 0x0146, 0x00, 0x0000, 1, "SEND flags 0x146" },
-        { 'G', 0x0001, 0x00, 0x0000, 2, "SEND WM_CHAR 0x1E47" },
+    // The encoding matrix, one message per frame.  Two restarts
+    // converged on the same hard fact: WM_CHARs whose mp1 carries a
+    // stray scan byte (0x230001 in round two, and that same shape
+    // again in round three) WEDGE the chat client -- the pump's log
+    // dies at that message and the frame goes invisible, both times,
+    // with no SAP (a hang, not a trap).  Everything that survived
+    // (round one's thirty keys, thirty minutes of heartbeats) had
+    // mp1=0.  So: type one encoding, photograph, check the frame is
+    // still visible, next encoding -- poison tested last.  Whatever
+    // survives this is the exact shape app_send_keys may ship; the
+    // frame that goes dark names the killer without ambiguity.
+    struct Step { char name; int mode; ULONG mp1; ULONG mp2;
+                  const char *tag; };
+    const Step steps[] = {
+        // B: flags where the box says flags live (KC_CHAR 0x0001).
+        { 'B', 0, 0x00000001UL, (ULONG)'B', "post KC_CHAR" },
+        // D: the full physical flag word (0x146 = char | keydown |
+        //     one more measured bit) minus any scan byte.
+        { 'D', 0, 0x00000146UL, (ULONG)'D', "post flags 0x146" },
+        // P: scan in its PHYSICAL slot -- the fourth byte of mp1,
+        // the exact place the driver reads CHAR4FROMMP for.
+        { 'P', 0, 0x23000001UL, (ULONG)'P', "post scan@byte4" },
+        // E: the send door, minimal flags.
+        { 'E', 1, 0x00000001UL, (ULONG)'E', "SEND KC_CHAR" },
+        // G: physical mp2 packing -- scan riding in the byte just
+        // above the character, the shape the raw log saw for Enter.
+        { 'G', 1, 0x00000001UL, 0x00001E47UL, "SEND scan@mp2.byte2" },
+        // C: the convicted shape, re-run last so it can only cost
+        // the final frame.  Scan byte at three instead of four.
+        { 'C', 0, 0x00230001UL, (ULONG)'C', "post scan@byte3" },
     };
-    for( int v = 0; v < (int)(sizeof variants / sizeof variants[0]);
-         ++v )
+    for( int v = 0; v < (int)(sizeof steps / sizeof steps[0]); ++v )
     {
-        const Variant &x = variants[ v ];
-        // mp1: flags in the low short, scan byte fourth (the shape
-        // the pump itself reads: CHAR4FROMMP(mp1) for the scan).
-        const MPARAM mp1 = MPFROM2SHORT( (SHORT)x.flags, (SHORT)x.scan );
-        // mp2: character in the low byte, virtual key in the high
-        // short; 0 means "no virtual key", which the pump's page-key
-        // tests (0x11/0x12) pass through untouched.  Mode 2 packs
-        // the physical shape the driver's raw log saw: scan riding
-        // in the byte just above the character (0x1e1c0d for Enter).
-        MPARAM mp2;
-        if( x.mode == 2 )
-            mp2 = MPFROMLONG( ( (ULONG)0x1E << 8 )
-                              | (unsigned char)x.letter );
-        else
-            mp2 = MPFROM2SHORT( (SHORT)x.letter, (SHORT)x.virt );
+        const Step &x = steps[ v ];
         const MRESULT r =
             ( x.mode == 0 )
-                ? (MRESULT)(ULONG)( WinPostMsg( mle, WM_CHAR, mp1, mp2 )
+                ? (MRESULT)(ULONG)( WinPostMsg( mle, WM_CHAR,
+                                                MPFROMLONG( x.mp1 ),
+                                                MPFROMLONG( x.mp2 ) )
                                     ? 1 : 0 )
-                : WinSendMsg( mle, WM_CHAR, mp1, mp2 );
-        say( "atui: typed '%c' via %s (mode %d, r=0x%lx)\n", x.letter,
-             x.tag, x.mode, (unsigned long)(ULONG)r );
-        pumpMs( 200 );   // keeps the interleaved sends/posts in order
+                : WinSendMsg( mle, WM_CHAR, MPFROMLONG( x.mp1 ),
+                              MPFROMLONG( x.mp2 ) );
+        pumpMs( 350 );
+        const int vis = WinIsWindowVisible( shot );
+        char file[ 40 ];
+        std::sprintf( file, "c:\\atui\\cap_%c.bmp", x.name );
+        captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy, file );
+        say( "atui: '%c' %s mp1=0x%lx mp2=0x%lx r=0x%lx -> %s "
+             "(frame vis=%d)\n", x.name, x.tag,
+             (unsigned long)x.mp1, (unsigned long)x.mp2,
+             (unsigned long)(ULONG)r, file, vis );
+        if( !vis )
+        {
+            say( "atui: FRAME WEDGED at '%s' -- stopping the matrix\n",
+                 x.tag );
+            return;
+        }
     }
-    pumpMs( 800 );
-
-    say( "atui: all variants typed -> drive_atui6.bmp "
-         "(read the prompt: the letters that appear name the "
-         "accepted encodings)\n" );
-    captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy,
-                          "c:\\atui\\drive_atui6.bmp" );
 
     // Control experiment: the marshaled door.  WM_SETTEXT is a system
     // message whose pointer parameters PM copies across address
     // spaces legally, and WinSetWindowText asks exactly that.  If
-    // THIS paints and the letters did not, the control guards keys
-    // but not text-set; if neither paints, the control (or its host)
-    // is deaf to outside writers entirely -- different tool design.
+    // THIS paints and the keys did not, the control guards keys but
+    // not text-set; if neither paints, the control (or its host) is
+    // deaf to outside writers entirely -- different tool design.
     const BOOL swr = WinSetWindowText( mle, (PSZ)"WXYZ" );
-    say( "atui: WinSetWindowText(WXYZ) rc=%d err=0x%x\n", (int)swr,
-         (unsigned long)WinGetLastError( g_hab ) );
-    pumpMs( 600 );
+    pumpMs( 500 );
     captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy,
-                          "c:\\atui\\drive_atui8.bmp" );
+                          "c:\\atui\\cap_S.bmp" );
+    say( "atui: WinSetWindowText(WXYZ) rc=%d -> cap_S.bmp "
+         "(frame vis=%d)\n", (int)swr, (int)WinIsWindowVisible( shot ) );
     WinSetWindowText( mle, (PSZ)"" );   // clean the house either way
     pumpMs( 400 );
 
-    // Cleanup attempt through the same door: backspace as the pump
-    // sees it -- KC_CHAR plus the backspace character.  Whether the
-    // strip empties is itself measured; the frame is the witness.
-    for( int i = 0; i < 6; ++i )
-        WinPostMsg( mle, WM_CHAR, MPFROM2SHORT( 0x0001, 0 ),
-                    MPFROM2SHORT( 0x08, 0 ) );
+    // Cleanup through the surviving door: plain KC_CHAR backspaces,
+    // the shape round one survived thirty of.
+    for( int i = 0; i < 8; ++i )
+        WinPostMsg( mle, WM_CHAR, MPFROMLONG( 0x00000001UL ),
+                    MPFROMLONG( 0x08 ) );
     pumpMs( 800 );
-    say( "atui: posted 6 backspaces -> drive_atui7.bmp\n" );
     captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy,
-                          "c:\\atui\\drive_atui7.bmp" );
+                          "c:\\atui\\cap_K.bmp" );
+    say( "atui: posted 8 backspaces -> cap_K.bmp (frame vis=%d)\n",
+         (int)WinIsWindowVisible( shot ) );
 }
 
 void clickButtonNamed( HWND hDlg, const char *wanted )
