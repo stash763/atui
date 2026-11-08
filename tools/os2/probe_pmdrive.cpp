@@ -344,7 +344,7 @@ HWND waitForDialog( const TopList &before, unsigned timeoutMs )
 // a control that will ANSWER typing (MLM_QUERYTEXTLENGTH moves when
 // characters land), which is the programmatic proof no screenshot can
 // provide on its own.
-void driveAtui()
+void driveAtui( int argc, char **argv )
 {
     // The chat client nests WPS frame -> AtuiGroup -> AtuiApp, so a
     // top-level-only search (the first draft's mistake, and the same
@@ -491,40 +491,69 @@ void driveAtui()
     captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy,
                           "c:\\atui\\drive_atui0.bmp" );
 
-    // The encoding matrix, one message per frame.  Two restarts
-    // converged on the same hard fact: WM_CHARs whose mp1 carries a
-    // stray scan byte (0x230001 in round two, and that same shape
-    // again in round three) WEDGE the chat client -- the pump's log
-    // dies at that message and the frame goes invisible, both times,
-    // with no SAP (a hang, not a trap).  Everything that survived
-    // (round one's thirty keys, thirty minutes of heartbeats) had
-    // mp1=0.  So: type one encoding, photograph, check the frame is
-    // still visible, next encoding -- poison tested last.  Whatever
-    // survives this is the exact shape app_send_keys may ship; the
-    // frame that goes dark names the killer without ambiguity.
+    // The matrix, one message per invocation (--atui X for letter X).
+    // Why shots are separated: two deaths taught the difference
+    // between a live target and a corpse.  A wedged instance keeps
+    // its frame enumerable, focusable (WinSetFocus rc=1!) and
+    // postable-to -- every API answers politely while nothing
+    // processes a single message.  Worse, an instance that got a
+    // WM_QUIT hung in teardown left its last frame in the
+    // framebuffer: the probe photographed and typed at a corpse and
+    // every reading was a lie.  The only witness that cannot lie is
+    // the pump's own log: run one step, fetch atuipm.run.txt, and
+    // 'kmsg ... mp2=0x42' says the shot hit a living queue.  Letters:
+    //   B post mp1=KC_CHAR(1)          D post mp1=0x146 (flag word)
+    //   E SEND mp1=1                   G SEND mp2 packs scan 0x1E
+    //   P post mp1 with scan in byte 4 (physical slot; suspected
+    //     poison once -- first suspected run hit a corpse, unproven)
+    //   C post mp1=0x230001 (convicted twice of wedging the pump:
+    //     SHORT2(mp1) non-zero kills MLE -- last, if ever)
+    //   S WinSetWindowText control     K eight plain backspaces
     struct Step { char name; int mode; ULONG mp1; ULONG mp2;
                   const char *tag; };
     const Step steps[] = {
-        // B: flags where the box says flags live (KC_CHAR 0x0001).
         { 'B', 0, 0x00000001UL, (ULONG)'B', "post KC_CHAR" },
-        // D: the full physical flag word (0x146 = char | keydown |
-        //     one more measured bit) minus any scan byte.
         { 'D', 0, 0x00000146UL, (ULONG)'D', "post flags 0x146" },
-        // P: scan in its PHYSICAL slot -- the fourth byte of mp1,
-        // the exact place the driver reads CHAR4FROMMP for.
-        { 'P', 0, 0x23000001UL, (ULONG)'P', "post scan@byte4" },
-        // E: the send door, minimal flags.
         { 'E', 1, 0x00000001UL, (ULONG)'E', "SEND KC_CHAR" },
-        // G: physical mp2 packing -- scan riding in the byte just
-        // above the character, the shape the raw log saw for Enter.
         { 'G', 1, 0x00000001UL, 0x00001E47UL, "SEND scan@mp2.byte2" },
-        // C: the convicted shape, re-run last so it can only cost
-        // the final frame.  Scan byte at three instead of four.
+        { 'P', 0, 0x23000001UL, (ULONG)'P', "post scan@byte4" },
         { 'C', 0, 0x00230001UL, (ULONG)'C', "post scan@byte3" },
     };
+    const char want = (argc > 2) ? argv[ 2 ][ 0 ] : 'B';
+    if( std::strchr( "BDEGPSRK", want ) == 0 )
+    {
+        say( "atui: unknown shot '%c'\n", want );
+        return;
+    }
+    // Replay: with --atui R <hexmp1> <hexmp2>, inject EXACTLY the
+    // parameter words a physical key produced -- captured from this
+    // window's own pump log while the user typed at the console
+    // (physical 'h': mp1=0x23011005 = scan<<24 | 0x011005, mp2=0x68;
+    // flags 0x05 = KC_CHAR plus a 0x04 bit, CHAR3 always 0x01).
+    // Every synthetic shape tried so far -- flags 0x01, 0x146, bare
+    // -- reached the pump (kmsg proof) and was eaten by the MLE.
+    // Verbatim replay, no substitutions: a swapped character over a
+    // foreign scan code is exactly the shape suspected of wedging
+    // the pump, so the replay sends the physical words whole and
+    // lands their own character.
+    if (argc > 4 && want == 'R')
+    {
+        const ULONG mp1 = (ULONG)strtoul( argv[ 3 ], 0, 16 );
+        const ULONG mp2 = (ULONG)strtoul( argv[ 4 ], 0, 16 );
+        WinPostMsg( mle, WM_CHAR, MPFROMLONG( mp1 ), MPFROMLONG( mp2 ) );
+        pumpMs( 600 );
+        captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy,
+                              "c:\\atui\\cap_R.bmp" );
+        say( "atui: REPLAY post mp1=0x%lx mp2=0x%lx -> cap_R.bmp "
+             "(vis=%d)\n", (unsigned long)mp1, (unsigned long)mp2,
+             (int)WinIsWindowVisible( shot ) );
+        return;
+    }
     for( int v = 0; v < (int)(sizeof steps / sizeof steps[0]); ++v )
     {
         const Step &x = steps[ v ];
+        if( x.name != want )
+            continue;
         const MRESULT r =
             ( x.mode == 0 )
                 ? (MRESULT)(ULONG)( WinPostMsg( mle, WM_CHAR,
@@ -533,48 +562,47 @@ void driveAtui()
                                     ? 1 : 0 )
                 : WinSendMsg( mle, WM_CHAR, MPFROMLONG( x.mp1 ),
                               MPFROMLONG( x.mp2 ) );
-        pumpMs( 350 );
+        pumpMs( 400 );
         const int vis = WinIsWindowVisible( shot );
         char file[ 40 ];
         std::sprintf( file, "c:\\atui\\cap_%c.bmp", x.name );
         captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy, file );
-        say( "atui: '%c' %s mp1=0x%lx mp2=0x%lx r=0x%lx -> %s "
+        say( "atui: shot '%c' %s mp1=0x%lx mp2=0x%lx r=0x%lx -> %s "
              "(frame vis=%d)\n", x.name, x.tag,
              (unsigned long)x.mp1, (unsigned long)x.mp2,
              (unsigned long)(ULONG)r, file, vis );
-        if( !vis )
-        {
-            say( "atui: FRAME WEDGED at '%s' -- stopping the matrix\n",
-                 x.tag );
-            return;
-        }
+        break;
     }
 
-    // Control experiment: the marshaled door.  WM_SETTEXT is a system
-    // message whose pointer parameters PM copies across address
-    // spaces legally, and WinSetWindowText asks exactly that.  If
-    // THIS paints and the keys did not, the control guards keys but
-    // not text-set; if neither paints, the control (or its host) is
-    // deaf to outside writers entirely -- different tool design.
-    const BOOL swr = WinSetWindowText( mle, (PSZ)"WXYZ" );
-    pumpMs( 500 );
-    captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy,
-                          "c:\\atui\\cap_S.bmp" );
-    say( "atui: WinSetWindowText(WXYZ) rc=%d -> cap_S.bmp "
-         "(frame vis=%d)\n", (int)swr, (int)WinIsWindowVisible( shot ) );
-    WinSetWindowText( mle, (PSZ)"" );   // clean the house either way
-    pumpMs( 400 );
-
-    // Cleanup through the surviving door: plain KC_CHAR backspaces,
-    // the shape round one survived thirty of.
-    for( int i = 0; i < 8; ++i )
-        WinPostMsg( mle, WM_CHAR, MPFROMLONG( 0x00000001UL ),
-                    MPFROMLONG( 0x08 ) );
-    pumpMs( 800 );
-    captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy,
-                          "c:\\atui\\cap_K.bmp" );
-    say( "atui: posted 8 backspaces -> cap_K.bmp (frame vis=%d)\n",
-         (int)WinIsWindowVisible( shot ) );
+    if( want == 'S' )
+    {
+        // Control experiment: the marshaled door.  WM_SETTEXT is a
+        // system message whose pointer parameters PM copies across
+        // address spaces legally; if THIS paints and the keys did
+        // not, the control guards keys but not text-set.
+        const BOOL swr = WinSetWindowText( mle, (PSZ)"WXYZ" );
+        pumpMs( 500 );
+        captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy,
+                              "c:\\atui\\cap_S.bmp" );
+        say( "atui: WinSetWindowText(WXYZ) rc=%d -> cap_S.bmp "
+             "(frame vis=%d)\n", (int)swr,
+             (int)WinIsWindowVisible( shot ) );
+        WinSetWindowText( mle, (PSZ)"" );   // clean up either way
+        pumpMs( 400 );
+    }
+    if( want == 'K' )
+    {
+        // Cleanup: plain KC_CHAR backspaces -- the shape thirty of
+        // survived in round one.
+        for( int i = 0; i < 8; ++i )
+            WinPostMsg( mle, WM_CHAR, MPFROMLONG( 0x00000001UL ),
+                        MPFROMLONG( 0x08 ) );
+        pumpMs( 800 );
+        captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy,
+                              "c:\\atui\\cap_K.bmp" );
+        say( "atui: posted 8 backspaces -> cap_K.bmp (vis=%d)\n",
+             (int)WinIsWindowVisible( shot ) );
+    }
 }
 
 void clickButtonNamed( HWND hDlg, const char *wanted )
@@ -664,7 +692,7 @@ int main( int argc, char **argv )
 
     if( argc > 1 && std::strcmp( argv[ 1 ], "--atui" ) == 0 )
     {
-        driveAtui();
+        driveAtui( argc, argv );
         say( "done\n" );
         std::fclose( g_out );
         WinTerminate( g_hab );
