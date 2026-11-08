@@ -6064,3 +6064,90 @@ where an absolute gap was wanted), which is the usual service a
 test gives on its first day.
 
 180/180, 125/125; theme.cpp + pmexe RC=0 on the box.
+
+## The black window: a per-window PS photographs nothing (2026-11-07)
+
+The first PM captures of the atuipm window itself came back pure
+black, while the same code aimed at the whole desktop worked.  The
+probe answered: a `GpiBitBlt` done through a PS created from the
+target window sees only what that window has painted into its own
+paint context -- and a TVision window painted through the driver's
+group picture never appears there.  The shipped recipe (screen_os2.cpp)
+takes `WinGetPS(HWND_DESKTOP)` instead and clamps the requested rect
+to the screen, which photographs whatever is on the display at those
+coordinates -- the target included.
+
+## The hands probe: what survives posting and what kills (2026-11-07/08)
+
+pmdrive (tools/os2/probe_pmdrive.cpp) asked, against live windows,
+which message-level doors can be used to drive an application.  What
+it measured, all of it on the box:
+
+* `DosStartSession` from the telnet anchor: a foreground request
+  answers 457 (ERROR_SMG_START_IN_BACKGROUND); a background start
+  runs, its windows enumerate and close -- and never appear on the
+  visible screen.  Sessions that do not own the display produce
+  invisible programs, and any tool that launches must say so.
+* `WinSetFocus(HWND_DESKTOP, hwnd)` works cross-process (rc=1) --
+  except against secure windows (0x81037; the ECSBall screensaver was
+  sitting on the box stealing every key until it was disabled.  Any
+  key-injection test without checking for the screensaver tests
+  nothing).
+* Key injection ground truth, captured from the PM driver's own pump
+  while a human typed: physical WM_CHARs arrive with
+  `mp1 = scan<<24 | 0x011005` (keyups carry 0x40 in CHAR1) and
+  `mp2 = char` (down).  `WinPostMsg` with a hand-made KC_CHAR word
+  does land -- a posted 'B' plus a verbatim-physical 'h' appeared in
+  the app's prompt in pixels.  Delivery is not the problem.
+* The problem is dispatch.  Injected WM_CHARs into the driver's own
+  MLE (WC_MLE, class `#10`) intermittently kill the process inside
+  `WinDispatchMsg` -- instrumented with pre-dsp/post-dsp trace around
+  the call: the log stops mid-corridor, no trap door file, nothing.
+  Five instances died across two days; the same byte sequences that
+  killed one instance survived minutes on another; a verbatim replay
+  of a physical keydown that had survived pid 164 killed pid 217 on
+  its first message.  Second backspace on an empty prompt was caught
+  killing once.  Roughly one in ten injections is fatal, the shape of
+  the message does not predict it, and physical keys never do it.
+  Conclusion, load-bearing: **do not dispatch WM_CHAR into a foreign
+  toolkit control.  There is no safe character door at message level,
+  and any tool that offers one offers a coin flip.**
+* Corpse windows: a wedged app keeps its frame enumerable, focusable
+  (WinSetFocus returns 1!) and postable, and its last framebuffer
+  image keeps photographing like a live UI.  Liveness can only be
+  proven from the pump's own log (atuipm.run.txt: kmsg/wait lines
+  advancing), never from window APIs and never from pixels.
+* `WinSetWindowText` and `WM_COMMAND` to plain windows and dialogs
+  survived full probe barrages (the E target).  Pointer-carrying
+  control messages (MLM_EXPORT with a buffer) are out: PM marshals
+  pointers for system messages only, and MLM_QUERYTEXTLENGTH answers
+  constant zero on this box anyway.
+
+## The hands seam: app_* tools (2026-11-08)
+
+What the measurements above allowed is what shipped: platform/appman.h
+-- capabilities answer first, tools register only under yes -- and
+appman_os2.cpp offering launch (DosStartSession, foreground with a
+reported-foreground/background answer), close (WM_CLOSE), click
+(WM_COMMAND with the control's QWS_ID and notification 0x0100),
+set_text (WinSetWindowText, the marshaled door), one expert escape
+hatch (app_send_msg, value-only parameters, landmines written into
+its description), and app_wait (capped at 15 s).  All six require
+approval; app_launch's subject is the program path, which is what
+makes the always-allow gesture mean "this program", not "any".
+There is deliberately no typing tool.
+
+Watcom field notes from the splice: the no-pause start option is
+spelled SSF_TRACEOPT_NONE in Watcom's bsedos.h (there is no
+SSF_TRACEOPT_NOPAUSE; tracing is the pause); FILE lives inside std::
+and outside it not at all (run_command_tool.cpp already kept that
+comment).  The duel guard again: *_none.obj stays out of the PM link,
+appman_os2.obj compiled with -DATUI_HAVE_OS2_PM goes in, one backend
+per image.
+
+Gates: 184/184 and 129/129 on the host (four new appman tests --
+handle parsing and the promise that a bad argument never reaches the
+machine); `atui`, `pmdrv`, `pmexe` RC=0 on the box, atuipm.exe relinked
+with the seam inside.  Still to verify live: WinSetWindowText against a
+LIVE MLE (only corpses ever answered it), and a launch-and-watch round
+trip against C:\OS2\E.EXE from inside atuipm at the box's display.

@@ -5,7 +5,11 @@
 #include "tools/run_command_tool.h"
 #include "tools/screenshot_tool.h"
 #include "tools/windows_tool.h"
+#include "tools/app_launch_tool.h"
+#include "tools/app_window_tools.h"
+#include "tools/app_wait_tool.h"
 #include "platform/screen.h"
+#include "platform/appman.h"
 
 #include <mutex>
 
@@ -118,6 +122,25 @@ void registerDefaults()
         r.add( &g_screenshotTool );
     if( atui::platform::windowsAvailable() )
         r.add( &g_windowsTool );
+    // The hands, gated the same way as the eyes and by harder
+    // measurements: what is registered here is only what the pmdrive
+    // probe did against live targets and survived. The list is short
+    // on purpose -- notably there is no key-typing tool, because
+    // message-level typing intermittently kills foreign apps (see the
+    // TESTING.md journal), and a tool that must not be used is worse
+    // than a missing one. app_wait belongs to the pair too: acting
+    // without pausing to let the desktop settle only produces
+    // screenshots of nothing.
+    if( atui::platform::appLaunchAvailable() )
+        r.add( &g_appLaunchTool );
+    if( atui::platform::appPostAvailable() )
+    {
+        r.add( &g_appCloseTool );
+        r.add( &g_appClickTool );
+        r.add( &g_appSetTextTool );
+        r.add( &g_appSendMsgTool );
+        r.add( &g_appWaitTool );
+    }
 }
 
 } // namespace atui::tools

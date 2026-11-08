@@ -89,8 +89,18 @@ set(ATUI_SOURCES
     "${ATUI_SRC_DIR}/platform/screen_mac.cpp"
     "${ATUI_SRC_DIR}/platform/screen_os2.cpp"
     "${ATUI_SRC_DIR}/platform/screen_none.cpp"
+    # The hands seam (platform/appman.h): same one-backend-per-platform
+    # arrangement, same definitions gating it -- ATUI_HAVE_OS2_PM is what
+    # build.cmd's PM splice passes; everywhere else appman_none.cpp is
+    # the answer and the hand tools are never registered.
+    "${ATUI_SRC_DIR}/platform/appman.cpp"
+    "${ATUI_SRC_DIR}/platform/appman_os2.cpp"
+    "${ATUI_SRC_DIR}/platform/appman_none.cpp"
     "${ATUI_SRC_DIR}/tools/screenshot_tool.cpp"
     "${ATUI_SRC_DIR}/tools/windows_tool.cpp"
+    "${ATUI_SRC_DIR}/tools/app_launch_tool.cpp"
+    "${ATUI_SRC_DIR}/tools/app_window_tools.cpp"
+    "${ATUI_SRC_DIR}/tools/app_wait_tool.cpp"
     # Provider settings singleton: it holds strings and reads a file, so it has no
     # transport dependency and is always built -- which is what lets the endpoint
     # field be validated before anything tries to connect.
@@ -152,6 +162,7 @@ if(ATUI_BUILD_TESTS)
         "${ATUI_TESTS_DIR}/ascii_fold_test.cpp"
         "${ATUI_TESTS_DIR}/signals_test.cpp"
         "${ATUI_TESTS_DIR}/screen_test.cpp"
+        "${ATUI_TESTS_DIR}/appman_test.cpp"
     )
 endif()
 

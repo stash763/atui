@@ -524,6 +524,13 @@ rem it with dropping screen_none.obj -- exactly one backend per image.
 rem The recipe inside it was measured by probe_pmcap before it shipped.
 %WPP% -DATUI_PM -DATUI_HAVE_OS2_PM -fo=obj\pm\ src\platform\screen_os2.cpp >> %LOG% 2>&1
 if errorlevel 1 goto tvone_failed
+rem The PM hands backend, same one-file-one-define arrangement as the
+rem screen backend above and the same duel to avoid. Its contents are
+rem one probe's worth of measurements (tools/os2/probe_pmdrive.cpp):
+rem start sessions, post WM_CLOSE and WM_COMMAND, WinSetWindowText --
+rem and no WM_CHAR anywhere, which is what the probe's deaths taught.
+%WPP% -DATUI_PM -DATUI_HAVE_OS2_PM -fo=obj\pm\ src\platform\appman_os2.cpp >> %LOG% 2>&1
+if errorlevel 1 goto tvone_failed
 echo [pmdrv] OK
 goto summary
 
@@ -577,16 +584,18 @@ set EXENAME=atuipm.exe
 if not "%2"=="" set EXENAME=%2
 if exist link.rsp del link.rsp
 if not exist obj\pm\screen_os2.obj goto pmexe_nodrv
+if not exist obj\pm\appman_os2.obj goto pmexe_nodrv
 echo system os2v2_pm > link.rsp
 echo name %EXENAME% >> link.rsp
 echo op m >> link.rsp
 echo option stack=256k >> link.rsp
-rem The PM screen backend in, the none-backend out: screen_none.obj is
-rem in obj\at because `atui` compiles the whole directory, and both
-rem backends in one link is the duplicated-symbol duel this build has
-rem learned to refuse by name.
-for %%f in (obj\at\*.obj) do if not "%%f"=="obj\at\screen_none.obj" echo file %%f >> link.rsp
+rem The PM screen and hands backends in, the none-backends out: the
+rem *_none.obj files are in obj\at because `atui` compiles the whole
+rem directory, and both backends in one link is the duplicated-symbol
+rem duel this build has learned to refuse by name.
+for %%f in (obj\at\*.obj) do if not "%%f"=="obj\at\screen_none.obj" if not "%%f"=="obj\at\appman_none.obj" echo file %%f >> link.rsp
 echo file obj\pm\screen_os2.obj >> link.rsp
+echo file obj\pm\appman_os2.obj >> link.rsp
 echo library obj\tvisionpm.lib >> link.rsp
 echo library os2386.lib >> link.rsp
 echo library tcpip32.lib >> link.rsp

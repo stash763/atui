@@ -68,6 +68,10 @@ void init_signals_tests();
 // Defined in tests/screen_test.cpp (always built): the desktop seam's
 // testable half -- BMP writer and reader, the window query, the listing.
 void init_screen_tests();
+// Defined in tests/appman_test.cpp (always built): the hands seam's
+// testable half -- the handle parsers and the promise that a bad
+// argument never reaches the machine.
+void init_appman_tests();
 // Defined in tests/turn_queue_test.cpp (network builds only): the hand-off between a
 // turn on a thread and the screen that draws it -- ordering, and the approval round trip.
 void init_turn_queue_tests();
@@ -3127,6 +3131,7 @@ void init()
     init_ascii_fold_tests();
     init_signals_tests();
     init_screen_tests();
+    init_appman_tests();
 
 #ifdef ATUI_HAVE_NETWORK
     // Real-server tests, last: they retarget the process-wide provider, and
