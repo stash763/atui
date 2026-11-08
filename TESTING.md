@@ -6151,3 +6151,25 @@ machine); `atui`, `pmdrv`, `pmexe` RC=0 on the box, atuipm.exe relinked
 with the seam inside.  Still to verify live: WinSetWindowText against a
 LIVE MLE (only corpses ever answered it), and a launch-and-watch round
 trip against C:\OS2\E.EXE from inside atuipm at the box's display.
+
+## The model learns where it is: the host brief (2026-11-08)
+
+Observed in the field: given OS/2 hands, the model still reached for
+`ls` and `/dev/null` -- its training data outweighs a tool list that
+never says what machine this is.  Two lies made it worse: the chat
+request carried no system message at all, and run_command's schema
+said "POSIX sh syntax" on every platform.
+
+core/hostenv.cpp now states the compile-time truth -- name, shell,
+idioms, the commands that do not exist, worked backslash path -- and
+chat_turn prepends it as a system message to every request (prepended
+at send time, never stored in the history, so no conversation can
+carry a stale copy).  run_command's description and schema now name
+the real interpreter per platform.  The OS/2 paragraph is deliberately
+the long one: absence is inferred badly from generalities and well
+from a list.
+
+Gates: 189/189, 134/134 host; atui/pmexe RC=0 on the box (Watcom
+compiles the OS/2 branch clean; the box build ships tests OFF, so the
+OS/2 text is compile-verified there and runtime-asserted where the
+tests build).

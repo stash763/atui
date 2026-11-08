@@ -1,0 +1,1 @@
+atui: this build has no self-test suite (built with -DATUI_BUILD_TESTS=OFF)

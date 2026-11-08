@@ -11,6 +11,7 @@
 #include "tools/tool_registry.h"
 
 #include "core/strutil.h"      // toString: Watcom has no std::to_string
+#include "core/hostenv.h"      // hostEnvBrief: the system message
 
 namespace atui {
 namespace net {
@@ -175,7 +176,15 @@ bool ChatTurn::sendRound()
     req.model = model_;
     req.temperature = temperature_;
     req.stream = true;
-    req.messages = msgs_;
+    // The host brief rides every request as the system message: the
+    // model must know it is driving OS/2 (or whatever this is) before
+    // it writes its first command line, because its training data
+    // says otherwise. Prepped here rather than stored in the history
+    // so a long conversation never carries a stale copy of a fact
+    // that belongs to the binary, not the chat.
+    req.messages.push_back(
+        OaiMessage( "system", atui::core::hostEnvBrief() ) );
+    req.messages.insert( req.messages.end(), msgs_.begin(), msgs_.end() );
     req.toolsJson = toolsJson_;
 
     state_ = tsAsking;

@@ -364,14 +364,28 @@ const char *RunCommandTool::description() const
            "permissions. It gets no standard input (reading it gives end-of-file) "
            "and none of the credential-shaped environment variables, and if it is "
            "still running when the time limit expires it is killed along with "
-           "everything it started. Very long output is truncated.";
+           "everything it started. Very long output is truncated. "
+#if defined( __OS2__ )
+           "The shell here is the OS/2 command processor (cmd.exe), NOT a "
+           "POSIX sh: use OS/2 commands and backslash paths, as the system "
+           "message describes.";
+#else
+           "The host operating system and its shell are described in the "
+           "system message; use that system's idioms.";
+#endif
 }
 
 const char *RunCommandTool::parametersSchema() const
 {
     return "{\"type\":\"object\",\"properties\":{"
-           "\"command\":{\"type\":\"string\",\"description\":\"Shell command "
-           "to execute (POSIX sh syntax)\"}"
+           "\"command\":{\"type\":\"string\",\"description\":\"Shell "
+#if defined( __OS2__ )
+           "command in OS/2 cmd.exe syntax (DIR, COPY, TYPE); not sh\""
+#elif defined( _WIN32 )
+           "command in cmd.exe syntax; not sh\""
+#else
+           "command to execute (POSIX sh syntax)\""
+#endif
            "},\"required\":[\"command\"]}";
 }
 
