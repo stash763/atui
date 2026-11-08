@@ -520,7 +520,7 @@ void driveAtui( int argc, char **argv )
         { 'C', 0, 0x00230001UL, (ULONG)'C', "post scan@byte3" },
     };
     const char want = (argc > 2) ? argv[ 2 ][ 0 ] : 'B';
-    if( std::strchr( "BDEGPSRK", want ) == 0 )
+    if( std::strchr( "BDEGPSRKT2", want ) == 0 )
     {
         say( "atui: unknown shot '%c'\n", want );
         return;
@@ -590,10 +590,67 @@ void driveAtui( int argc, char **argv )
         WinSetWindowText( mle, (PSZ)"" );   // clean up either way
         pumpMs( 400 );
     }
+    if( want == 'T' && argc > 3 )
+    {
+        // The crown: type a whole string through the proven door
+        // (mp1=KC_CHAR, mp2=char -- the B shape, landed and verified
+        // in pixels 2026-11-07) and press Enter with the word the
+        // physical key logged (mp1=0x1c011007, mp2=0x8000d: the
+        // driver's pmPromptKey_ takes char 0x0D to submit).  One
+        // invocation, one chat turn, one frame of proof.
+        const char *p = argv[ 3 ];
+        for( ; *p != '\0'; ++p )
+            WinPostMsg( mle, WM_CHAR, MPFROMLONG( 0x00000001UL ),
+                        MPFROMLONG( (unsigned char)*p ) );
+        pumpMs( 500 );
+        WinPostMsg( mle, WM_CHAR, MPFROMLONG( 0x1C011007UL ),
+                    MPFROMLONG( 0x0008000DUL ) );
+        say( "atui: typed \"%s\" + Enter\n", argv[ 3 ] );
+        pumpMs( 3000 );
+        captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy,
+                              "c:\\atui\\cap_T.bmp" );
+        say( "atui: -> cap_T.bmp (vis=%d)\n",
+             (int)WinIsWindowVisible( shot ) );
+        return;
+    }
+    if( want == '2' )
+    {
+        // Paired physical replay: 'h' down and up as the console
+        // logged them, posted as a matching pair.  Single injected
+        // WM_CHARs have been killing MLE dispatch intermittently
+        // (instrumented proof: dies inside WinDispatchMsg, the
+        // second backspace on an empty prompt, no SAP).  Physical
+        // input always travels as down+up; a pair is the smallest
+        // unit that might satisfy whatever MLE state machine the
+        // lone messages strand.  Six pairs = six 'h' or nothing.
+        WinPostMsg( mle, WM_CHAR, MPFROMLONG( 0x23011005UL ),
+                    MPFROMLONG( 0x68 ) );
+        pumpMs( 60 );
+        WinPostMsg( mle, WM_CHAR, MPFROMLONG( 0x23011044UL ),
+                    MPFROMLONG( 0x2368 ) );
+        pumpMs( 140 );
+        for( int i = 1; i < 6; ++i )
+        {
+            WinPostMsg( mle, WM_CHAR, MPFROMLONG( 0x23011005UL ),
+                        MPFROMLONG( 0x68 ) );
+            pumpMs( 60 );
+            WinPostMsg( mle, WM_CHAR, MPFROMLONG( 0x23011044UL ),
+                        MPFROMLONG( 0x2368 ) );
+            pumpMs( 140 );
+        }
+        pumpMs( 600 );
+        captureScreenRectBmp( swp.x, swp.y, swp.cx, swp.cy,
+                              "c:\\atui\\cap_P2.bmp" );
+        say( "atui: 6 paired 'h' replays -> cap_P2.bmp (vis=%d)\n",
+             (int)WinIsWindowVisible( shot ) );
+        return;
+    }
     if( want == 'K' )
     {
-        // Cleanup: plain KC_CHAR backspaces -- the shape thirty of
-        // survived in round one.
+        // Cleanup: plain KC_CHAR backspaces.  CAUTION -- instrumented
+        // evidence: the SECOND backspace of a burst died inside
+        // WinDispatchMsg->MLE (pre-dsp, no post-dsp, no SAP) on an
+        // idle instance 2026-11-07.  Manual use only, one at a time.
         for( int i = 0; i < 8; ++i )
             WinPostMsg( mle, WM_CHAR, MPFROMLONG( 0x00000001UL ),
                         MPFROMLONG( 0x08 ) );
