@@ -2,8 +2,10 @@
 #include "settings.h"
 
 #include "ini.h"
+#include "core/hostenv.h"
 #include "core/journal.h"
 #include "core/paths.h"
+#include "core/strutil.h"
 #include "net/provider.h"
 #include "tools/permissions.h"
 #include "tools/run_command_tool.h"
@@ -143,6 +145,25 @@ bool loadAll()
                                                 wheelLines() ) );
     promptLines() = clampPromptLines( ini.getInt( "ui", "prompt_lines",
                                                   promptLines() ) );
+
+    // Agent prompts. The instruction lines are extra1, extra2, ...:
+    // numbered keys because an INI value is one line and a blank line
+    // between them would be noise that a hand edit leaves behind --
+    // so the reading stops at the first number that is not in the
+    // file, and the saving drops empty lines first.
+    core::AgentPrompts &prompts = core::agentPrompts();
+    prompts.hostBrief = ini.getBool( "prompts", "host_brief",
+                                     prompts.hostBrief );
+    prompts.extra.clear();
+    for( std::size_t i = 1; i <= core::kMaxExtraLines; ++i )
+    {
+        const std::string key =
+            "extra" + core::toString( (long)i );
+        if( !ini.has( "prompts", key.c_str() ) )
+            break;
+        prompts.extra.push_back(
+            ini.getString( "prompts", key.c_str() ) );
+    }
     return had;
 }
 
@@ -228,6 +249,28 @@ bool saveAll()
     ini.setBool( "ui", "thinking_expand", thinkingExpandAll() );
     ini.setInt( "ui", "wheel_lines", wheelLines() );
     ini.setInt( "ui", "prompt_lines", promptLines() );
+
+    // Agent prompts: the section is rewritten whole (erase then
+    // write) so a line deleted in the dialog cannot survive the save
+    // as an extraN nobody sees. Empty lines never make it to the
+    // file: assembly drops them, and the file should not grow
+    // numbering gaps that mean two things at once.
+    ini.eraseSection( "prompts" );
+    const core::AgentPrompts &prompts = core::agentPrompts();
+    if( !prompts.hostBrief )
+        ini.setBool( "prompts", "host_brief", false );
+    int lineNo = 1;
+    for( std::size_t i = 0; i != prompts.extra.size(); ++i )
+    {
+        if( prompts.extra[ i ].empty() )
+            continue;
+        if( lineNo > (int)core::kMaxExtraLines )
+            break;
+        ini.setString( "prompts",
+                       ("extra" + core::toString( (long)lineNo )).c_str(),
+                       prompts.extra[ i ] );
+        ++lineNo;
+    }
 
     return ini.save();
 }

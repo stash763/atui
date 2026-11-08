@@ -27,6 +27,13 @@
 //   thinking_expand = false
 //   wheel_lines = 3
 //
+//   [prompts]
+//   host_brief = true        # include the auto host/OS brief (only
+//                            # false is written; default is true)
+//   extra1 = ...             # the user's instruction lines, in order,
+//                            # numbered from 1 with no gaps; they ride
+//                            # every request under "User instructions:"
+//
 //   [app]
 //   provider = ollama            # active provider
 //   request_minutes = 120        # how long one request may take

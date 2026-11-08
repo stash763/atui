@@ -73,5 +73,42 @@ std::string hostEnvBrief()
     return s;
 }
 
+AgentPrompts &agentPrompts()
+{
+    static AgentPrompts prompts;
+    return prompts;
+}
+
+std::string buildSystemMessage()
+{
+    const AgentPrompts &p = agentPrompts();
+    std::string out;
+    if( p.hostBrief )
+        out += hostEnvBrief();
+
+    // The extra lines ride under a heading that names their author:
+    // a model that reads "User instructions:" knows whose voice this
+    // is, and a reader of the wire capture sees where the built-in
+    // text stops. Blank lines in the editor are editing air, not
+    // instructions, and they drop out here.
+    std::string body;
+    for( std::size_t i = 0; i != p.extra.size(); ++i )
+    {
+        const std::string &line = p.extra[ i ];
+        if( line.empty() )
+            continue;
+        if( !body.empty() )
+            body += "\n";
+        body += line;
+    }
+    if( !body.empty() )
+    {
+        if( !out.empty() )
+            out += "\n\n";
+        out += "User instructions:\n" + body;
+    }
+    return out;
+}
+
 } // namespace atui::core
 } // namespace atui

@@ -18,6 +18,7 @@
 #define ATUI_CORE_HOSTENV_H
 
 #include <string>
+#include <vector>
 
 namespace atui {
 namespace core {
@@ -35,6 +36,52 @@ bool hostIsPosix();
 // the path syntax. Every request; a few dozen tokens buying back the
 // hundreds a misfired shell habit costs.
 std::string hostEnvBrief();
+
+// --- the agent's prompts: what rides every request as system --------
+//
+// The system message is the brief above plus whatever the user adds,
+// and this is the state that decides which of the two says what. It
+// is a struct of plain fields because it is read on every request,
+// edited by a dialog, and written to the config file -- three hands,
+// one shape, no behavior to keep in step.
+//
+// The lines of `extra` are joined with newlines and appended after
+// the brief. They ride as written: the model is told these are the
+// user's instructions, so a line that says "always answer in German"
+// arrives as exactly that authority, and nothing here interprets them.
+
+struct AgentPrompts
+{
+    // Include the auto-generated host brief (hostEnvBrief()). The
+    // default is true because a model that does not know its OS
+    // reaches for the wrong commands; switching it off is telling
+    // the machine it is somewhere else, which is a thing users do
+    // deliberately, to point a friendly model at a persona.
+    bool hostBrief;
+
+    // The user's instruction lines, in order, empty ones dropped at
+    // assembly. Capped at kMaxExtraLines when saved; a config file
+    // with more is read up to the cap and left as it is.
+    std::vector<std::string> extra;
+
+    AgentPrompts() : hostBrief( true ) {}
+};
+
+// How many lines the whole `extra` block may hold: the number that
+// fits an editor on every front atui draws dialogs on, so the dialog
+// is a complete editor rather than a window onto half the file.
+const std::size_t kMaxExtraLines = 6;
+
+// The one instance: seeded from the config file by settings::loadAll,
+// edited by Options > Prompts, written back by settings::saveAll.
+AgentPrompts &agentPrompts();
+
+// Assemble the system message from the settings above: the brief if
+// wanted, then the extra lines (joined), each part present or absent
+// on its own. Empty when both are off -- and empty means the request
+// carries no system message, which is the honest answer to "say
+// nothing about the environment and say nothing extra".
+std::string buildSystemMessage();
 
 } // namespace atui::core
 } // namespace atui

@@ -60,6 +60,7 @@
 #include "core/journal.h"
 #include "core/signals.h"
 #include "core/strutil.h"      // Fmt and toString: Watcom has no std::ostringstream
+#include "core/hostenv.h"      // agentPrompts: Options > Prompts
 #include "tui/theme.h"
 #include "tui/md_style.h"
 #include "tui/pmdialogs.h"
@@ -100,6 +101,7 @@ using atui::core::String;
 enum { CmdHelp = 1000, CmdTheme = 1004, CmdProviders = 1003,
        CmdSettings = 1005, CmdUndo = 1006,
        CmdSwitchModel = 1007,      // the model list as a dialog (windowed front)
+       CmdPrompts = 1008,          // Options > Prompts: the agent's words
        CmdRefreshModels = 2000,
        CmdSwitchModelBase = 2200 };  // + provider index
 
@@ -1849,6 +1851,7 @@ public:
                 { kbAltU, CmdUndo        },
                 { kbAltP, CmdProviders   },
                 { kbAltI, CmdSettings    },
+                { kbAltR, CmdPrompts     },
                 { kbAltT, CmdTheme       },
                 { kbAltS, CmdSwitchModel },
                 { kbAltH, CmdHelp        },
@@ -1967,6 +1970,10 @@ public:
                     showSettings();
                     clearEvent( event );
                     break;
+                case CmdPrompts:
+                    showPrompts();
+                    clearEvent( event );
+                    break;
                 case CmdUndo:
                     showUndoDialog_();
                     clearEvent( event );
@@ -2008,6 +2015,7 @@ private:
     void showProviders();
     void showTheme();
     void showSettings();
+    void showPrompts();
 
     virtual TPalette& getPalette() const
     {
@@ -2104,6 +2112,8 @@ TMenuBar *initMenuBar_( TRect r )
                                   hcNoContext, "Alt-P" )
                   + *new TMenuItem( "Sett~i~ngs...", CmdSettings, kbAltI,
                                     hcNoContext, "Alt-I" )
+                  + *new TMenuItem( "P~r~ompts...", CmdPrompts, kbAltR,
+                                    hcNoContext, "Alt-R" )
                   + newLine()
                   + *new TMenuItem( "~T~heme...", CmdTheme, kbAltT,
                                     hcNoContext, "Alt-T" ) ) )
@@ -4059,6 +4069,100 @@ void TApp::showSettings()
     destroy( d );
 }
 
+// Options > Prompts: the words the model reads before every answer.
+//
+// Two parts share this box because they share their fate: both ride
+// every request as the system message, both come from the user's
+// hands rather than the model's, and both land in [prompts] in the
+// config file. The host brief gets a checkbox rather than an editor
+// because it is written for the machine, not for the user -- what it
+// deserves is a veto, not a red pen. The instruction lines get six
+// fields and no more: the number fits every front's screen, so the
+// dialog is a complete editor, not a window onto half the file.
+class PromptsDialog : public TDialog
+{
+public:
+    TCheckBoxes   *briefBox;
+    TInputLine    *lines[atui::core::kMaxExtraLines];
+
+    PromptsDialog();
+};
+
+PromptsDialog::PromptsDialog()
+    : TWindowInit( &TDialog::initFrame ),
+      TDialog( TRect( 0, 0, 76, 21 ), "Options - Prompts" ),
+      briefBox( 0 )
+{
+    options |= ofCentered;
+
+    insert( new TStaticText( TRect( 3, 1, 73, 3 ),
+        "The system message the model reads before every\n"
+        "answer: this machine's description, and your words." ) );
+
+    briefBox = new TCheckBoxes(
+        TRect( 4, 4, 72, 5 ),
+        new TSItem( "Include the host brief (what this machine is)",
+                    NULL ) );
+    insert( briefBox );
+    ushort bits = atui::core::agentPrompts().hostBrief ? 0x1 : 0;
+    briefBox->setData( &bits );
+
+    insert( new TStaticText( TRect( 3, 6, 73, 7 ),
+        "Your instructions, sent under it (up to 6 lines):" ) );
+    for( std::size_t i = 0; i != atui::core::kMaxExtraLines; ++i )
+    {
+        lines[ i ] = new TInputLine( TRect( 4, (short) ( 7 + i ),
+                                            73, (short) ( 8 + i ) ), 150 );
+        insert( lines[ i ] );
+        if( i < atui::core::agentPrompts().extra.size() )
+            setInput_( lines[ i ], atui::core::agentPrompts().extra[ i ] );
+    }
+
+    insert( new TStaticText( TRect( 3, 14, 73, 16 ),
+        "Blank lines are skipped. Stored as [prompts] in the\n"
+        "config file; the model reads them from the next\n"
+        "message on." ) );
+
+    TButton *ok     = new TButton( TRect( 20, 17, 32, 19 ), "~O~K",
+                                   cmOK, bfDefault );
+    TButton *cancel = new TButton( TRect( 36, 17, 50, 19 ), "Cancel",
+                                   cmCancel, bfNormal );
+    insert( ok );
+    insert( cancel );
+}
+
+void TApp::showPrompts()
+{
+    // The windowed front shows its native twin when the kit has one.
+    if( gPmDialogs && gPmDialogs->prompts && gPmDialogs->prompts() )
+        return;
+
+    PromptsDialog *d = new PromptsDialog;
+    if( execDialog_( d ) == cmOK )
+    {
+        ushort bits = 0;
+        d->briefBox->getData( &bits );
+        atui::core::agentPrompts().hostBrief = ( bits & 0x1 ) != 0;
+
+        // The editor's emptiness is the eraser: OK with six blank
+        // fields means no instructions, and the say-so happens here,
+        // in order, with the air trimmed off.
+        atui::core::agentPrompts().extra.clear();
+        for( std::size_t i = 0; i != atui::core::kMaxExtraLines; ++i )
+        {
+            const std::string text( d->lines[ i ]->data );
+            const size_t from = text.find_first_not_of( " \t" );
+            if( from == std::string::npos )
+                continue;
+            const size_t to = text.find_last_not_of( " \t" );
+            atui::core::agentPrompts().extra.push_back(
+                text.substr( from, to - from + 1 ) );
+        }
+        atui::settings::saveAll();
+    }
+    destroy( d );
+}
+
 /* The settings form's data path for a native PM twin (pmdialogs.h).
    The dialog owns the tvision numberIn quirk -- an entry with no
    digits in it means "unchanged", and it answers by handing back the
@@ -4125,6 +4229,50 @@ extern "C" void pmSettingsApply( const PmSettings *in )
     atui::settings::promptLines() =
         atui::settings::clampPromptLines( in->promptLines );
     updatePermissionStatus_();
+    atui::settings::saveAll();
+}
+
+/* The prompts form's data path for a native PM twin (pmdialogs.h):
+   the snapshot fills the dialog, apply is the whole tvision OK path --
+   trim, drop the blank lines, save. The order of the fields is the
+   order the user typed them, and apply honors it: what comes back
+   goes exactly as it was edited. */
+extern "C" void pmPromptsSnapshot( PmPrompts *out )
+{
+    if( out == 0 )
+        return;
+    const atui::core::AgentPrompts &p = atui::core::agentPrompts();
+    out->hostBrief = p.hostBrief ? 1 : 0;
+    int n = (int)p.extra.size();
+    if( n > (int)atui::core::kMaxExtraLines )
+        n = (int)atui::core::kMaxExtraLines;
+    out->extraCount = n;
+    for( int i = 0; i < n; ++i )
+        copyField_( p.extra[ i ], out->extra[ i ],
+                    sizeof( out->extra[ i ] ) );
+}
+
+extern "C" void pmPromptsApply( const PmPrompts *in )
+{
+    if( in == 0 )
+        return;
+    atui::core::agentPrompts().hostBrief = in->hostBrief != 0;
+    atui::core::agentPrompts().extra.clear();
+    int n = in->extraCount;
+    if( n < 0 )
+        n = 0;
+    if( n > (int)atui::core::kMaxExtraLines )
+        n = (int)atui::core::kMaxExtraLines;
+    for( int i = 0; i < n; ++i )
+    {
+        const std::string text( in->extra[ i ] );
+        const size_t from = text.find_first_not_of( " \t" );
+        if( from == std::string::npos )
+            continue;
+        const size_t to = text.find_last_not_of( " \t" );
+        atui::core::agentPrompts().extra.push_back(
+            text.substr( from, to - from + 1 ) );
+    }
     atui::settings::saveAll();
 }
 

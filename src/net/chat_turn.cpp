@@ -182,8 +182,9 @@ bool ChatTurn::sendRound()
     // says otherwise. Prepped here rather than stored in the history
     // so a long conversation never carries a stale copy of a fact
     // that belongs to the binary, not the chat.
-    req.messages.push_back(
-        OaiMessage( "system", atui::core::hostEnvBrief() ) );
+    const std::string systemText = atui::core::buildSystemMessage();
+    if( !systemText.empty() )
+        req.messages.push_back( OaiMessage( "system", systemText ) );
     req.messages.insert( req.messages.end(), msgs_.begin(), msgs_.end() );
     req.toolsJson = toolsJson_;
 

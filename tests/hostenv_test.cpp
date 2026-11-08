@@ -76,6 +76,67 @@ int test_brief_matches_the_shell_it_ships()
     return 0;
 }
 
+int test_system_message_assembly()
+{
+    // The singleton is app state; the test borrows it and puts it
+    // back, same discipline every front follows.
+    atui::core::AgentPrompts &p = atui::core::agentPrompts();
+    const bool briefWas = p.hostBrief;
+    const std::vector<std::string> extraWas = p.extra;
+    int rc = 0;
+
+    // Brief wanted, nothing added: the message is the brief and no
+    // "User instructions:" heading shows for an empty block.
+    p.hostBrief = true;
+    p.extra.clear();
+    std::string msg = atui::core::buildSystemMessage();
+    if( msg.find( atui::core::hostOsName() ) == std::string::npos )
+        rc = -1;
+    if( msg.find( "User instructions" ) != std::string::npos )
+        rc = -2;
+
+    // Extras ride under a heading that names their author, in order,
+    // and blank editor lines are air.
+    if( !rc )
+    {
+        p.extra.push_back( "Answer tersely" );
+        p.extra.push_back( "" );
+        p.extra.push_back( "Say no when unsure" );
+        msg = atui::core::buildSystemMessage();
+        if( msg.find( "User instructions:" ) == std::string::npos )
+            rc = -3;
+        if( msg.find( "Answer tersely\nSay no when unsure" )
+            == std::string::npos )
+            rc = -4;
+        if( msg.find( atui::core::hostOsName() )
+            == std::string::npos )
+            rc = -5;
+    }
+
+    // Brief vetoed: the user's words stand alone...
+    if( !rc )
+    {
+        p.hostBrief = false;
+        msg = atui::core::buildSystemMessage();
+        if( msg != "User instructions:\nAnswer tersely\n"
+                   "Say no when unsure" )
+            rc = -6;
+    }
+
+    // ...and silence on both knobs really is silence: chat_turn
+    // sends no system message for it rather than an empty one.
+    if( !rc )
+    {
+        p.extra.clear();
+        if( !atui::core::buildSystemMessage().empty() )
+            rc = -7;
+    }
+
+    p.hostBrief = briefWas;
+    p.extra = extraWas;
+    return rc;
+}
+
 } // anonymous namespace
 
 void init_hostenv_tests()
@@ -88,6 +149,8 @@ void init_hostenv_tests()
                    test_posix_flag_is_the_platform );
     register_test( "hostenv_brief_matches_the_shell_it_ships",
                    test_brief_matches_the_shell_it_ships );
+    register_test( "hostenv_system_message_assembly",
+                   test_system_message_assembly );
 }
 
 } // namespace atui_test

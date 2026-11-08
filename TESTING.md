@@ -6173,3 +6173,34 @@ Gates: 189/189, 134/134 host; atui/pmexe RC=0 on the box (Watcom
 compiles the OS/2 branch clean; the box build ships tests OFF, so the
 OS/2 text is compile-verified there and runtime-asserted where the
 tests build).
+
+## Options > Prompts: the agent's words become a setting (2026-11-08)
+
+The host brief rode every request as a built-in sentence; this makes
+it a user-facing thing.  core/hostenv.h gained AgentPrompts -- the
+brief's veto and up to six instruction lines -- and buildSystemMessage(),
+which chat_turn now sends instead of the bare brief: the brief if
+wanted, then the user's lines under a "User instructions:" heading
+that names whose voice they are.  Both off really means silence: the
+request carries no system message at all.
+
+Storage is [prompts] in atui.ini: host_brief (only `false` is
+written; true is the default) and extra1..extraN -- numbered keys,
+because an INI value is one line and the dialog, the file, and the
+assembly all agree the lines are the unit.  saveAll rewrites the
+section whole so a deleted line cannot survive under old numbering.
+
+UI: Options > Prompts (Alt-R) in both fronts -- the tvision dialog
+(checkbox plus six fields) and the native PM twin (menu item 1107,
+DLGTEMPLATE 906, pmPromptsSnapshot/Apply across the pmdialogs.h seam,
+which grew exactly the one field it was designed for).  Six lines
+because that fits a 25-row screen everywhere atui draws one, so the
+dialog is a complete editor, not a window onto half the file.
+
+Field note: Watcom's WinQueryDlgItemText wants (hwnd, id, length,
+buffer) -- the length comes third no matter what the neighboring
+query calls do.
+
+Gates: 190/190 and 135/135 host (assembly test: headings, blanks are
+air, veto, silence); atui/pmdrv/pmlib/pmexe RC=0 on the box, the 45
+pmdlg warnings checked and all pre-existing tvision header noise.

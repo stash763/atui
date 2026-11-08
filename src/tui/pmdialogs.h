@@ -31,6 +31,7 @@ struct PmDialogs
     int (*theme)( void );
     int (*switchModel)( void );
     int (*settings)( void );
+    int (*prompts)( void );
     int (*providers)( void );
     int (*undo)( void );
 
@@ -110,6 +111,24 @@ typedef struct PmSettings
 
 void pmSettingsSnapshot( PmSettings *out );
 void pmSettingsApply( const PmSettings *in );
+
+/* prompts: the system message's user-facing parts. The instruction
+    lines cross as fixed rows for the same reason the settings form
+    does -- plain C, no containers across the library boundary -- and
+    with the same promise: apply is the whole tvision OK path (trim,
+    drop empties, save), so the dialog that sends fewer lines deletes
+    rather than rearranges. kMaxExtraLines in core/hostenv.h is six;
+    if that ever grows, PmPrompts grows with it and both files are
+    edited in one commit. */
+typedef struct PmPrompts
+    {
+    int  hostBrief;
+    int  extraCount;
+    char extra[6][160];
+    } PmPrompts;
+
+void pmPromptsSnapshot( PmPrompts *out );
+void pmPromptsApply( const PmPrompts *in );
 
 /* providers: the store, read and written by index (index identity is
     the provider's name, re-resolved across add/remove exactly as
