@@ -223,36 +223,36 @@ BEGIN
     END
 END
 
-/* 906 prompts: the system message's user parts -- the brief's veto
-   and six instruction rows, the same six the tvision dialog edits
-   and the config file numbers. Pitch 12 again (903's scale); rows
-   count down from the hint, buttons share the bottom row. Checkbox
-   style 0x...2 is BS_AUTOCHECKBOX, entries carry ES_MARGIN like
-   every entry in 903/904. */
+/* 906 prompts: the system message's user parts. The instruction
+   lines live in a file -- this box reads it and offers it to the
+   machine's editor, so there are no entry fields here at all, only
+   statics and verbs. Reload is the user's hand on the file-after-
+   the-editor: e.exe's window lives alongside this dialog, and only
+   the user knows when its work is worth seeing. */
 DLGTEMPLATE 906 LOADONCALL MOVEABLE DISCARDABLE SEGALIGN
 BEGIN
-    DIALOG "Options - Prompts", 906, 10, 10, 320, 132, 0x80000000, 0x00000003
+    DIALOG "Options - Prompts", 906, 10, 10, 320, 110, 0x80000000, 0x00000003
     BEGIN
-        CONTROL "The system message the model reads before every answer:", 507, 8, 120, 304, 9,
+        CONTROL "The system message the model reads before every answer:", 520, 8, 98, 304, 9,
                 0xffff0005, 0x80000001
-        CONTROL "Include the host brief (what this machine is)", 500, 12, 106, 280, 10,
+        CONTROL "Include the host brief (what this machine is)", 500, 12, 84, 280, 10,
                 0xffff0003, 0x80030002
-        CONTROL "Your instructions, sent under it (up to 6 lines):", 508, 8, 92, 304, 9,
+        CONTROL "", 507, 8, 70, 304, 9,
                 0xffff0005, 0x80000001
-        CONTROL "", 501, 10, 79, 300, 11,
-                0xffff0006, 0x80030008
-        CONTROL "", 502, 10, 67, 300, 11,
-                0xffff0006, 0x80020008
-        CONTROL "", 503, 10, 55, 300, 11,
-                0xffff0006, 0x80020008
-        CONTROL "", 504, 10, 43, 300, 11,
-                0xffff0006, 0x80020008
-        CONTROL "", 505, 10, 31, 300, 11,
-                0xffff0006, 0x80020008
-        CONTROL "", 506, 10, 19, 300, 11,
-                0xffff0006, 0x80020008
-        DEFPUSHBUTTON "OK", 1, 120, 3, 51, 14, 0x80030400
-        PUSHBUTTON "Cancel", 2, 177, 3, 51, 14, 0x80020000
+        CONTROL "", 508, 8, 59, 304, 9,
+                0xffff0005, 0x80000001
+        CONTROL "", 512, 10, 47, 300, 9,
+                0xffff0005, 0x80000001
+        CONTROL "", 513, 10, 37, 300, 9,
+                0xffff0005, 0x80000001
+        CONTROL "", 514, 10, 27, 300, 9,
+                0xffff0005, 0x80000001
+        CONTROL "~E~dit in editor...", 510, 8, 3, 76, 14,
+                0xffff0003, 0x80030000
+        CONTROL "~R~eload", 511, 90, 3, 52, 14,
+                0xffff0003, 0x80020000
+        DEFPUSHBUTTON "OK", 1, 177, 3, 51, 14, 0x80030400
+        PUSHBUTTON "Cancel", 2, 234, 3, 51, 14, 0x80020000
     END
 END
 

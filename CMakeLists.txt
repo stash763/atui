@@ -52,6 +52,7 @@ set(ATUI_SOURCES
     # no const map::find.  See the headers for what each one replaces.
     "${ATUI_SRC_DIR}/core/strutil.cpp"
     "${ATUI_SRC_DIR}/core/hostenv.cpp"
+    "${ATUI_SRC_DIR}/core/promptfile.cpp"
     "${ATUI_SRC_DIR}/core/lines.cpp"
     # gmtime_r()/localtime_r() are POSIX; this is the one place that knows.
     "${ATUI_SRC_DIR}/core/clock.cpp"
@@ -165,6 +166,7 @@ if(ATUI_BUILD_TESTS)
         "${ATUI_TESTS_DIR}/screen_test.cpp"
         "${ATUI_TESTS_DIR}/appman_test.cpp"
         "${ATUI_TESTS_DIR}/hostenv_test.cpp"
+        "${ATUI_TESTS_DIR}/promptfile_test.cpp"
     )
 endif()
 

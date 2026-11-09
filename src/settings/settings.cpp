@@ -5,6 +5,7 @@
 #include "core/hostenv.h"
 #include "core/journal.h"
 #include "core/paths.h"
+#include "core/promptfile.h"
 #include "core/strutil.h"
 #include "net/provider.h"
 #include "tools/permissions.h"
@@ -146,25 +147,48 @@ bool loadAll()
     promptLines() = clampPromptLines( ini.getInt( "ui", "prompt_lines",
                                                   promptLines() ) );
 
-    // Agent prompts. The instruction lines are extra1, extra2, ...:
-    // numbered keys because an INI value is one line and a blank line
-    // between them would be noise that a hand edit leaves behind --
-    // so the reading stops at the first number that is not in the
-    // file, and the saving drops empty lines first.
+    // Agent prompts. The instruction lines themselves live in their
+    // own file (see core/promptfile.h); the config file keeps the
+    // three things that point at it. The file is read at load so the
+    // singleton is warm before the first request; it is read again
+    // whenever the dialog asks, because between those moments an
+    // editor may have rewritten it.
     core::AgentPrompts &prompts = core::agentPrompts();
     prompts.hostBrief = ini.getBool( "prompts", "host_brief",
                                      prompts.hostBrief );
-    prompts.extra.clear();
-    for( std::size_t i = 1; i <= core::kMaxExtraLines; ++i )
+    promptsFileOverride() = ini.getString( "prompts", "file",
+                                           std::string() );
+    core::promptsEditorOverride() = ini.getString( "prompts", "editor",
+                                                   std::string() );
+    if( !promptsFileOverride().empty() )
     {
-        const std::string key =
-            "extra" + core::toString( (long)i );
-        if( !ini.has( "prompts", key.c_str() ) )
-            break;
-        prompts.extra.push_back(
-            ini.getString( "prompts", key.c_str() ) );
+        std::string err;
+        core::loadPromptsFile( promptsFilePath(), err );
     }
     return had;
+}
+
+std::string &promptsFileOverride()
+{
+    static std::string path;
+    return path;
+}
+
+std::string promptsFilePath()
+{
+    if( !promptsFileOverride().empty() )
+        return promptsFileOverride();
+    // Next to the config file, which is the only "here" atui has.
+    // The separator keeps the config file's own style: backslashes
+    // where the config path uses them, forward ones elsewhere -- the
+    // OS/2 kernel and every other one accept either, and matching
+    // the neighbor reads better in error messages.
+    const std::string cfg = configPath();
+    std::string::size_type sep = cfg.find_last_of( "\\/" );
+    if( sep == std::string::npos )
+        return "atui_prompts.txt";        // relative config: same dir
+    const char ch = cfg[ sep ];
+    return cfg.substr( 0, sep + 1 ) + "atui_prompts.txt";
 }
 
 bool &thinkingExpandAll()
@@ -250,27 +274,19 @@ bool saveAll()
     ini.setInt( "ui", "wheel_lines", wheelLines() );
     ini.setInt( "ui", "prompt_lines", promptLines() );
 
-    // Agent prompts: the section is rewritten whole (erase then
-    // write) so a line deleted in the dialog cannot survive the save
-    // as an extraN nobody sees. Empty lines never make it to the
-    // file: assembly drops them, and the file should not grow
-    // numbering gaps that mean two things at once.
+    // Agent prompts: only the pointers live in the config file --
+    // the instructions themselves are the file, and this save never
+    // touches it. That is the point: an editor and a settings save
+    // must never race for the same bytes.
     ini.eraseSection( "prompts" );
     const core::AgentPrompts &prompts = core::agentPrompts();
     if( !prompts.hostBrief )
         ini.setBool( "prompts", "host_brief", false );
-    int lineNo = 1;
-    for( std::size_t i = 0; i != prompts.extra.size(); ++i )
-    {
-        if( prompts.extra[ i ].empty() )
-            continue;
-        if( lineNo > (int)core::kMaxExtraLines )
-            break;
-        ini.setString( "prompts",
-                       ("extra" + core::toString( (long)lineNo )).c_str(),
-                       prompts.extra[ i ] );
-        ++lineNo;
-    }
+    if( !promptsFileOverride().empty() )
+        ini.setString( "prompts", "file", promptsFileOverride() );
+    if( !core::promptsEditorOverride().empty() )
+        ini.setString( "prompts", "editor",
+                       core::promptsEditorOverride() );
 
     return ini.save();
 }

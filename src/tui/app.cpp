@@ -61,6 +61,7 @@
 #include "core/signals.h"
 #include "core/strutil.h"      // Fmt and toString: Watcom has no std::ostringstream
 #include "core/hostenv.h"      // agentPrompts: Options > Prompts
+#include "core/promptfile.h"   // openPromptsEditor: the Edit button
 #include "tui/theme.h"
 #include "tui/md_style.h"
 #include "tui/pmdialogs.h"
@@ -102,6 +103,8 @@ enum { CmdHelp = 1000, CmdTheme = 1004, CmdProviders = 1003,
        CmdSettings = 1005, CmdUndo = 1006,
        CmdSwitchModel = 1007,      // the model list as a dialog (windowed front)
        CmdPrompts = 1008,          // Options > Prompts: the agent's words
+       CmdPromptEdit = 1010,       // the dialog's own buttons
+       CmdPromptReload = 1011,
        CmdRefreshModels = 2000,
        CmdSwitchModelBase = 2200 };  // + provider index
 
@@ -349,6 +352,31 @@ void showUndoDialog_();
 void maybeRecoverInterruptedWrites_();
 ushort execDialog_( TView *d );
 
+// Put the whole screen back: every view draws again and the driver sends every
+// cell whether or not it thinks it changed.
+//
+// A driver that sends only what has changed cannot notice that the screen *lost*
+// something, so what is lost stays lost.  That is the report from the box: after a
+// security prompt went up and came down, in a session larger than 80x25, the menu
+// bar was gone and the bottom rows were wrong.  Nothing here can see why -- a row
+// the screen lost while the shadow believed it was already right, or the session
+// redrawing itself behind us -- and nothing the driver does afterwards would fix
+// it, because afterwards it only sends changes.  So the two moments a box covers
+// the desktop are the two moments the screen is put back: draw the desktop, the
+// menu bar and the status line again, and tell the driver to send them.
+//
+// One screenful of cells per call -- 2 KB of cells at 80x25, more at the box's
+// size -- at the two moments a dialog a person answers by hand covers the desktop.
+// (Also the moment an external text editor is done with the terminal: Options >
+// Prompts asks for exactly this after $EDITOR closes.)
+void repaintScreen_()
+{
+    if( TProgram::deskTop )    TProgram::deskTop->redraw();
+    if( TProgram::menuBar )    TProgram::menuBar->drawView();
+    if( TProgram::statusLine ) TProgram::statusLine->drawView();
+    THardwareInfo::redrawScreen();
+}
+
 #ifdef ATUI_HAVE_NETWORK
 // --- tool approval (the turn asks, this thread answers) ----------------------
 //
@@ -409,29 +437,6 @@ public:
         TDialog::handleEvent( event );
     }
 };
-
-// Put the whole screen back: every view draws again and the driver sends every
-// cell whether or not it thinks it changed.
-//
-// A driver that sends only what has changed cannot notice that the screen *lost*
-// something, so what is lost stays lost.  That is the report from the box: after a
-// security prompt went up and came down, in a session larger than 80x25, the menu
-// bar was gone and the bottom rows were wrong.  Nothing here can see why -- a row
-// the screen lost while the shadow believed it was already right, or the session
-// redrawing itself behind us -- and nothing the driver does afterwards would fix
-// it, because afterwards it only sends changes.  So the two moments a box covers
-// the desktop are the two moments the screen is put back: draw the desktop, the
-// menu bar and the status line again, and tell the driver to send them.
-//
-// One screenful of cells per call -- 2 KB of cells at 80x25, more at the box's
-// size -- at the two moments a dialog a person answers by hand covers the desktop.
-void repaintScreen_()
-{
-    if( TProgram::deskTop )    TProgram::deskTop->redraw();
-    if( TProgram::menuBar )    TProgram::menuBar->drawView();
-    if( TProgram::statusLine ) TProgram::statusLine->drawView();
-    THardwareInfo::redrawScreen();
-}
 
 // Show the confirmation dialog for a pending tool approval. Modal: it runs a
 // nested event loop on this thread.
@@ -4071,29 +4076,49 @@ void TApp::showSettings()
 
 // Options > Prompts: the words the model reads before every answer.
 //
-// Two parts share this box because they share their fate: both ride
-// every request as the system message, both come from the user's
-// hands rather than the model's, and both land in [prompts] in the
-// config file. The host brief gets a checkbox rather than an editor
-// because it is written for the machine, not for the user -- what it
-// deserves is a veto, not a red pen. The instruction lines get six
-// fields and no more: the number fits every front's screen, so the
-// dialog is a complete editor, not a window onto half the file.
+// The brief gets a checkbox because it is written for the machine,
+// not for the user -- what it deserves is a veto, not a red pen. The
+// instructions get a file and the machine's own editor, because six
+// dialog fields were never going to hold what a person wants to say
+// to a model: the dialog shows where the file is, how full it is,
+// and the first lines of it, and Edit hands the rest to $EDITOR on
+// unix, e.exe on OS/2, notepad.exe on Windows. The file is the
+// store -- OK applies the checkbox, never the lines -- so an editor
+// open alongside this dialog races nothing.
 class PromptsDialog : public TDialog
 {
 public:
     TCheckBoxes   *briefBox;
-    TInputLine    *lines[atui::core::kMaxExtraLines];
+    TStaticText   *fileLine;
+    TStaticText   *countLine;
+    TStaticText   *preview;
+    TStaticText   *status;
+    std::string    path;
 
     PromptsDialog();
+
+    void handleEvent( TEvent &event );
+
+    // Read the file and update count and preview from it.
+    void refresh();
+    void setStatus_( const std::string &text );
+
+private:
+    // TStaticText is read-only by design, so refreshing one means
+    // replacing it. Statics take no focus and own no state, which is
+    // exactly what makes the swap safe from inside a button's event.
+    void setStatic_( TStaticText *&slot, const TRect &bounds,
+                     const std::string &text );
 };
 
 PromptsDialog::PromptsDialog()
     : TWindowInit( &TDialog::initFrame ),
-      TDialog( TRect( 0, 0, 76, 21 ), "Options - Prompts" ),
-      briefBox( 0 )
+      TDialog( TRect( 0, 0, 76, 19 ), "Options - Prompts" ),
+      briefBox( 0 ), fileLine( 0 ), countLine( 0 ), preview( 0 ),
+      status( 0 )
 {
     options |= ofCentered;
+    path = atui::settings::promptsFilePath();
 
     insert( new TStaticText( TRect( 3, 1, 73, 3 ),
         "The system message the model reads before every\n"
@@ -4107,28 +4132,104 @@ PromptsDialog::PromptsDialog()
     ushort bits = atui::core::agentPrompts().hostBrief ? 0x1 : 0;
     briefBox->setData( &bits );
 
-    insert( new TStaticText( TRect( 3, 6, 73, 7 ),
-        "Your instructions, sent under it (up to 6 lines):" ) );
-    for( std::size_t i = 0; i != atui::core::kMaxExtraLines; ++i )
+    fileLine   = new TStaticText( TRect( 3, 6,  73, 7 ), "" );
+    countLine  = new TStaticText( TRect( 3, 7,  73, 8 ), "" );
+    preview    = new TStaticText( TRect( 5, 8,  73, 11 ), "" );
+    status     = new TStaticText( TRect( 3, 12, 73, 13 ), "" );
+    insert( fileLine );
+    insert( countLine );
+    insert( preview );
+    insert( status );
+    refresh();
+
+    insert( new TButton( TRect( 3, 15, 24, 17 ), "~E~dit in editor...",
+                         CmdPromptEdit, bfNormal ) );
+    insert( new TButton( TRect( 27, 15, 40, 17 ), "~R~eload",
+                         CmdPromptReload, bfNormal ) );
+    insert( new TButton( TRect( 43, 15, 55, 17 ), "~O~K",
+                         cmOK, bfDefault ) );
+    insert( new TButton( TRect( 58, 15, 71, 17 ), "Cancel",
+                         cmCancel, bfNormal ) );
+}
+
+void PromptsDialog::setStatic_( TStaticText *&slot, const TRect &bounds,
+                                const std::string &text )
+{
+    if( slot )
     {
-        lines[ i ] = new TInputLine( TRect( 4, (short) ( 7 + i ),
-                                            73, (short) ( 8 + i ) ), 150 );
-        insert( lines[ i ] );
-        if( i < atui::core::agentPrompts().extra.size() )
-            setInput_( lines[ i ], atui::core::agentPrompts().extra[ i ] );
+        remove( slot );
+        delete slot;
     }
+    slot = new TStaticText( bounds, text.c_str() );
+    insert( slot );
+}
 
-    insert( new TStaticText( TRect( 3, 14, 73, 16 ),
-        "Blank lines are skipped. Stored as [prompts] in the\n"
-        "config file; the model reads them from the next\n"
-        "message on." ) );
+void PromptsDialog::refresh()
+{
+    std::string err;
+    atui::core::loadPromptsFile( path, err );   // keeps old lines on failure
 
-    TButton *ok     = new TButton( TRect( 20, 17, 32, 19 ), "~O~K",
-                                   cmOK, bfDefault );
-    TButton *cancel = new TButton( TRect( 36, 17, 50, 19 ), "Cancel",
-                                   cmCancel, bfNormal );
-    insert( ok );
-    insert( cancel );
+    setStatic_( fileLine, TRect( 3, 6, 73, 7 ),
+                "Instructions file: " + path );
+    const std::vector<std::string> &lines = atui::core::agentPrompts().extra;
+    setStatic_( countLine, TRect( 3, 7, 73, 8 ),
+                atui::core::toString( (long)lines.size() ) + " lines. Editor: "
+                + atui::core::promptsEditor()
+                + ( lines.empty() ? "  (Edit creates the file)" : "" ) );
+
+    std::string view;
+    for( std::size_t i = 0; i != lines.size() && i != 3; ++i )
+    {
+        if( !view.empty() )
+            view += "\n";
+        view += "| " + atui::core::fitPreviewLine( lines[ i ], 68 );
+    }
+    if( view.empty() )
+        view = "| (empty -- nothing extra rides the request)";
+    setStatic_( preview, TRect( 5, 8, 73, 11 ), view );
+}
+
+void PromptsDialog::setStatus_( const std::string &text )
+{
+    setStatic_( status, TRect( 3, 12, 73, 13 ), text );
+    drawView();
+}
+
+void PromptsDialog::handleEvent( TEvent &event )
+{
+    if( event.what == evCommand )
+    {
+        if( event.message.command == CmdPromptEdit )
+        {
+            std::string err;
+            if( atui::core::openPromptsEditor( path, err ) )
+            {
+                // Unix editors scribble over the whole screen and
+                // arrive back with their work done; PM editors
+                // arrive with their window and their work still
+                // ahead, and Reload is the user saying when.
+                repaintScreen_();
+                refresh();
+                setStatus_( "File saved by the editor." );
+            }
+            else
+                setStatus_( err );
+            clearEvent( event );
+            return;
+        }
+        if( event.message.command == CmdPromptReload )
+        {
+            std::string err;
+            if( atui::core::loadPromptsFile( path, err ) )
+                setStatus_( "Reloaded from the file." );
+            else
+                setStatus_( err );
+            refresh();
+            clearEvent( event );
+            return;
+        }
+    }
+    TDialog::handleEvent( event );
 }
 
 void TApp::showPrompts()
@@ -4140,24 +4241,11 @@ void TApp::showPrompts()
     PromptsDialog *d = new PromptsDialog;
     if( execDialog_( d ) == cmOK )
     {
+        // OK means the checkbox; the instruction lines are whatever
+        // the file holds, and the file answers only to its editor.
         ushort bits = 0;
         d->briefBox->getData( &bits );
         atui::core::agentPrompts().hostBrief = ( bits & 0x1 ) != 0;
-
-        // The editor's emptiness is the eraser: OK with six blank
-        // fields means no instructions, and the say-so happens here,
-        // in order, with the air trimmed off.
-        atui::core::agentPrompts().extra.clear();
-        for( std::size_t i = 0; i != atui::core::kMaxExtraLines; ++i )
-        {
-            const std::string text( d->lines[ i ]->data );
-            const size_t from = text.find_first_not_of( " \t" );
-            if( from == std::string::npos )
-                continue;
-            const size_t to = text.find_last_not_of( " \t" );
-            atui::core::agentPrompts().extra.push_back(
-                text.substr( from, to - from + 1 ) );
-        }
         atui::settings::saveAll();
     }
     destroy( d );
@@ -4232,47 +4320,42 @@ extern "C" void pmSettingsApply( const PmSettings *in )
     atui::settings::saveAll();
 }
 
-/* The prompts form's data path for a native PM twin (pmdialogs.h):
-   the snapshot fills the dialog, apply is the whole tvision OK path --
-   trim, drop the blank lines, save. The order of the fields is the
-   order the user typed them, and apply honors it: what comes back
-   goes exactly as it was edited. */
-extern "C" void pmPromptsSnapshot( PmPrompts *out )
+/* The prompts form's data path for a native PM twin (pmdialogs.h).
+   The view reads the prompt file fresh every time -- that is what
+   makes the Reload button honest while e.exe still holds the window
+   open -- and OK is just the checkbox, because the file, not the
+   dialog, owns the instruction lines. */
+extern "C" void pmPromptsView( PmPromptsView *out )
 {
     if( out == 0 )
         return;
+    const std::string path = atui::settings::promptsFilePath();
+    std::string err;
+    atui::core::loadPromptsFile( path, err );    // keeps old lines on failure
     const atui::core::AgentPrompts &p = atui::core::agentPrompts();
     out->hostBrief = p.hostBrief ? 1 : 0;
-    int n = (int)p.extra.size();
-    if( n > (int)atui::core::kMaxExtraLines )
-        n = (int)atui::core::kMaxExtraLines;
-    out->extraCount = n;
-    for( int i = 0; i < n; ++i )
-        copyField_( p.extra[ i ], out->extra[ i ],
-                    sizeof( out->extra[ i ] ) );
+    out->lineCount = (int)p.extra.size();
+    copyField_( path, out->filePath, sizeof( out->filePath ) );
+    for( int i = 0; i < 3; ++i )
+    {
+        out->preview[ i ][ 0 ] = '\0';
+        if( (std::size_t) i < p.extra.size() )
+            copyField_( atui::core::fitPreviewLine( p.extra[ i ], 119 ),
+                        out->preview[ i ], sizeof( out->preview[ i ] ) );
+    }
+    copyField_( atui::core::promptsEditor(), out->editorName,
+                sizeof( out->editorName ) );
 }
 
-extern "C" void pmPromptsApply( const PmPrompts *in )
+extern "C" void pmPromptsEdit( void )
 {
-    if( in == 0 )
-        return;
-    atui::core::agentPrompts().hostBrief = in->hostBrief != 0;
-    atui::core::agentPrompts().extra.clear();
-    int n = in->extraCount;
-    if( n < 0 )
-        n = 0;
-    if( n > (int)atui::core::kMaxExtraLines )
-        n = (int)atui::core::kMaxExtraLines;
-    for( int i = 0; i < n; ++i )
-    {
-        const std::string text( in->extra[ i ] );
-        const size_t from = text.find_first_not_of( " \t" );
-        if( from == std::string::npos )
-            continue;
-        const size_t to = text.find_last_not_of( " \t" );
-        atui::core::agentPrompts().extra.push_back(
-            text.substr( from, to - from + 1 ) );
-    }
+    std::string err;
+    atui::core::openPromptsEditor( atui::settings::promptsFilePath(), err );
+}
+
+extern "C" void pmPromptsOk( int hostBrief )
+{
+    atui::core::agentPrompts().hostBrief = hostBrief != 0;
     atui::settings::saveAll();
 }
 

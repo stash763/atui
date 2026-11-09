@@ -60,20 +60,18 @@ struct AgentPrompts
     bool hostBrief;
 
     // The user's instruction lines, in order, empty ones dropped at
-    // assembly. Capped at kMaxExtraLines when saved; a config file
-    // with more is read up to the cap and left as it is.
+    // assembly. The lines themselves live in the prompt file (see
+    // core/promptfile.h) -- an editor, not a dialog field, holds
+    // however many the user wants -- and this vector is that file
+    // read in.
     std::vector<std::string> extra;
 
     AgentPrompts() : hostBrief( true ) {}
 };
 
-// How many lines the whole `extra` block may hold: the number that
-// fits an editor on every front atui draws dialogs on, so the dialog
-// is a complete editor rather than a window onto half the file.
-const std::size_t kMaxExtraLines = 6;
-
-// The one instance: seeded from the config file by settings::loadAll,
-// edited by Options > Prompts, written back by settings::saveAll.
+// The one instance: seeded from the prompt file by settings::loadAll
+// and by the dialog's reload; the brief flag is what saveAll writes
+// back to the config file.
 AgentPrompts &agentPrompts();
 
 // Assemble the system message from the settings above: the brief if

@@ -6204,3 +6204,37 @@ query calls do.
 Gates: 190/190 and 135/135 host (assembly test: headings, blanks are
 air, veto, silence); atui/pmdrv/pmlib/pmexe RC=0 on the box, the 45
 pmdlg warnings checked and all pre-existing tvision header noise.
+
+## The prompt file: more lines than a dialog can hold (2026-11-08)
+
+Six fields were the wrong container for instructions written to a
+model: the lines move to a file. [prompts] keeps three pointers --
+host_brief, file, editor -- and the words themselves live in
+"atui_prompts.txt" beside the config file (or wherever file= says).
+The Options > Prompts dialog becomes a reader: path, count, first
+three lines, and the two verbs that matter -- Edit in editor, Reload.
+
+The editor is the machine's own: $EDITOR on Unix (vi if silent),
+e.exe on OS/2, notepad.exe on Windows, overridable by editor=. The
+spawn is the C library's system(), and the platform's shape decides
+the rest: a Unix editor is synchronous, so the app reloads when
+system() returns and repaints the screen the editor scribbled on;
+e.exe arrives with its window and its work still ahead, so Reload is
+the user saying when the file is worth reading again. The dialog's
+OK carries the checkbox only -- a settings save must never race an
+open editor for the same bytes.
+
+Header notes from the Watcom round: BM_CLEARCHECK does not exist in
+PM (check the state, and on a mismatch send BM_CLICK, the correction
+a user would perform); TStaticText in tvision is immutable, so a
+refresh replaces the view; and eFTE's PgmInputs-as-args is a
+pipe-redirection trick for cmd.exe children, not a launch door --
+system() through cmd.exe reaches e.exe with a path argument fine.
+
+Gates: 196/196 and 141/141 host (six new promptfile tests: quoting
+both dialects, preview fitting, ensure-spares-existing, CRLF and
+interior-blank reading, the editor default never empty);
+atui/pmdrv/pmlib/pmexe RC=0 on the box, the 906 template now verbs
+and statics instead of six entries. The Edit button's live behavior
+at the box's display (window focus, any cmd flash) is the next
+console acceptance item.

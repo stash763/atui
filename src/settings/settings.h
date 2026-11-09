@@ -30,9 +30,11 @@
 //   [prompts]
 //   host_brief = true        # include the auto host/OS brief (only
 //                            # false is written; default is true)
-//   extra1 = ...             # the user's instruction lines, in order,
-//                            # numbered from 1 with no gaps; they ride
-//                            # every request under "User instructions:"
+//   file =                   # instruction-lines file; default is
+//                            # "atui_prompts.txt" beside this one
+//   editor =                 # editor for that file; default is
+//                            # $EDITOR, e.exe on OS/2, notepad.exe
+//                            # on Windows
 //
 //   [app]
 //   provider = ollama            # active provider
@@ -123,6 +125,17 @@ int &promptLines();
 // Same clamping discipline as the wheel: a value from a hand-edited config
 // file or a mistyped dialog entry should still leave a usable window.
 int clampPromptLines( int lines );
+
+// The file holding the agent's instruction lines ([prompts] file, or
+// "atui_prompts.txt" beside the config file when unset). The file is
+// the store: the Options > Prompts dialog reads it and offers it to
+// the machine's editor, and nothing else writes it. Reference by
+// value: the override can be reloaded.
+std::string promptsFilePath();
+
+// The raw [prompts] file override, empty when unset. Exposed for
+// the save path and the dialog's hint line.
+std::string &promptsFileOverride();
 
 } // namespace atui::settings
 } // namespace atui
