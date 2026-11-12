@@ -39,6 +39,14 @@ bool endsWith( const std::string &s, const char *suffix );
 // ".INF" tests are not case sensitive.
 bool endsWithIgnoreCase( const std::string &s, const char *suffix );
 
+// A one-line title cut from longer text: the first line, control
+// characters folded away, whitespace collapsed, and cut to `width`
+// columns with the trailing "~" that always means "more" (a title is
+// read in a list, where the whole point is that it fits). Empty text,
+// or a first line of only blanks, gives an empty title: no title is
+// honest, a row of spaces is not.
+std::string titleFromText( const std::string &text, std::size_t width );
+
 // ----------------------------------------------------------------------------
 // Numbers to text (std::to_string is missing).
 //

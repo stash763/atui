@@ -34,6 +34,7 @@ BEGIN
   BEGIN
     MENUITEM "~Help...",      1101, 1
     MENUITEM "~Undo file...", 1102, 1
+    MENUITEM "Sessio~n~s...", 1108, 1
     MENUITEM "", -1, 64
     MENUITEM "~Providers...", 1103, 1
     MENUITEM "~Settings...",  1104, 1
@@ -274,6 +275,38 @@ BEGIN
         CONTROL "", 484, 132, 6, 120, 9,
                 0xffff0005, 0x80000001
         PUSHBUTTON "Cancel", 2, 260, 3, 52, 14, 0x80030400
+    END
+END
+
+/* 907 sessions: the conversations this run holds. A list of titles, a
+   title field (New takes it empty or filled, Rename takes it filled),
+   and the verbs -- Switch is OK, so double-clicking a row visits it.
+   The list carries the active row's marker inside its label; PM's
+   listbox has no opinion about which row "is" the conversation.
+   Styles and class atoms as measured for 905's list (0xffff0007) and
+   906's entry (0xffff0006 with ES_MARGIN). */
+DLGTEMPLATE 907 LOADONCALL MOVEABLE DISCARDABLE SEGALIGN
+BEGIN
+    DIALOG "Sessions", 907, 10, 10, 320, 122, 0x80000000, 0x00000003
+    BEGIN
+        CONTROL "", 540, 8, 110, 304, 9,
+                0xffff0005, 0x80000001
+        CONTROL "", 546, 8, 99, 304, 9,
+                0xffff0005, 0x80000001
+        CONTROL "", 541, 8, 33, 304, 63,
+                0xffff0007, 0x80230000
+        CONTROL "Title:", 547, 8, 19, 30, 9,
+                0xffff0005, 0x80000001
+        CONTROL "", 542, 42, 19, 270, 11,
+                0xffff0006, 0x80030008
+        CONTROL "~N~ew", 543, 8, 3, 44, 14,
+                0xffff0003, 0x80030000
+        CONTROL "~R~ename", 544, 56, 3, 60, 14,
+                0xffff0003, 0x80020000
+        CONTROL "~D~elete", 545, 120, 3, 56, 14,
+                0xffff0003, 0x80020000
+        DEFPUSHBUTTON "Switch", 1, 180, 3, 56, 14, 0x80030400
+        PUSHBUTTON "Cancel", 2, 240, 3, 60, 14, 0x80020000
     END
 END
 

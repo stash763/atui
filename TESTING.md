@@ -6238,3 +6238,39 @@ atui/pmdrv/pmlib/pmexe RC=0 on the box, the 906 template now verbs
 and statics instead of six entries. The Edit button's live behavior
 at the box's display (window focus, any cmd flash) is the next
 console acceptance item.
+
+## Sessions: conversations you can leave and come back to (2026-11-12)
+
+File > Sessions (Alt-N on both fronts) opens the list of conversations
+this run holds.  A session is the pair that switches together: the
+transcript's blocks and the model-side ChatTurn -- so "the other
+conversation" means the same thing to the screen and to the model.
+The dialog lists them (ordinal, title, a marker on the one you are
+in) and offers New, Rename, Delete, Switch; New also visits, Delete
+never empties the app (the last session's seat resets fresh), and the
+first message of a session renames its "Session N" to the first forty
+columns of what was actually asked (titleFromText, whitespace
+collapsed, cut marked with ~).
+
+Everything that changes sessions refuses while a reply is in flight:
+the pump writes into whatever transcript is on screen, and a switch
+mid-turn would land an answer in the wrong conversation.  The refusal
+says so rather than queueing a wish.  Sessions live in the run; a
+restart starts clean (persistence is the obvious next guest, and the
+store was shaped so a save is just blocks + titles out to a file).
+
+Field notes from this round: `find('\n')` returning npos is not the
+end of a string -- a loop `for (i != nl)` walked off it and the new
+title test caught it as a segfault before anything shipped (this is
+the test doing its job: the crash was impossible in every case the
+first four test lines covered).  PM details reused whole: the undo
+dialog's list box idiom (LM_INSERTITEM rows, the row ordinal as
+identity because list boxes sort), and the kit table grew one field
+in one place with its twin.
+
+Gates: 203/203 and 148/148 host (seven new: store seat arithmetic,
+the never-empty rule, the cap, title cuts); atui/pmdrv/pmlib/pmexe
+RC=0 on the box, DLGTEMPLATE 907 in the image.  Console acceptance:
+Alt-N, ask something in session 1, New, ask elsewhere, Switch back --
+the transcript should swap and the model should remember only its own
+session's thread.

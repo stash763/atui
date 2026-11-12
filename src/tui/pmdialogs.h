@@ -34,6 +34,7 @@ struct PmDialogs
     int (*prompts)( void );
     int (*providers)( void );
     int (*undo)( void );
+    int (*sessions)( void );
 
     /* The two the window's chrome asks of the driver -- not dialogs, but
        the same one-pointer seam and the same reason: the implementation
@@ -184,6 +185,26 @@ int          pmUndoNeedsConfirm( int index );
 void         pmUndoQuestion( int index, char *buf, int bufLen );
 void         pmUndoRestore( int index, char *msg, int msgLen );
 void         pmUndoDiscard( int index, char *msg, int msgLen );
+
+/* sessions: the conversations the app holds, listed the tvision way --
+    the ordinal that opens the label carries the row's identity, and
+    the active one's label says so.  The verbs answer in pmSess* codes
+    (below), which is how the native box says why a pick was refused;
+    the refusals belong to the app, because that is where "is a reply
+    in flight" lives.  New also switches: a new session that left the
+    user looking at the old one is the bug users would blame the app
+    for.  The list is never empty -- deleting the last session resets
+    its seat to a fresh one. */
+enum { pmSessOK = 0, pmSessBusy = 1, pmSessNoRow = 2,
+       pmSessNoTitle = 3, pmSessFull = 4 };
+
+int          pmSessionsCount( void );
+const char  *pmSessionsLabel( int i );      /* reused static string */
+int          pmSessionsActive( void );
+int          pmSessionsNew( const char *title );     /* empty: auto title */
+int          pmSessionsRename( int i, const char *title );
+int          pmSessionsDelete( int i );
+int          pmSessionsSwitch( int i );
 
 } /* extern "C" */
 

@@ -36,6 +36,10 @@ set(ATUI_TESTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests")
 set(ATUI_SOURCES
     "${ATUI_SRC_DIR}/main.cpp"
     "${ATUI_SRC_DIR}/tui/app.cpp"
+    # Sessions: the transcripts and conversations a person switches
+    # between.  Network-independent -- the turn pointer it carries is
+    # never followed here (tui/sessions.h keeps the type incomplete).
+    "${ATUI_SRC_DIR}/tui/sessions.cpp"
     "${ATUI_SRC_DIR}/tui/theme.cpp"
     # Markdown + syntax highlighting for the transcript. Network-independent.
     "${ATUI_SRC_DIR}/tui/markdown.cpp"
@@ -167,6 +171,7 @@ if(ATUI_BUILD_TESTS)
         "${ATUI_TESTS_DIR}/appman_test.cpp"
         "${ATUI_TESTS_DIR}/hostenv_test.cpp"
         "${ATUI_TESTS_DIR}/promptfile_test.cpp"
+        "${ATUI_TESTS_DIR}/sessions_test.cpp"
     )
 endif()
 

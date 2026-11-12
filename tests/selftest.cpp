@@ -78,6 +78,9 @@ void init_hostenv_tests();
 // Defined in tests/promptfile_test.cpp (always built): the prompt
 // file's quoting, fitting, and reading.
 void init_promptfile_tests();
+// Defined in tests/sessions_test.cpp (always built): the session
+// store's seat arithmetic and the title cut.
+void init_sessions_tests();
 // Defined in tests/turn_queue_test.cpp (network builds only): the hand-off between a
 // turn on a thread and the screen that draws it -- ordering, and the approval round trip.
 void init_turn_queue_tests();
@@ -3140,6 +3143,7 @@ void init()
     init_appman_tests();
     init_hostenv_tests();
     init_promptfile_tests();
+    init_sessions_tests();
 
 #ifdef ATUI_HAVE_NETWORK
     // Real-server tests, last: they retarget the process-wide provider, and

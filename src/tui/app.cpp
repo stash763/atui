@@ -65,6 +65,7 @@
 #include "tui/theme.h"
 #include "tui/md_style.h"
 #include "tui/pmdialogs.h"
+#include "tui/sessions.h"
 #include "tui/markdown.h"
 #include "tui/thinking.h"
 #include "tui/wrap.h"
@@ -103,8 +104,12 @@ enum { CmdHelp = 1000, CmdTheme = 1004, CmdProviders = 1003,
        CmdSettings = 1005, CmdUndo = 1006,
        CmdSwitchModel = 1007,      // the model list as a dialog (windowed front)
        CmdPrompts = 1008,          // Options > Prompts: the agent's words
+       CmdSessions = 1009,         // File > Sessions: the conversations
        CmdPromptEdit = 1010,       // the dialog's own buttons
        CmdPromptReload = 1011,
+       CmdSessNew = 1012,          // ditto, for the sessions box
+       CmdSessRename = 1013,
+       CmdSessDelete = 1014,
        CmdRefreshModels = 2000,
        CmdSwitchModelBase = 2200 };  // + provider index
 
@@ -125,6 +130,12 @@ namespace {
     // cannot ask twice.
     std::string g_startupMessage;
     String g_history_;
+
+    // Sessions: the transcripts and conversations a person switches
+    // between.  The store holds titles and blocks; the turns it points
+    // at belong to the app -- made on a session's first message, freed
+    // on its deletion and at TApp's death (see tui/sessions.h).
+    atui::tui::SessionStore g_sessions_;
 
     // Desktop rect (saved so the transcript + prompt can reflow together).
     int g_dX1 = 0, g_dY1 = 0, g_dX2 = 0, g_dY2 = 0;
@@ -729,6 +740,27 @@ public:
         changedNow_( blocks_.empty() ? 0 : blocks_.size() - 1 );
     }
 
+    // --- session switching ------------------------------------------------
+
+    // The document as it stands, for the session that owns it.
+    void storeInto( std::vector<Block> &out ) const { out = blocks_; }
+
+    // Swap the whole document for another session's.  None of the old
+    // one's layout survives: the rows and the row ends are rebuilt from
+    // scratch, and the streaming answer's cache belongs to a block that
+    // is not on this screen.  `follow_` returns: a session you switch
+    // to is read from its last word, not from wherever you were reading
+    // the one you left.
+    void restoreFrom( const std::vector<Block> &blocks )
+    {
+        blocks_ = blocks;
+        restartLayout_ = true;
+        ans_.valid = false;
+        ans_.rows.clear();
+        follow_ = true;
+        changedNow_( 0 );
+    }
+
     // The application's timer.  What makes the throttling below honest: the text
     // that arrived during the interval is laid out on the first tick after it, so a
     // stream is never left waiting for a chunk that has already been drawn
@@ -964,15 +996,9 @@ public:
     }
 
 private:
-    enum Kind { kUser, kAnswer, kThinking, kStatus, kTool };
-    struct Block {
-        int kind;
-        std::string text;    // user text / answer / thinking / tool preview
-        std::string out;     // tool blocks: what the tool returned
-        std::string note;    // tool blocks: who allowed it and why, if anything
-        bool expanded;
-        bool open;
-    };
+    // Kind and Block are in tui/sessions.h: the session store carries
+    // the very records this view renders, and two owners of that type
+    // would be two chances for them to disagree.
     struct RLine {
         std::vector<Span> spans; int block; bool toggle;
         unsigned char bg;                    // whole-row background role
@@ -1773,7 +1799,12 @@ public:
             g_queue_.declineUnanswered();
             g_turnThread_.join();
         }
-        delete g_turn_;
+        // The store owns the sessions and the sessions held their turns:
+        // with the worker joined and ChatTurn's complete type in sight,
+        // let go of every one.  The store itself never frees a turn
+        // (tui/sessions.h keeps the type incomplete on purpose).
+        for( size_t i = 0; i < g_sessions_.count(); ++i )
+            delete g_sessions_.session( i ).releaseTurn();
         g_turn_ = 0;
 #endif
     }
@@ -1857,6 +1888,7 @@ public:
                 { kbAltP, CmdProviders   },
                 { kbAltI, CmdSettings    },
                 { kbAltR, CmdPrompts     },
+                { kbAltN, CmdSessions    },
                 { kbAltT, CmdTheme       },
                 { kbAltS, CmdSwitchModel },
                 { kbAltH, CmdHelp        },
@@ -1979,6 +2011,10 @@ public:
                     showPrompts();
                     clearEvent( event );
                     break;
+                case CmdSessions:
+                    showSessions();
+                    clearEvent( event );
+                    break;
                 case CmdUndo:
                     showUndoDialog_();
                     clearEvent( event );
@@ -2021,6 +2057,7 @@ private:
     void showTheme();
     void showSettings();
     void showPrompts();
+    void showSessions();
 
     virtual TPalette& getPalette() const
     {
@@ -2110,6 +2147,10 @@ TMenuBar *initMenuBar_( TRect r )
         // The journal's front door: every saved copy atui holds, and the two
         // things that can be done with one.
         + *new TMenuItem( "~Undo file...", CmdUndo, kbAltU, hcNoContext, "Alt-U" )
+        // Every conversation this run holds, and the verbs that manage
+        // them.  On the windowed front the same pick arrives as the
+        // injected Alt-N from the resource menu (atuipm.rc).
+        + *new TMenuItem( "Sessio~n~s...", CmdSessions, kbAltN, hcNoContext, "Alt-N" )
         + newLine()
         + *new TMenuItem( "~O~ptions", kbAltO,
               new TMenu(
@@ -2618,14 +2659,170 @@ void pumpChat_()
 // visible here -- is what lets each front keep its own promise about the
 // text: the tvision prompt keeps it on a refusal, the native field has
 // already let go of it and the transcript says "(busy)" in its place.
+// --- sessions --------------------------------------------------------------
+//
+// A session is a conversation you can leave and come back to: the
+// transcript's blocks and the model-side turn swap together, and the
+// transcript is what the user sees swap.  Everything that changes a
+// session refuses to run while a reply is in flight -- the pump writes
+// into whatever transcript is on screen, so a switch mid-turn would
+// land an answer in the wrong conversation.  This is the same rule
+// submitMessage_ applies to two turns at once, stated for the menu.
+//
+// The store owns titles and blocks; turns are the app's, as
+// tui/sessions.h describes.  The pmSess* codes the seam returns are
+// the same numbers these verbs return (tui/pmdialogs.h is the
+// contract for both fronts).
+
+enum SessionOp { soOK = 0, soBusy = 1, soNoRow = 2, soNoTitle = 3,
+                 soFull = 4 };
+
+bool sessionsBusy_()
+{
+#ifdef ATUI_HAVE_NETWORK
+    if( g_turnThread_.running() )
+        return true;
+    if( g_turn_ != 0 && g_turn_->busy() )
+        return true;
+#endif
+    return false;
+}
+
+const char *sessionOpMessage_( SessionOp op )
+{
+    switch( op )
+    {
+    case soBusy:    return "Finish the current reply first.";
+    case soNoRow:   return "Pick a session first.";
+    case soNoTitle: return "Write a title first.";
+    case soFull:    return "Sixteen sessions is what this keeps.";
+    default:        return "";
+    }
+}
+
+// The row a session shows with: its ordinal opens the text (identity
+// the way the undo list does it, since list boxes sort their rows),
+// and the active one says so.
+std::string sessionLabel_( std::size_t i )
+{
+    std::string label = atui::core::toString( (long) ( i + 1 ) ) + ". "
+                      + g_sessions_.session( i ).title;
+    if( i == g_sessions_.activeIndex() )
+        label += "   <- here";
+    return label;
+}
+
+// Puts the live transcript away in the session that owns it.
+void sessionPark_()
+{
+    if( g_transcript_ != 0 )
+        g_transcript_->storeInto( g_sessions_.active().blocks );
+}
+
+// Makes the screen the active session: its blocks, its turn, and a
+// line saying so -- the transcript is the only place any front can
+// say which conversation you are in.
+void sessionShowActive_()
+{
+    if( g_transcript_ == 0 )
+        return;
+    atui::tui::Session &seat = g_sessions_.active();
+#ifdef ATUI_HAVE_NETWORK
+    g_turn_ = seat.turn;
+#endif
+    g_transcript_->restoreFrom( seat.blocks );
+    g_transcript_->appendStatus( "(in session \"" + seat.title + "\")" );
+}
+
+SessionOp sessionSwitch_( std::size_t i )
+{
+    if( i >= g_sessions_.count() )
+        return soNoRow;
+    if( sessionsBusy_() )
+        return soBusy;
+    if( i == g_sessions_.activeIndex() )
+        return soOK;
+    sessionPark_();
+    g_sessions_.setActive( i );
+    sessionShowActive_();
+    return soOK;
+}
+
+// New means "and I want to be in it" -- a new session that left you
+// staring at the old one reads as a bug nobody would blame the user
+// for.
+SessionOp sessionNew_( const std::string &title )
+{
+    if( sessionsBusy_() )
+        return soBusy;
+    const std::size_t i = g_sessions_.add( title );
+    if( i == atui::tui::SessionStore::kNoSeat )
+        return soFull;
+    sessionPark_();
+    g_sessions_.setActive( i );
+    sessionShowActive_();
+    return soOK;
+}
+
+// Renaming needs no busy guard: the turn does not read its session's
+// title, and the transcript shows titles only in list rows.
+SessionOp sessionRename_( std::size_t i, const std::string &title )
+{
+    if( i >= g_sessions_.count() )
+        return soNoRow;
+    if( !g_sessions_.rename( i, title ) )
+        return soNoTitle;
+    return soOK;
+}
+
+SessionOp sessionDelete_( std::size_t i )
+{
+    if( sessionsBusy_() )
+        return soBusy;
+    if( i >= g_sessions_.count() )
+        return soNoRow;
+    const bool wasActive = ( i == g_sessions_.activeIndex() );
+#ifdef ATUI_HAVE_NETWORK
+    delete g_sessions_.session( i ).releaseTurn();
+#endif
+    g_sessions_.remove( i );
+    // The screen belonged to the session that just died; it shows
+    // whatever the store made of the seat instead (the next one, or a
+    // fresh empty session if that was the last).  If a different
+    // session died, the screen is untouched -- including its index,
+    // which is why this reads the store rather than the old `i`.
+    if( wasActive )
+        sessionShowActive_();
+    return soOK;
+}
+
+// The auto title lives until the conversation says what it is about:
+// the first message names the session, and after that a title the
+// user typed is never touched.
+void titleSeatFromMessage_( const std::string &message )
+{
+    atui::tui::Session &seat = g_sessions_.active();
+    if( seat.title != seat.autoTitle )
+        return;
+    const std::string t = atui::core::titleFromText( message, 40 );
+    if( !t.empty() )
+        seat.title = t;
+}
+
 bool submitMessage_( const String &msg )
 {
     if( g_transcript_ == 0 ) return false;
     if( msg.size() <= 0 ) return false;
 
 #ifdef ATUI_HAVE_NETWORK
-    if( !g_turn_ )
-        g_turn_ = new atui::net::ChatTurn();
+    // Turns belong to sessions: the active one gets a turn at its
+    // first message and keeps the conversation in it, which is what
+    // makes "go back to the other one" mean something to the model
+    // and not just to the screen.
+    atui::tui::Session &seat = g_sessions_.active();
+    if( !seat.turn )
+        seat.turn = new atui::net::ChatTurn();
+    g_turn_ = seat.turn;
 
     // Ask about the thread of a finished turn first: `running()` is true until it is
     // joined, and a prompt arriving between the answer and the next tick would
@@ -2675,10 +2872,12 @@ bool submitMessage_( const String &msg )
     }
 
     appendUser_( msg.c_str() );
+    titleSeatFromMessage_( message );
 #else
     String reply = g_stub_->ask( msg, g_history_ );
     appendUser_( msg.c_str() );
     appendReply_( reply.c_str() );
+    titleSeatFromMessage_( std::string( msg.c_str() ) );
 #endif
     return true;
 }
@@ -4913,6 +5112,275 @@ extern "C" void pmUndoDiscard( int index, char *msg, int msgLen )
     else
         out = "Discarded the copy of " + undoPath_( e->target );
     copyField_( out, msg, (std::size_t) msgLen );
+}
+
+/* ---------------------------------------------------------------- sessions -- */
+
+/* Sessions: every conversation this run holds, in one list.  One row
+   per session -- ordinal, title, and a marker on the one you are in --
+   and the four verbs: New starts one and moves you into it, Rename
+   gives the chosen row the title in the entry field, Delete retires
+   one (never leaving the app without a conversation), and Switch --
+   the default button -- visits the chosen row.  Every verb is refused
+   while a reply is in flight, and says so in the status row: the
+   answer belongs to the conversation that asked, and arriving in
+   another one is the bug this guard prevents. */
+
+const int kSessionRows = 8;
+
+class SessionsDialog : public TDialog
+{
+public:
+    TListBox      *list;
+    TInputLine    *title;
+    TStaticText   *header;
+    TStaticText   *status;
+    TRect          headerRect;
+    TRect          statusRect;
+
+    SessionsDialog();
+    void reload();
+    void setHeader_( const std::string &text );
+    void setStatus_( const std::string &text );
+    long selected_();                       // store index, -1 for none
+    virtual void handleEvent( TEvent& event );
+};
+
+SessionsDialog::SessionsDialog()
+    : TWindowInit( &TDialog::initFrame ),
+      TDialog( TRect( 0, 0, 74, kSessionRows + 12 ), "Sessions" ),
+      list( 0 ), title( 0 ), header( 0 ), status( 0 )
+{
+    options |= ofCentered;
+
+    headerRect = TRect( 3, 1, size.x - 3, 3 );
+    const short listTop = 4;
+
+    TScrollBar *sb = new TScrollBar( TRect( size.x - 4, listTop, size.x - 3,
+                                            (short) ( listTop + kSessionRows - 1 ) ) );
+    insert( sb );
+    // Single click picks a row (the same ModelListBox the undo list
+    // uses): switching is a browse, and a double click makes people
+    // click twice where they meant to press Switch.
+    list = new ModelListBox( TRect( 3, listTop, (short) ( size.x - 5 ),
+                                    (short) ( listTop + kSessionRows - 1 ) ), 1, sb );
+    list->newList( new TStringCollection( 4096, 32 ) );
+    insert( list );
+
+    statusRect = TRect( 3, (short) ( listTop + kSessionRows ), size.x - 3,
+                        (short) ( listTop + kSessionRows + 1 ) );
+    setStatus_( "New starts a conversation and moves you into it." );
+
+    insert( new TStaticText( TRect( 3, 14, 8, 14 ), "Title:" ) );
+    title = new TInputLine( TRect( 10, 14, size.x - 4, 15 ), 80 );
+    insert( title );
+
+    insert( new TButton( TRect( 3, size.y - 4, 15, size.y - 2 ),
+                         "~N~ew", CmdSessNew, bfNormal ) );
+    insert( new TButton( TRect( 17, size.y - 4, 31, size.y - 2 ),
+                         "~R~ename", CmdSessRename, bfNormal ) );
+    insert( new TButton( TRect( 33, size.y - 4, 47, size.y - 2 ),
+                         "~D~elete", CmdSessDelete, bfNormal ) );
+    insert( new TButton( TRect( size.x - 29, size.y - 4, size.x - 17, size.y - 2 ),
+                         "~S~witch", cmOK, bfDefault ) );
+    insert( new TButton( TRect( size.x - 15, size.y - 4, size.x - 3, size.y - 2 ),
+                         "Cancel", cmCancel, bfNormal ) );
+
+    reload();
+}
+
+// Rebuilds the rows from the store, and says in the header which one
+// is being looked at from the outside.
+void SessionsDialog::reload()
+{
+    TStringCollection *coll = new TStringCollection( 4096, 32 );
+    for( std::size_t i = 0; i < g_sessions_.count(); ++i )
+        coll->insert( dupStr_( sessionLabel_( i ) ) );
+    list->newList( coll );
+
+    atui::core::Fmt h;
+    h << "Each session is its own conversation. Current: "
+      << g_sessions_.active().title;
+    setHeader_( h.str() );
+}
+
+void SessionsDialog::setHeader_( const std::string &text )
+{
+    if( header ) { destroy( header ); header = 0; }
+    header = new TStaticText( headerRect, text.c_str() );
+    insert( header );
+    header->drawView();
+}
+
+void SessionsDialog::setStatus_( const std::string &text )
+{
+    if( status ) { destroy( status ); status = 0; }
+    status = new TStaticText( statusRect, text.c_str() );
+    insert( status );
+    status->drawView();
+}
+
+// The chosen row's session: the rows sort, so the row number is
+// nothing and the ordinal that opens the label is the identity -- the
+// undo list's trick, borrowed with the list box.
+long SessionsDialog::selected_()
+{
+    const std::string row = listRow_( list, list->focused );
+    std::size_t pos = 0;
+    long which = 0;
+    while( pos != row.size() && row[ pos ] >= '0' && row[ pos ] <= '9' )
+    {
+        which = which * 10 + ( row[ pos ] - '0' );
+        ++pos;
+    }
+    if( pos == 0 )
+        return -1;
+    --which;                                // rows are numbered from 1
+    if( which < 0 || (std::size_t) which >= g_sessions_.count() )
+        return -1;
+    return which;
+}
+
+void SessionsDialog::handleEvent( TEvent &event )
+{
+    if( event.what == evCommand )
+    {
+        switch( event.message.command )
+        {
+        case CmdSessNew:
+            {
+            const SessionOp op = sessionNew_( std::string( title->data ) );
+            setStatus_( op == soOK ? "New session, and you are in it."
+                                   : sessionOpMessage_( op ) );
+            reload();
+            }
+            clearEvent( event );
+            return;
+
+        case CmdSessRename:
+            {
+            const long i = selected_();
+            if( i < 0 )
+                setStatus_( sessionOpMessage_( soNoRow ) );
+            else
+            {
+                const SessionOp op = sessionRename_( (std::size_t) i,
+                                                      std::string( title->data ) );
+                setStatus_( op == soOK ? "Renamed."
+                                       : sessionOpMessage_( op ) );
+            }
+            reload();
+            }
+            clearEvent( event );
+            return;
+
+        case CmdSessDelete:
+            {
+            const long i = selected_();
+            if( i < 0 )
+                setStatus_( sessionOpMessage_( soNoRow ) );
+            else
+            {
+                const SessionOp op = sessionDelete_( (std::size_t) i );
+                setStatus_( op == soOK ? "Deleted."
+                                       : sessionOpMessage_( op ) );
+            }
+            reload();
+            }
+            clearEvent( event );
+            return;
+
+        case cmOK:
+            {
+            const long i = selected_();
+            if( i < 0 )
+            {
+                setStatus_( "Pick a session to switch to." );
+                clearEvent( event );
+                return;
+            }
+            const SessionOp op = sessionSwitch_( (std::size_t) i );
+            if( op != soOK )
+            {
+                setStatus_( sessionOpMessage_( op ) );
+                clearEvent( event );
+                return;
+            }
+            // Switched: fall through to the base, which closes the box.
+            }
+            break;
+
+        default:
+            break;
+        }
+    }
+    TDialog::handleEvent( event );
+}
+
+void TApp::showSessions()
+{
+    // The windowed front shows its native twin when the kit has one.
+    if( gPmDialogs && gPmDialogs->sessions && gPmDialogs->sessions() )
+        return;
+
+    SessionsDialog *d = new SessionsDialog();
+    execDialog_( d );
+    TObject::destroy( d );
+    focusInput_();
+}
+
+/* The sessions list's data path for a native PM twin (pmdialogs.h).
+   The rows carry identity the tvision way -- the ordinal that opens
+   the label -- and the verbs answer in the codes the dialog turns
+   into words, so nothing about turns or transcripts crosses the
+   library boundary.  Busy is asked at the act, not at the dialog: a
+   turn that finished while the box was open must not have made every
+   button a lie. */
+extern "C" int pmSessionsCount( void )
+{
+    return (int) g_sessions_.count();
+}
+
+static std::string g_sessLabel_;     // the row text, valid till the next row
+
+extern "C" const char *pmSessionsLabel( int i )
+{
+    if( i < 0 || (std::size_t) i >= g_sessions_.count() )
+        return "";
+    g_sessLabel_ = sessionLabel_( (std::size_t) i );
+    return g_sessLabel_.c_str();
+}
+
+extern "C" int pmSessionsActive( void )
+{
+    return (int) g_sessions_.activeIndex();
+}
+
+extern "C" int pmSessionsNew( const char *title )
+{
+    return (int) sessionNew_( title ? std::string( title ) : std::string() );
+}
+
+extern "C" int pmSessionsRename( int i, const char *title )
+{
+    if( i < 0 )
+        return soNoRow;
+    return (int) sessionRename_( (std::size_t) i,
+                                 title ? std::string( title ) : std::string() );
+}
+
+extern "C" int pmSessionsDelete( int i )
+{
+    if( i < 0 )
+        return soNoRow;
+    return (int) sessionDelete_( (std::size_t) i );
+}
+
+extern "C" int pmSessionsSwitch( int i )
+{
+    if( i < 0 )
+        return soNoRow;
+    return (int) sessionSwitch_( (std::size_t) i );
 }
 
 // Once per run, deal with writes the last run did not finish.

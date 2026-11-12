@@ -65,6 +65,46 @@ bool endsWithIgnoreCase( const std::string &s, const char *suffix )
     return true;
 }
 
+std::string titleFromText( const std::string &text, std::size_t width )
+{
+    if( width == 0 )
+        return std::string();
+
+    // The first line, folded flat: everything a title is cut from.
+    // (A loop running `i != nl` is the trap -- no newline means npos,
+    // and npos is not the end of the string.  The segment is taken by
+    // name before it is walked.)
+    const std::string::size_type nl = text.find( '\n' );
+    const std::string line = ( nl == std::string::npos )
+        ? text
+        : text.substr( 0, nl );
+    std::string flat;
+    for( std::string::size_type i = 0; i != line.size(); ++i )
+    {
+        char c = line[ i ];
+        if( (unsigned char)c < ' ' )
+            c = ' ';              // tabs and other controls read as space
+        if( c == ' ' )
+        {
+            if( !flat.empty() && flat[ flat.size() - 1 ] != ' ' )
+                flat += ' ';
+        }
+        else
+            flat += c;
+    }
+    while( !flat.empty() && flat[ flat.size() - 1 ] == ' ' )
+        flat.erase( flat.size() - 1 );
+
+    if( flat.size() <= width )
+        return flat;
+    if( width == 1 )
+        return "~";
+    std::string cut = flat.substr( 0, width - 1 );
+    while( !cut.empty() && cut[ cut.size() - 1 ] == ' ' )
+        cut.erase( cut.size() - 1 );
+    return cut + "~";
+}
+
 std::string toString( int value )
 {
     char buf[24];
