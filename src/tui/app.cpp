@@ -111,7 +111,8 @@ enum { CmdHelp = 1000, CmdTheme = 1004, CmdProviders = 1003,
        CmdSessRename = 1013,
        CmdSessDelete = 1014,
        CmdRefreshModels = 2000,
-       CmdSwitchModelBase = 2200 };  // + provider index
+       CmdSwitchModelBase = 2200,  // + provider index
+       CmdSessionBase = 2300 };    // + session seat, the Sessions menu
 
 // Guard on the size of the generated dropdown (the command range above).
 const int kMaxSwitchModels = 40;
@@ -144,6 +145,11 @@ namespace {
     // from the provider store) and the status-line item showing the active
     // "provider | model".
     TSubMenu *g_switchModelMenu_ = 0;
+    // The Sessions dropdown, same trick as the model dropdown: one
+    // TSubMenu whose menu is rebuilt whenever the store changes, so
+    // the menu shows the conversations that exist, not a promise to
+    // go look for them.
+    TSubMenu *g_sessionsMenu_ = 0;
     TStatusItem *g_statusProvider_ = 0;
     TStatusItem *g_statusPermission_ = 0;
 
@@ -354,6 +360,25 @@ void pumpChat_();
 void retireTurnThread_();
 TMenu *buildSwitchModelMenu_();
 void refreshSwitchModelMenu_();
+TMenu *buildSessionsMenu_();
+void refreshSessionsMenu_();
+
+// What a sessions verb did, and the words for it on the transcript.
+// The enum sits up here because the menu-bar dispatch (TApp below)
+// answers a session pick with it, and C++98 cannot forward-declare
+// one.  The helpers that print an op need the transcript's complete
+// type and are defined where it lives.
+enum SessionOp { soOK = 0, soBusy = 1, soNoRow = 2, soNoTitle = 3,
+                 soFull = 4 };
+
+bool sessionsBusy_();
+SessionOp sessionSwitch_( std::size_t i );
+void applySessionOp_( SessionOp op );
+
+// Something about the sessions changed: the menu-listed world hears
+// about it from here (see refreshSessionsMenu_ and, on the windowed
+// front, the driver's menu sync).
+void sessionsChanged_();
 void updateProviderStatus_();
 void updatePermissionStatus_();
 void showProvidersDialog_();
@@ -1989,6 +2014,19 @@ public:
                 return;
             }
 
+            // Sessions dropdown entry: the command carries the seat.
+            // Same shape, same reason; the pick reuses the dialog's
+            // own verb, guard and marker line included, so the two
+            // doors cannot drift.
+            if( cmd >= CmdSessionBase &&
+                cmd < CmdSessionBase + (int) atui::tui::SessionStore::kMaxSessions )
+            {
+                applySessionOp_( sessionSwitch_(
+                    (std::size_t) ( cmd - CmdSessionBase ) ) );
+                clearEvent( event );
+                return;
+            }
+
             switch( cmd )
             {
                 case CmdHelp:
@@ -2141,16 +2179,21 @@ TMenuBar *initMenuBar_( TRect r )
     delete g_switchModelMenu_->subMenu;    // the TSubMenu's empty menu
     g_switchModelMenu_->subMenu = buildSwitchModelMenu_();
 
+    // Sessions have their own corner of the bar: Manage opens the
+    // dialog, and below the divider every conversation is one click
+    // away, the live one starred.  The windowed front builds its menu
+    // from the image's resources (atuipm.rc's twin of this shape, the
+    // driver filling the rows).
+    g_sessionsMenu_ = new TSubMenu( "Sessio~n~s", kbAltN );
+    delete g_sessionsMenu_->subMenu;
+    g_sessionsMenu_->subMenu = buildSessionsMenu_();
+
     return new TMenuBar( r,
         *new TSubMenu( "~F~ile", kbAltF )
         + *new TMenuItem( "H~elp...",  CmdHelp, kbAltH, hcNoContext, "Alt-H" )
         // The journal's front door: every saved copy atui holds, and the two
         // things that can be done with one.
         + *new TMenuItem( "~Undo file...", CmdUndo, kbAltU, hcNoContext, "Alt-U" )
-        // Every conversation this run holds, and the verbs that manage
-        // them.  On the windowed front the same pick arrives as the
-        // injected Alt-N from the resource menu (atuipm.rc).
-        + *new TMenuItem( "Sessio~n~s...", CmdSessions, kbAltN, hcNoContext, "Alt-N" )
         + newLine()
         + *new TMenuItem( "~O~ptions", kbAltO,
               new TMenu(
@@ -2166,6 +2209,7 @@ TMenuBar *initMenuBar_( TRect r )
         + newLine()
         + *new TMenuItem( "E~xit...",  cmQuit,  kbAltX, hcNoContext, "Alt-X" )
         + newLine()
+        + *g_sessionsMenu_
         + *g_switchModelMenu_
         + *new TSubMenu( "~A~bout", kbAltA )
         + *new TMenuItem( "ab~out...", CmdHelp, kbAltA, hcNoContext, "Alt-A" )
@@ -2672,10 +2716,8 @@ void pumpChat_()
 // The store owns titles and blocks; turns are the app's, as
 // tui/sessions.h describes.  The pmSess* codes the seam returns are
 // the same numbers these verbs return (tui/pmdialogs.h is the
-// contract for both fronts).
-
-enum SessionOp { soOK = 0, soBusy = 1, soNoRow = 2, soNoTitle = 3,
-                 soFull = 4 };
+// contract for both fronts).  The SessionOp enum itself is up by the
+// menu-bar dispatch that reads it.
 
 bool sessionsBusy_()
 {
@@ -2698,6 +2740,14 @@ const char *sessionOpMessage_( SessionOp op )
     case soFull:    return "Sixteen sessions is what this keeps.";
     default:        return "";
     }
+}
+
+void applySessionOp_( SessionOp op )
+{
+    if( op == soOK )
+        return;
+    if( g_transcript_ != 0 )
+        g_transcript_->appendStatus( sessionOpMessage_( op ) );
 }
 
 // The row a session shows with: its ordinal opens the text (identity
@@ -2745,6 +2795,7 @@ SessionOp sessionSwitch_( std::size_t i )
     sessionPark_();
     g_sessions_.setActive( i );
     sessionShowActive_();
+    sessionsChanged_();
     return soOK;
 }
 
@@ -2761,6 +2812,7 @@ SessionOp sessionNew_( const std::string &title )
     sessionPark_();
     g_sessions_.setActive( i );
     sessionShowActive_();
+    sessionsChanged_();
     return soOK;
 }
 
@@ -2772,6 +2824,7 @@ SessionOp sessionRename_( std::size_t i, const std::string &title )
         return soNoRow;
     if( !g_sessions_.rename( i, title ) )
         return soNoTitle;
+    sessionsChanged_();
     return soOK;
 }
 
@@ -2793,6 +2846,7 @@ SessionOp sessionDelete_( std::size_t i )
     // which is why this reads the store rather than the old `i`.
     if( wasActive )
         sessionShowActive_();
+    sessionsChanged_();
     return soOK;
 }
 
@@ -2806,7 +2860,10 @@ void titleSeatFromMessage_( const std::string &message )
         return;
     const std::string t = atui::core::titleFromText( message, 40 );
     if( !t.empty() )
+    {
         seat.title = t;
+        sessionsChanged_();   // the menu row carries the title too
+    }
 }
 
 bool submitMessage_( const String &msg )
@@ -3112,6 +3169,52 @@ void refreshSwitchModelMenu_()
     if( TProgram::menuBar == 0 ) return;
     setSubMenu_( g_switchModelMenu_, buildSwitchModelMenu_() );
     TProgram::menuBar->drawView();
+}
+
+// The Sessions dropdown: the door to the dialog first, then every
+// conversation one click away.  The star is the same one the dialog
+// rows carry ("<-" has no room in a menu), and the ordinal matches
+// the dialog's numbered rows, so a person who saw the list once can
+// count from memory.
+TMenu *buildSessionsMenu_()
+{
+    MenuBuilder mb;
+    mb.add( new TMenuItem( "Manage...", CmdSessions, TKey( kbNoKey ),
+                           hcNoContext, "the dialog: new, rename, delete" ) );
+    mb.sep();
+    for( std::size_t i = 0;
+         i < g_sessions_.count() &&
+         (int) i < (int) atui::tui::SessionStore::kMaxSessions; ++i )
+    {
+        const std::string label =
+            std::string( i == g_sessions_.activeIndex() ? "* " : "  " )
+            + atui::core::toString( (long) ( i + 1 ) ) + ". "
+            + g_sessions_.session( i ).title;
+        mb.add( new TMenuItem( label.c_str(),
+                               (ushort) ( CmdSessionBase + (int) i ),
+                               TKey( kbNoKey ) ) );
+    }
+    return mb.finish();
+}
+
+// Rebuilt after every change to the store -- new, rename, delete,
+// switch, and the auto-title the first message earns -- from the
+// event loop only, never while the menu is open.
+void refreshSessionsMenu_()
+{
+    if( TProgram::menuBar == 0 ) return;   // the windowed front
+    setSubMenu_( g_sessionsMenu_, buildSessionsMenu_() );
+    TProgram::menuBar->drawView();
+}
+
+void sessionsChanged_()
+{
+    refreshSessionsMenu_();
+    // The windowed front has no tvision menu to rebuild; its menu
+    // bar is the resource's, and the driver fills the rows the store
+    // holds (see pmSessionsMenuChangedKit in hardwspm.cpp).
+    if( gPmDialogs != 0 && gPmDialogs->sessionsMenuChanged != 0 )
+        gPmDialogs->sessionsMenuChanged();
 }
 
 // Status line: what a message will actually be sent to. TStatusLine lays its
@@ -5342,6 +5445,34 @@ extern "C" int pmSessionsCount( void )
 }
 
 static std::string g_sessLabel_;     // the row text, valid till the next row
+static std::string g_sessMenuLabel_;  // ditto, menu grammar (no "<- here")
+
+/* The Sessions menu's row: the ordinal and the title, and nothing
+   else -- the "<- here" tail belongs to the dialog's list, where the
+   row has room; a menu says "current" with a check mark, which the
+   driver sets from pmSessionsActive.  Tildes are flattened because a
+   menu engine eats them as mnemonic markers: a title that contains
+   one must not lose a letter or grow a phantom hot key. */
+extern "C" const char *pmSessionsMenuLabel( int i )
+{
+    if( i < 0 || (std::size_t) i >= g_sessions_.count() )
+        return "";
+    std::string label = atui::core::toString( (long) ( i + 1 ) ) + ". "
+                      + g_sessions_.session( (std::size_t) i ).title;
+    for( std::size_t c = 0; c < label.size(); ++c )
+        if( label[ c ] == '~' )
+            label[ c ] = '-';
+    g_sessMenuLabel_ = label;
+    return g_sessMenuLabel_.c_str();
+}
+
+/* A menu row pick, posted in from the driver's window procedure.
+   The dialog's verb does the rest -- guard, park, marker line, and
+   the refresh that brings this very menu back up to date. */
+extern "C" void pmMenuSessionChosen( unsigned index )
+{
+    applySessionOp_( sessionSwitch_( (std::size_t) index ) );
+}
 
 extern "C" const char *pmSessionsLabel( int i )
 {

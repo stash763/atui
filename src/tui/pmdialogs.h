@@ -53,6 +53,18 @@ struct PmDialogs
        call, the driver counts. */
     void (*status)( const char *text );
     void (*keysToPage)( int on );
+
+    /* sessionsMenuChanged: the Sessions menu's list of conversations.
+       The resource carries the submenu and its Manage entry; the rows
+       under the divider are the driver's, kept in step with the store
+       by the PM 1.x item messages (MM_SETITEMTEXT and friends -- the
+       FCM record API is not in this Watcom at all).  The route to the
+       submenu handle and the item dance are the questions of
+       tools/os2/probe_pmmenu.cpp; where they answer no, this kit field
+       does nothing and the dialog still lists everything.  The
+       application calls it after every change: new, rename, delete,
+       switch, the first message's auto title. */
+    void (*sessionsMenuChanged)( void );
 };
 
 extern const PmDialogs *gPmDialogs;   // null until the PM driver installs one
@@ -201,6 +213,14 @@ enum { pmSessOK = 0, pmSessBusy = 1, pmSessNoRow = 2,
 int          pmSessionsCount( void );
 const char  *pmSessionsLabel( int i );      /* reused static string */
 int          pmSessionsActive( void );
+/* The menu's row reads lighter than the dialog's: no room for the
+   "<- here" tail (the check mark is how a menu says it), and tildes
+   a menu engine would eat are flattened. */
+const char  *pmSessionsMenuLabel( int i );  /* reused static string */
+/* The driver calls this when a list row is picked; the index counts
+   from the rows' first id.  It runs on the window procedure's own
+   thread -- the stack pmPromptSubmit has always run on. */
+void         pmMenuSessionChosen( unsigned index );
 int          pmSessionsNew( const char *title );     /* empty: auto title */
 int          pmSessionsRename( int i, const char *title );
 int          pmSessionsDelete( int i );

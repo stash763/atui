@@ -34,16 +34,27 @@ BEGIN
   BEGIN
     MENUITEM "~Help...",      1101, 1
     MENUITEM "~Undo file...", 1102, 1
-    MENUITEM "Sessio~n~s...", 1108, 1
     MENUITEM "", -1, 64
     MENUITEM "~Providers...", 1103, 1
     MENUITEM "~Settings...",  1104, 1
-    MENUITEM "P~r~ompts...",  1107, 1
+    MENUITEM "P~rompts...",  1107, 1
     MENUITEM "~Theme...",     1105, 1
     MENUITEM "", -1, 64
-    MENUITEM "Switch ~m~odel...", 1106, 1
+    MENUITEM "Switch ~model...", 1106, 1
     MENUITEM "", -1, 64
     MENUITEM "E~xit",         1110, 1
+  END
+  /* The conversations of the run, one click away.  The resource
+     carries the door (Manage) and the divider; the rows under it are
+     the store's, drawn at run time by pmSessionsMenuChangedKit with
+     the PM 1.x item messages -- ids 1140 up, sixteen seats, the
+     contract shared with WM_COMMAND in hardwspm.cpp and the app's
+     menu-label seam.  Manage keeps its old id 1108, so the pick
+     still injects the same Alt-N the table maps to CmdSessions. */
+  SUBMENU "Sessio~ns", 1300, 1
+  BEGIN
+    MENUITEM "~Manage...", 1108, 1
+    MENUITEM "", -1, 64
   END
   SUBMENU "~About", 1200, 1
   BEGIN
@@ -83,9 +94,9 @@ BEGIN
     BEGIN
         CONTROL "Color theme:", 410, 12, 62, 100, 10,
                 0xffff0005, 0x80000001
-        CONTROL "~C~lassic", 401, 14, 44, 80, 10,
+        CONTROL "~Classic", 401, 14, 44, 80, 10,
                 0xffff0003, 0x80030004
-        CONTROL "~D~ark", 402, 14, 30, 80, 10,
+        CONTROL "~Dark", 402, 14, 30, 80, 10,
                 0xffff0003, 0x80000004
         DEFPUSHBUTTON "OK", 1, 40, 6, 51, 14, 0x80030400
         PUSHBUTTON "Cancel", 2, 100, 6, 51, 14, 0x80020000
@@ -209,7 +220,7 @@ BEGIN
                 0xffff0005, 0x80000001
         CONTROL "", 459, 240, 76, 82, 11,
                 0xffff0006, 0x80020008
-        CONTROL "~R~esend thinking in history", 460, 10, 66, 200, 10,
+        CONTROL "~Resend thinking in history", 460, 10, 66, 200, 10,
                 0xffff0003, 0x80030002
         CONTROL "Available models", 466, 8, 52, 110, 9,
                 0xffff0005, 0x80000001
@@ -248,9 +259,9 @@ BEGIN
                 0xffff0005, 0x80000001
         CONTROL "", 514, 10, 27, 300, 9,
                 0xffff0005, 0x80000001
-        CONTROL "~E~dit in editor...", 510, 8, 3, 76, 14,
+        CONTROL "~Edit in editor...", 510, 8, 3, 76, 14,
                 0xffff0003, 0x80030000
-        CONTROL "~R~eload", 511, 90, 3, 52, 14,
+        CONTROL "~Reload", 511, 90, 3, 52, 14,
                 0xffff0003, 0x80020000
         DEFPUSHBUTTON "OK", 1, 177, 3, 51, 14, 0x80030400
         PUSHBUTTON "Cancel", 2, 234, 3, 51, 14, 0x80020000
@@ -299,11 +310,11 @@ BEGIN
                 0xffff0005, 0x80000001
         CONTROL "", 542, 42, 19, 270, 11,
                 0xffff0006, 0x80030008
-        CONTROL "~N~ew", 543, 8, 3, 44, 14,
+        CONTROL "~New", 543, 8, 3, 44, 14,
                 0xffff0003, 0x80030000
-        CONTROL "~R~ename", 544, 56, 3, 60, 14,
+        CONTROL "~Rename", 544, 56, 3, 60, 14,
                 0xffff0003, 0x80020000
-        CONTROL "~D~elete", 545, 120, 3, 56, 14,
+        CONTROL "~Delete", 545, 120, 3, 56, 14,
                 0xffff0003, 0x80020000
         DEFPUSHBUTTON "Switch", 1, 180, 3, 56, 14, 0x80030400
         PUSHBUTTON "Cancel", 2, 240, 3, 60, 14, 0x80020000

@@ -198,6 +198,7 @@ if "%1"=="pmdrv" goto pmdrv
 if "%1"=="pmlib" goto pmlib
 if "%1"=="pmexe" goto pmexe
 if "%1"=="pmprobe" goto pmprobe
+if "%1"=="pmmenu" goto pmmenu
 if "%1"=="pmhands" goto pmhands
 if "%1"=="pmdrive" goto pmdrive
 
@@ -834,6 +835,32 @@ wlink @link.rsp >> %LOG% 2>&1
 if errorlevel 1 goto one_failed
 dir pmhands.exe
 echo [pmhands] OK: run at the box display; read C:\atui\hands_out.txt after
+goto summary
+
+:pmmenu
+rem The menu-editing probe (tools/os2/probe_pmmenu.cpp): whether the
+rem resource-loaded menu bar takes MM_* item edits (text, check,
+rem insert, delete) and through which handle -- the question behind a
+rem dynamic Sessions menu on the PM front.  It shows nothing and pumps
+rem nothing; grab-and-exit, safe from telnet.  Answers to
+rem C:\atui\pmmenu.txt.
+echo ================== pmmenu probe ==================
+if not exist obj\pm2 mkdir obj\pm2
+if exist obj\pm2\*.obj del obj\pm2\*.obj
+%WPP% -fo=obj\pm2\ probe_pmmenu.cpp >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+if exist link.rsp del link.rsp
+echo system os2v2_pm > link.rsp
+echo name pmmenu.exe >> link.rsp
+echo op m >> link.rsp
+echo option stack=256k >> link.rsp
+for %%f in (obj\pm2\*.obj) do echo file %%f >> link.rsp
+echo library os2386.lib >> link.rsp
+echo library stubl.lib >> link.rsp
+wlink @link.rsp >> %LOG% 2>&1
+if errorlevel 1 goto one_failed
+dir pmmenu.exe
+echo [pmmenu] OK: run it, then read C:\atui\pmmenu.txt
 goto summary
 
 :pmdrive
