@@ -126,8 +126,10 @@ Ordered by how much it matters.
 | What | Where | Why it matters |
 |---|---|---|
 | **No screen capture on Windows** | `screen_none.cpp:10` claims the slot | Needs a new `src/platform/screen_win.cpp` (`EnumWindows`/`GetWindowRect`/`GetWindowText`, GDI `BitBlt`). `screen.h:13` already anticipates hex HWNDs. CMake needs an `if(WIN32)` block setting `ATUI_HAVE_WIN_CAPTURE`; none exists -- only APPLE/UNIX branches do. |
-| **`spawnHasDeadline()` is false on Windows** | `run_command_tool.cpp:21-27` | `ATUI_SPAWN_WITH_DEADLINE` is 0 unless `__unix__`/`__APPLE__`, so the whole timeout implementation (L34-274) is dead and `run_command` can hang forever. Analogue is `WaitForSingleObject` plus a job object. At minimum it must fail honestly rather than look supported. |
-| **Permission policy is weaker on Windows** | `permissions.cpp:208,1392` | Two of the three POSIX-only policy checks are simply compiled out under `_WIN32`, and `PERMISSIONS.md` says nothing about `cmd.exe` vs `powershell` quoting -- which is exactly where a shell-word policy gets bypassed. This is the security-relevant gap in the port, and it should not be waved through as "compiles fine". |
+| **A command's stderr is lost on Windows** | `run_command_tool.cpp:415-419` | Measured (probe, `TESTING.md`): `_popen` captures nothing when the command redirects itself, and `type nosuchfile` yields `rc=1` with **empty output** -- the message goes to the console. So a failed command tells the model "exit code 1" and nothing else, and the text escapes into the TUI. `_popen` cannot do better; `CreateProcess` with one shared output pipe can. |
+| **`spawnHasDeadline()` is false on Windows** | `run_command_tool.cpp:21-27` | `ATUI_SPAWN_WITH_DEADLINE` is 0 unless `__unix__`/`__APPLE__`, so the whole timeout implementation (L34-274) is dead and `run_command` can hang forever. Same fix as above: a process handle instead of a pipe gives `WaitForSingleObject` and a killable process group. |
+| **Symlink containment does not exist on Windows** | `permissions.cpp:165-174` | `realpath` is used only where `pathAnchor() == "/"`, and `_WIN32`/`__OS2__` return the normalised form unchanged. A link inside the project pointing out of it is therefore inside it. This is the single cause of the three failing permission self-tests, and `PERMISSIONS.md:435-442` already documents it as a known limit. |
+| **The decision log never rotates on Windows** | `permissions.cpp:1392` | The body of `rotateIfNeeded()` is inside `#if !defined(_WIN32)`, so `permissions.log` grows without bound -- the 1 MiB / one-generation rule at `PERMISSIONS.md:416` silently does not happen. The remove-then-rename order the OS/2 comment explains is already the right one for Windows. |
 | `clock.cpp` takes the non-reentrant path | `clock.cpp:9-11` | `gmtime_r`/`localtime_r` are gated on `__unix__`/`__APPLE__`; MSVC wants `_gmtime64_s`/`_localtime64_s`. Compiles, silently worse and thread-unsafe. |
 | No console signal handling | `signals.cpp:7` | `_WIN32` excluded, correct for `sigaction`, but nothing replaces it. `Ctrl+C` kills the process mid-turn with no journal close. `SetConsoleCtrlHandler` is the answer, if we want one. |
 | No `.rc`/manifest handling | `CMakeLists.txt` | OS/2 needed `tools/os2/atuipm.rc`; a Windows console app may want a manifest, and an XP build needs `SubSystem,5.01`. |
@@ -136,6 +138,91 @@ Ordered by how much it matters.
 No `compat/` layer is needed for MSVC -- that tree exists because Open Watcom
 ships no `<thread>`/`<mutex>`/`<chrono>`, which `src/net/sock.h:12-15` already
 records as a fact about headers rather than about platforms.
+
+## The cross-platform approach, settled
+
+Everything above is a list of differences. This is the rule for handling them, so
+the next platform -- Borland, Win16, whatever -- is a lookup rather than a
+ rediscovery.
+
+**1. One internal form; native only at the boundary.**
+`core/paths.cpp` already gets this right and it is the pattern to keep: `isSep()`
+accepts `/` and `\` unconditionally on every platform (`:62-64`), `pathAnchor()`
+returns a canonical device part whatever was typed, `pathIsUnder()` compares
+component-wise with case folding where the filesystem folds it, and
+`normalizePath()` rebuilds with `/`. Both separators are *analysed* everywhere and
+`/` is *emitted* internally, because DOS-derived APIs accept either. So no
+platform branch is needed for separators, and none should be added. What is
+allowed to be native is the moment a string is handed to an OS API or to a shell.
+
+**2. A tolerant parser may accept bad input; it may not invent a different value.**
+`json_args.cpp:82` is `default: out += e;` -- an unrecognised escape keeps the
+character and throws the backslash away, so `C:\Users\x` arrives as `C:Usersx`.
+That is not leniency, it is corruption: the wrong path, silently, on a tool that
+creates files. Preserving both characters costs one statement and cannot affect
+conformant input, because `\` followed by a non-escape character has no defined
+meaning to preserve *against*. Do the same in both `json_extract.cpp` readers.
+
+**3. Fix what that investigation found on every platform, not just Windows.**
+`case 'u'` exists in `json_args.cpp:62` and in **neither** `json_extract.cpp`
+reader. So `"\u00e9"` in a model's answer decodes to the five characters `u00e9`
+on Linux, macOS, OS/2 and Windows alike. Any API that escapes non-ASCII -- and
+several do -- is delivering mangled text today. That is a worse bug than the one
+that led to looking, and it would have been missed by treating this as a Windows
+issue. There are three independent JSON string decoders in this tree; there should
+be one. Related: `parseToolCallFrags` decodes `arguments` per SSE chunk and
+`mergeToolFrags` concatenates the *decoded* pieces, so an escape split across two
+chunks survives as a literal backslash-and-`n`. Merge the raw fragments, then
+decode once.
+
+**4. The path the policy decided on must be the path that gets opened.**
+`normalizePath()` is a file static in `permissions.cpp:113` and the tools cannot
+see it, so `edit_file` asks permission about one string and `fopen`s another
+(`edit_file_tool.cpp:163,177,183,191`), including a journal entry built from a
+third form (`core::absolutePath`, which does not collapse `..`). Move it into
+`core/paths.{h,cpp}`, canonicalise once in the tool, and use that string for the
+subject, the open and the journal. On Windows this also removes the drive-relative
+and mixed-separator cases at the same time; on POSIX it closes the gap between
+what `realpath` reasoned about and what gets written.
+
+**5. Where the OS has a real primitive, use it instead of emulating POSIX.**
+The measured case: `command + " 2>&1"` does not merge stderr under `cmd.exe`
+(`TESTING.md`), and a failing command produces `rc=1` with no output, so the model
+is told a command failed and never why. No spelling fixes that reliably -- it is a
+handle-assignment problem, not a syntax problem. `CreateProcess` with
+`STARTUPINFO.hStdError` set to the same write handle as `hStdOutput` makes the OS
+merge them, and hands back a process handle, which is also what the deadline
+(`commandTimeoutIsEnforced`) and killing a command's children have been waiting
+for. One native spawn implementation fixes three recorded gaps. The same reasoning
+applies to path resolution: `GetFinalPathNameByHandle` resolves both symlinks and
+junctions where POSIX would have used `realpath`.
+
+**6. A platform limit must read as a limit, not as a pass and not as a failure.**
+The three permission self-tests fail on Windows for one cause: symlink resolution
+is POSIX-only (`permissions.cpp:165-174`), and the fixture only creates the link
+on non-Windows anyway (`selftest.cpp:1662`). The harness has `pass` and `fail` and
+nothing else, so a capability a host cannot offer is indistinguishable from a bug.
+It needs a third answer -- a reported *skip*, counted and printed in the summary --
+and then those three tests say what is true: skipped here, because this host cannot
+resolve a link and the policy says so. Silently `#if`-ing them out is the failure
+mode that produced this whole situation: the suite has never been compiled on OS/2,
+which is why none of this was found there.
+
+**Order of work**, by how much it unblocks and how little it risks:
+
+| | | |
+|---|---|---|
+| W1 | One JSON string decoder: `\u` everywhere, lossless unknown escapes, decode after fragment merge | fixes wrong text on all platforms; small, testable against existing corpus |
+| W2 | Rotate the decision log on Windows (remove-then-rename, already the correct order) | closes a documented policy that silently does not happen |
+| W3 | `CreateProcess` spawn: shared std pipe, process handle, killable tree | fixes measured stderr loss, gives the deadline, kills backgrounded children |
+| W4 | Export the canonicaliser; tools decide and open the same path | closes decide/open divergence on every platform |
+| W5 | `GetFinalPathNameByHandle` resolution, plus skip-aware harness | restores symlink containment on Windows; makes the remaining failures honest |
+| W6 | `PERMISSIONS.md`: shells, quoting, JSON escapes, and what Windows cannot promise | the policy has to say what the code now does |
+
+What this deliberately does **not** include: per-file `#ifdef _WIN32` sprays
+(the seams already exist and are used correctly), making POSIX do something worse
+to match Windows, or teaching the tests to prefer `\` -- the internal form stays
+`/` and the tests keep writing it.
 
 ## Build decisions to settle before the first configure
 

@@ -6368,3 +6368,38 @@ change** (`settings.cpp` unused variable, `app.cpp` sign compare -- pre-existing
 not Windows damage), so nothing here has moved the language level. Not yet done:
 `ATUI_HAVE_NETWORK=ON`, which is what puts `sock_win.cpp` in front of a compiler
 for the first time.
+
+**Measured: what `_popen` captures, and why `2>&1` is the wrong idea**
+(`atui-probe/probe_popen.cpp`, MSVC 19.16, x86, run over SSH):
+
+| command | rc | captured by `_popen(..., "r")` |
+| --- | --- | --- |
+| `echo hello` | 0 | `hello\n` |
+| `echo boom 1>&2` | 0 | *nothing* |
+| `echo boom 1>&2 2>&1` -- what atui sends | 0 | *nothing* |
+| `echo boom 2>&1` | 0 | `boom \n` |
+| `type nosuchfile_zzz.txt` | 1 | *nothing* |
+| `exit 3` | 3 | *nothing* |
+
+Two things follow. `cmd.exe` applies redirections left to right, so after
+`1>&2` the second `2>&1` points stderr at what is already stderr and nothing
+reaches the pipe -- the merge at `run_command_tool.cpp:418` cannot work as
+written. And a command that fails for a reason the shell reports (`type` of a
+missing file) produces **`rc=1` with empty captured output**, the message having
+gone to the console: the model is told a command failed and never told why, while
+the text lands on the terminal underneath the TUI. Neither is fixable by choosing
+a better spelling, because whether the child's two handles go to the same pipe is
+a handle-assignment question. `CreateProcess` with `hStdError` set to the output
+pipe hands the merging to the OS and also returns the process handle that the
+deadline and a killable process group need.
+
+**Measured: `\u` is not decoded by the network reader, on any platform.**
+`case 'u'` appears in `src/tools/json_args.cpp:62` and in neither of the two
+string readers in `src/net/json_extract.cpp` (their `default:` arms keep the
+character and drop the backslash), so a model answer containing `caf\u00e9`
+arrives as `cafu00e9`. This is not Windows-specific and would not have been found
+by treating any of this as a porting problem: it was found by reading the escape
+handling once, looking for the backslash. `json_extract.cpp` has two decoders that
+have already drifted from each other (`\/` present in one, absent in the other,
+same outcome) and neither shares code with `json_args.cpp`; three decoders is how
+one of them came to be missing a case.
