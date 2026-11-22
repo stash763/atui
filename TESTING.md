@@ -6274,3 +6274,59 @@ RC=0 on the box, DLGTEMPLATE 907 in the image.  Console acceptance:
 Alt-N, ask something in session 1, New, ask elsewhere, Switch back --
 the transcript should swap and the model should remember only its own
 session's thread.
+
+---
+
+## atui builds, links and runs its self-test on Windows (measured 2026-11-22)
+
+The first time any of this code has been in front of an MSVC. Target: Windows
+10 Pro 10.0.19045, **32-bit**, VS2017 Community (MSVC 14.16.27023, `_MSC_VER
+1916`), CMake 3.31.12, Ninja 1.13.2. Build dir `C:\Users\stash\atui-build`,
+scripts in `tools/win/`, source synced one way from the Mac.
+
+`__cplusplus` from MSVC 19.16 is **`199711L` by default** -- the honest C++98
+answer, with no `-std=` flag and no `__GNUC__`-compatible lie. It is the friendlier
+default for the `gate98` rule than clang's `gnu++14`, and worth knowing before
+anyone reaches for a flag to force it.
+
+**Two traps, both about 32 bits.** VS2017's bundled `ninja.exe` is a **64-bit
+executable**, and a 64-bit exe cannot run on a 32-bit Windows: CMake reported it
+as `'ninja.exe' '--version' failed with: unknown error`, which names no cause.
+`py -m pip install ninja` supplies a 32-bit one from the `win32` wheel and the
+message goes away. The second trap is quieter: `env.bat` wrapped `vcvarsall` in
+`setlocal` and re-exported only `PATH`, so `LIB` and `INCLUDE` died with the
+scope -- everything compiled (the test file needs no headers) and the link failed
+on `LNK1104: cannot open file 'kernel32.lib'`. A script whose whole job is to
+change the caller's environment must not scope it.
+
+**Compile errors: two files, and one kind.** `_getpid` is in `<process.h>` on
+MSVC, not `<io.h>` (`journal.cpp`). Everything else was the test suite: `setenv`
+and `unsetenv` do not exist on Windows, `_mkdir`/`rmdir` need `<direct.h>`, and
+one `std::string r` was declared inside a `#if !defined(_WIN32)` block that ten
+later lines used. The env calls now go through `set_env()`/`unset_env()` in the
+harness, next to the `makeDir()` that already solved the same problem for
+directories -- a platform branch per suite is how a platform quietly stops being
+tested. One warning, also worth the note: redeclaring `extern char **_environ`
+collides with MSVC's `<stdlib.h>`, which defines `_environ` as a macro onto
+`__p__environ()` for the DLL runtime, giving `C4273 inconsistent dll linkage`.
+The OS/2 branch of that same file already documented exactly this reasoning; the
+Windows branch had not read it.
+
+**Result:** `atui.exe` links, 1,921,024 bytes Debug, **no warnings from atui or
+tvision sources**. `--self-test` over SSH: **137 passed, 7 failed**. The suite
+runs headless, which is the reason to keep believing SSH as a transport -- the TUI
+itself cannot run there at all.
+
+The seven cluster into three things, and none is a mystery:
+
+| fails | what it is |
+| --- | --- |
+| `tool: edit_file first/all`, `tool: edit_file errors`, `journal: edit_file writes behind it` | the tests build JSON by concatenating a path, and a Windows path is full of backslashes, which are JSON escapes. `C:\Users\...` is not a JSON string. The test needs escaping; what it is worth asking afterwards is how a path from a model's JSON is expected to arrive. |
+| `tool: run_command basic` (rc=-4) | stderr merging. The check runs `echo boom 1>&2`, which is a POSIX shell spelling; under `cmd.exe` the word never reaches the captured handle. A real difference in what the tool does on Windows, not a test artefact. |
+| `permission: paths` (-14), `permission: deny list` (-300), `permission: decide file calls` (-7) | the permission model, which is the thing `WINDOWS_PORT.md` predicted: two of its three POSIX-only checks are compiled out under `_WIN32`, and separators are mixed between the test root and the calls. |
+
+Gates: `gate98.py` is at **2 diagnostics on this tree and was at 2 before the
+change** (`settings.cpp` unused variable, `app.cpp` sign compare -- pre-existing,
+not Windows damage), so nothing here has moved the language level. Not yet done:
+`ATUI_HAVE_NETWORK=ON`, which is what puts `sock_win.cpp` in front of a compiler
+for the first time.

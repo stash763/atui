@@ -7,7 +7,8 @@ code has to keep, and `TESTING.md` is where the measurements go.
 Scope, in order: **VS2017 / Win32 / Windows 10 first**, then the older Windows
 targets. Nothing here changes what the OS/2, DOS, Linux or FreeBSD builds do.
 
-Status: environment measured 2026-11-22, no Windows build attempted yet.
+Status: P0-P2 done on the target. atui.exe builds and links for Win32, and
+137 of its 144 self-tests pass. See "Measured results" below.
 
 ## The rules for this work
 
@@ -46,7 +47,7 @@ These are the constraints that make the rest of the plan safe.
 | VS2015 remnants | v140 and **v140_xp** in `C:\Program Files\MSBuild\Microsoft.Cpp\v4.0\v140` |
 | SDKs | Windows Kits 10 (`10.0.10240.0`, `10.0.19041.0`) and Kits 8.1 |
 | CMake | **3.31.12** at `C:\cmake\bin\cmake.exe` (no Ninja beside it, not on `PATH` -- invoke by full path) |
-| Ninja | bundled in VS2017: `...\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe` |
+| Ninja | **1.13.2, 32-bit**, from `py -m pip install ninja` at `C:\Python\scripts\ninja.exe`. The copy VS2017 bundles is 64-bit and **cannot run on this OS** |
 | Borland | `C:\BC5` = **Borland C++ 5.2**: `BCC.EXE` (16-bit), `BCC32.EXE`, `TLINK.EXE`, `TLINK32.EXE`, `ILINK32.EXE`, `MAKE.EXE` |
 | Other | git 2.46.2, `tar.exe` (bsdtar), `py` = Python 3.14.10 (`python`/`python3` are Store stubs -- use `py`) |
 
@@ -138,9 +139,11 @@ records as a fact about headers rather than about platforms.
 
 ## Build decisions to settle before the first configure
 
-1. **Generator: Ninja** (VS2017's bundled copy) rather than the MSBuild generator.
-   Faster, and the same command shape works from SSH and from the OS/2-style
-   scripts. Alternative is `-G "Visual Studio 15 2017"`, which needs no extra path.
+1. **Generator: Ninja**, settled -- but only after measuring which Ninja. VS2017's
+   bundled copy is a 64-bit executable and this is a 32-bit Windows, so it cannot
+   execute and CMake calls that "unknown error"; the 32-bit one from
+   `py -m pip install ninja` works, and `configure.bat` runs the candidate before
+   trusting it and falls back to the MSBuild generator otherwise.
 2. **CMake version -- settled, and no longer a blocker.** atui asks for 3.16 and
    tvision declares `3.5...3.30`; the installed 3.31.12 satisfies both, so no policy
    override is needed. Worth remembering for later: 3.31 is the last of the 3.x
@@ -189,11 +192,23 @@ A tracked-only variant, which is the honest default because it can only ever shi
 what is committed, uses `git archive` twice (once per repo, since submodules are
 separate archives).
 
-The right home for all this is a `tools/atui-win` following the shape of
-`tools/atui-remote`, which already does sync → invoke → pull logs for OS/2 and is
-the pattern this project uses. It should offer `sync`, `build`, `test`, `shell`,
-`pull-logs`, and the Windows-specific `run-gui` (which will want to go through
-windows-mcp rather than SSH, precisely because of the console limitation above).
+The Windows side is `tools/win/`, written on the Mac and synced like any other
+source, following `tools/os2/build.cmd` in putting the machine's paths in a script
+that says why they are what they are:
+
+| script | what it does |
+|---|---|
+| `env.bat` | runs `vcvarsall x86` and puts CMake, Ninja and the tree's location in the environment. Called by the others; usable alone to get a shell that can build. Deliberately no `setlocal` -- see the note in it. |
+| `configure.bat` `[--release] [--net] [--clean]` | configures `"%USERPROFILE%\atui-build"`. Network off unless `--net`. Probes Ninja, falls back to MSBuild. |
+| `build.bat` `[-j N] [--keep] [--release]` | builds. `--keep` passes `-k 0` to Ninja, which turns a first pass over a new compiler from twenty round trips into one. |
+| `selftest.bat` | runs `atui.exe --self-test`, looking in both the single- and multi-config places for it. |
+
+The Mac-side driver that ties sync to these does not exist yet. The plan is still
+for it to be `tools/atui-win`, following `tools/atui-remote` -- which already does
+sync → invoke → pull logs for OS/2 and is the pattern this project uses -- offering
+`sync`, `build`, `test`, `shell`, `pull-logs`, and a Windows-specific `run-gui`
+that goes through windows-mcp rather than SSH, precisely because of the console
+limitation above.
 
 ## Phases
 
@@ -201,17 +216,27 @@ windows-mcp rather than SSH, precisely because of the console limitation above).
 `C:\Users\stash\atui-build` with Ninja, `Win32`, VS2017, `-DATUI_HAVE_NETWORK=OFF`
 first (fewer moving parts, and `build-off/` shows the no-network configuration is
 already a supported shape). *Exit: configure completes with no CMake errors.*
+**Done** -- configures clean. What it took: a 32-bit Ninja, and handing CMake its
+path explicitly, because searching PATH itself finds the 64-bit one it cannot run.
 
 **P1 -- Compile.** Build tvision, then atui's objects, with `/W3`. Expect a list of
 genuine errors -- this code has never seen MSVC. Fix them on the Mac, resync,
 repeat. Keep the error list in `TESTING.md` as it goes; the list is the finding.
-*Exit: `atui.exe` links for `Win32`.*
+*Exit: `atui.exe` links for `Win32`.* **Done** -- links, 1.92 MB Debug, no
+warnings from our sources. The list was four things, all small, all recorded in
+`TESTING.md`; the suite needed the most of them, for the reason in the paragraph
+above about per-suite platform branches.
 
 **P2 -- Run headless.** `atui.exe --self-test` over SSH, both configurations
 (`ATUI_HAVE_NETWORK` off then on). This is the highest-value signal available over
 SSH because it needs no console: 18 test files, `tests/selftest.cpp`, compiled into
 the binary, so it tests statics too. *Exit: self-test passes, or every failure is
-understood and recorded rather than skipped.*
+understood and recorded rather than skipped.* **In progress -- 137 passed, 7
+failed** on the first run. All seven are understood and are P5 work, not
+unknowns: three are the tests building JSON by concatenating a Windows path
+(backslashes are escapes, so `C:\Users\...` is not a JSON string), one is stderr
+merging under `cmd.exe`, and three are the permission model's Windows holes.
+Detail in `TESTING.md`.
 
 **P3 -- Network.** Turn `ATUI_HAVE_NETWORK` on, which activates `sock_win.cpp`, and
 test against `tools/fake_stream.py` running **on the Mac** as an OpenAI-compatible
