@@ -231,12 +231,12 @@ above about per-suite platform branches.
 (`ATUI_HAVE_NETWORK` off then on). This is the highest-value signal available over
 SSH because it needs no console: 18 test files, `tests/selftest.cpp`, compiled into
 the binary, so it tests statics too. *Exit: self-test passes, or every failure is
-understood and recorded rather than skipped.* **In progress -- 137 passed, 7
-failed** on the first run. All seven are understood and are P5 work, not
-unknowns: three are the tests building JSON by concatenating a Windows path
-(backslashes are escapes, so `C:\Users\...` is not a JSON string), one is stderr
-merging under `cmd.exe`, and three are the permission model's Windows holes.
-Detail in `TESTING.md`.
+understood and recorded rather than skipped.* **In progress -- 140 passed, 4
+failed** on the first run, from 137/7 once two test-portability bugs were fixed
+(`/tmp` assumed; paths concatenated into JSON without escaping backslashes). The
+four left are `run_command`'s stderr merging under `cmd.exe` and the permission
+model's Windows holes -- both P5, both understood. Detail in `TESTING.md`, which
+also carries a parser-lenience question this surfaced that needs a decision.
 
 **P3 -- Network.** Turn `ATUI_HAVE_NETWORK` on, which activates `sock_win.cpp`, and
 test against `tools/fake_stream.py` running **on the Mac** as an OpenAI-compatible

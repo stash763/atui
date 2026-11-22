@@ -6,6 +6,8 @@
 #ifndef ATUI_TESTS_HARNESS_H
 #define ATUI_TESTS_HARNESS_H
 
+#include <string>
+
 namespace atui_test {
 
 // Register a test (implemented by tests/selftest.cpp).
@@ -24,6 +26,27 @@ int run();
 // which is what happened first up on Windows.
 void set_env( const char *name, const char *value );
 void unset_env( const char *name );
+
+// A directory the suites may write into, without a trailing separator.
+// There is no /tmp on Windows, which says TMP or TEMP instead -- so a suite that
+// hardwires /tmp does not fail loudly, it fails as whatever it was testing,
+// because the fixture it wrote never appeared.  This rule was written three
+// times in two files and only two of them looked at TEMP; the third was
+// toolTmpPath(), and its tests were the first to go red on Windows.
+std::string temp_dir();
+
+// Wraps a string as a JSON string literal's contents -- backslash and quote
+// escaped -- for the tests that build a tool call by concatenating one.  A
+// Windows path is the case that makes it necessary: "C:\Users\stash" is not a
+// JSON string, and json_args.cpp's reader is lenient about unknown escapes in
+// the way that loses information (it drops the backslash), so the path silently
+// becomes C:Usersstash rather than failing.
+//
+// atui::net::jsonEscape() already does this, and is not used here because it
+// lives in json_extract.cpp, which is only compiled when ATUI_HAVE_NETWORK is
+// on -- the first link of a network-off build found that out.  Twelve lines in
+// the harness beats making the suite depend on the network build to test paths.
+std::string json_str( const std::string &s );
 
 } // namespace atui_test
 

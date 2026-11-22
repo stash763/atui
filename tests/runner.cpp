@@ -1,6 +1,8 @@
 #include "harness.h"
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
+#include <string>
 
 namespace atui_test {
 
@@ -96,6 +98,43 @@ void unset_env( const char *name )
 #else
     ::unsetenv( name );
 #endif
+}
+
+std::string temp_dir()
+{
+    // TMPDIR is the POSIX name, TMP and TEMP the Windows ones; Windows sets the
+    // latter two and has no /tmp, so the order matters and none of them may be
+    // set at all.  The trailing separators come off because every caller adds
+    // its own, and "C:\Users\stash\AppData\Local\Temp\/\/x" is a path Windows
+    // accepts but nobody reading a failure would want to see.
+    const char *d = std::getenv( "TMPDIR" );
+    if( !d || !*d ) d = std::getenv( "TEMP" );
+    if( !d || !*d ) d = std::getenv( "TMP" );
+    if( !d || !*d ) d = "/tmp";
+    std::string s( d );
+    while( s.size() > 1 && ( s[ s.size() - 1 ] == '/' || s[ s.size() - 1 ] == '\\' ) )
+        s.erase( s.size() - 1 );
+    return s;
+}
+
+std::string json_str( const std::string &s )
+{
+    std::string out;
+    out.reserve( s.size() + 8 );
+    for( std::size_t i = 0; i < s.size(); ++i )
+    {
+        const char c = s[i];
+        switch( c )
+        {
+            case '\\': out += "\\\\"; break;
+            case '"':  out += "\\\""; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:   out += c;      break;
+        }
+    }
+    return out;
 }
 
 } // namespace atui_test

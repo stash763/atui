@@ -144,12 +144,7 @@ public:
         , savedRoot_( atui::tools::projectRoot() )
         , savedProvider_( atui::net::providerSettings() )
     {
-        const char *tmp = std::getenv( "TMPDIR" );
-        if( !tmp || !*tmp ) tmp = "/tmp";
-        base = std::string( tmp );
-        while( base.size() > 1 && base[ base.size() - 1 ] == '/' )
-            base.erase( base.size() - 1 );
-        base += "/atui_turn";
+        base = temp_dir() + "/atui_turn";
         ::mkdir( base.c_str(), 0755 );          // may already exist
         root = base + "/proj";
         ::mkdir( root.c_str(), 0755 );

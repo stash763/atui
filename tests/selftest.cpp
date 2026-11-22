@@ -569,15 +569,7 @@ int test_provider_singleton_mutable()
 
 std::string tmpIniPath()
 {
-    const char *d = std::getenv( "TMPDIR" );
-    if( !d || !*d ) d = std::getenv( "TEMP" );
-    if( !d || !*d ) d = std::getenv( "TMP" );
-    if( !d || !*d ) d = "/tmp";
-    std::string s( d );
-    if( s.empty() || ( s[s.size() - 1] != '/' && s[s.size() - 1] != '\\' ) )
-        s += "/";
-    s += "atui_ini_selftest.ini";
-    return s;
+    return temp_dir() + "/atui_ini_selftest.ini";
 }
 
 void writeFile( const std::string &path, const char *content )
@@ -1209,19 +1201,20 @@ int test_json_args_looks_object()
 
 std::string toolTmpPath( const char *name )
 {
-    const char *d = std::getenv( "TMPDIR" );
-    if( !d || !*d ) d = "/tmp";
-    std::string s( d );
-    if( s.empty() || s[s.size() - 1] != '/' ) s += "/";
-    s += "atui_";
-    s += name;
-    return s;
+    return temp_dir() + "/atui_" + name;
 }
 
 void toolWriteFile( const std::string &path, const std::string &content )
 {
     std::ofstream o( path.c_str(), std::ios::out | std::ios::binary | std::ios::trunc );
     o.write( content.data(), (std::streamsize) content.size() );
+    // Say so if the fixture is not there.  Without this a missing temp directory
+    // arrives as "the edit produced the wrong text" -- which is exactly what
+    // happened on the first Windows run, where there is no /tmp, and it cost a
+    // wrong diagnosis before the real cause was measured.  The test still fails
+    // either way; the difference is whether it fails honestly.
+    if( !o )
+        std::fprintf( stderr, "self-test FIXTURE UNWRITABLE %s\n", path.c_str() );
 }
 
 std::string toolReadFile( const std::string &path )
@@ -1256,7 +1249,7 @@ int test_edit_file_first_and_all()
 
     // First occurrence only.
     atui::tools::EditFileTool t;
-    std::string r = t.execute( "{\"path\":\"" + p + "\",\"old_text\":\"x\",\"new_text\":\"y\"}" );
+    std::string r = t.execute( "{\"path\":\"" + json_str( p ) + "\",\"old_text\":\"x\",\"new_text\":\"y\"}" );
     std::string got = toolReadFile( p );
     if( got != "y x x and hello world\n" )
         return -1;
@@ -1264,7 +1257,7 @@ int test_edit_file_first_and_all()
         return -2;
 
     // all=true replaces every occurrence.
-    t.execute( "{\"path\":\"" + p + "\",\"old_text\":\"x\",\"new_text\":\"z\",\"all\":true}" );
+    t.execute( "{\"path\":\"" + json_str( p ) + "\",\"old_text\":\"x\",\"new_text\":\"z\",\"all\":true}" );
     got = toolReadFile( p );
     if( got != "y z z and hello world\n" )
         return -3;
@@ -1272,7 +1265,7 @@ int test_edit_file_first_and_all()
     // Multiline exact match with real newlines passed through JSON escapes.
     std::string p2 = toolTmpPath( "edit_multi.txt" );
     toolWriteFile( p2, "one\ntwo\nthree\n" );
-    t.execute( "{\"path\":\"" + p2 + "\",\"old_text\":\"two\\nthree\",\"new_text\":\"2/3\"}" );
+    t.execute( "{\"path\":\"" + json_str( p2 ) + "\",\"old_text\":\"two\\nthree\",\"new_text\":\"2/3\"}" );
     if( toolReadFile( p2 ) != "one\n2/3\n" )
         return -4;
 
@@ -1289,14 +1282,14 @@ int test_edit_file_errors()
     toolWriteFile( p, "abc\n" );
 
     // old_text not found: file unchanged, message mentions not found.
-    std::string r = t.execute( "{\"path\":\"" + p + "\",\"old_text\":\"zzz\",\"new_text\":\"q\"}" );
+    std::string r = t.execute( "{\"path\":\"" + json_str( p ) + "\",\"old_text\":\"zzz\",\"new_text\":\"q\"}" );
     if( r.find( "not found" ) == std::string::npos )
         return -1;
     if( toolReadFile( p ) != "abc\n" )
         return -2;
 
     // Empty old_text rejected.
-    r = t.execute( "{\"path\":\"" + p + "\",\"old_text\":\"\",\"new_text\":\"q\"}" );
+    r = t.execute( "{\"path\":\"" + json_str( p ) + "\",\"old_text\":\"\",\"new_text\":\"q\"}" );
     if( r.find( "empty" ) == std::string::npos )
         return -3;
 
@@ -1578,13 +1571,7 @@ int test_tool_call_previews()
 
 std::string tmpPath( const char *name )
 {
-    const char *d = std::getenv( "TMPDIR" );
-    if( !d || !*d ) d = std::getenv( "TEMP" );
-    if( !d || !*d ) d = "/tmp";
-    std::string s( d );
-    while( s.size() > 1 && ( s[s.size() - 1] == '/' || s[s.size()-1] == '\\' ) )
-        s.erase( s.size() - 1 );
-    return s + "/" + name;
+    return temp_dir() + "/" + name;
 }
 
 int makeDir( const std::string &path )
@@ -2762,7 +2749,7 @@ int test_journal_edit_file()
 
     atui::tools::EditFileTool tool;
     const std::string args =
-        std::string( "{\"path\":\"" ) + file + "\",\"old_text\":\"beta\","
+        std::string( "{\"path\":\"" ) + json_str( file ) + "\",\"old_text\":\"beta\","
         "\"new_text\":\"gamma\"}";
     const std::string result = tool.execute( args );
     if( result.find( "edited" ) == std::string::npos ) return -1;

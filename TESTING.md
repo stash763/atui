@@ -6313,17 +6313,55 @@ The OS/2 branch of that same file already documented exactly this reasoning; the
 Windows branch had not read it.
 
 **Result:** `atui.exe` links, 1,921,024 bytes Debug, **no warnings from atui or
-tvision sources**. `--self-test` over SSH: **137 passed, 7 failed**. The suite
-runs headless, which is the reason to keep believing SSH as a transport -- the TUI
-itself cannot run there at all.
+tvision sources**. `--self-test` over SSH first ran **137 passed, 7 failed**;
+after the two test-portability fixes below it is **140 passed, 4 failed**. The
+suite runs headless, which is the reason to keep believing SSH as a transport --
+the TUI itself cannot run there at all.
 
-The seven cluster into three things, and none is a mystery:
+**Why none of this had ever been seen on OS/2**, which is the natural question
+about a Windows-only-looking bug: **the self-test suite is not compiled on OS/2
+or DOS** -- 200 KB of test code is not something a 300 KB target ships, which is
+what `gate98.py`'s comment says and what `build.cmd` does. These tests have run
+on exactly two hosts: POSIX, and now Windows. Nothing here contradicts OS/2
+experience, because there was never any.
+
+**Four remaining failures:**
 
 | fails | what it is |
 | --- | --- |
-| `tool: edit_file first/all`, `tool: edit_file errors`, `journal: edit_file writes behind it` | the tests build JSON by concatenating a path, and a Windows path is full of backslashes, which are JSON escapes. `C:\Users\...` is not a JSON string. The test needs escaping; what it is worth asking afterwards is how a path from a model's JSON is expected to arrive. |
-| `tool: run_command basic` (rc=-4) | stderr merging. The check runs `echo boom 1>&2`, which is a POSIX shell spelling; under `cmd.exe` the word never reaches the captured handle. A real difference in what the tool does on Windows, not a test artefact. |
-| `permission: paths` (-14), `permission: deny list` (-300), `permission: decide file calls` (-7) | the permission model, which is the thing `WINDOWS_PORT.md` predicted: two of its three POSIX-only checks are compiled out under `_WIN32`, and separators are mixed between the test root and the calls. |
+| `tool: run_command basic` (rc=-4) | stderr merging. The check runs `echo boom 1>&2`, a POSIX shell spelling; under `cmd.exe` the word never reaches the captured handle. A real difference in what the tool does on Windows, not a test artefact. |
+| `permission: paths` (-14), `permission: deny list` (-300), `permission: decide file calls` (-7) | the permission model -- the thing `WINDOWS_PORT.md` predicted: two of its three POSIX-only checks are compiled out under `_WIN32`, and separators are mixed between the test root and the calls. |
+
+**Two fixes, and the lesson is in how they were found.** Three tests (`edit_file
+first/all`, `edit_file errors`, `journal: edit_file writes behind it`) failed for
+**two independent reasons that hid each other**:
+
+1. `toolTmpPath()` built its path from `TMPDIR`, falling back to `/tmp`, and
+   Windows has no `/tmp` -- and `toolWriteFile()` did not check that the write
+   worked, so the fixture silently never existed and the test failed as "edit
+   produced the wrong text". `tmpIniPath()` three hundred lines away already read
+   `TEMP`; the rule had been written three times and only the copy that omitted
+   `TEMP` was affected. Now one `temp_dir()` in the harness.
+2. The tests concatenate a path into a JSON literal, and a Windows path is full of
+   backslashes, which are JSON escapes. With `/tmp` there were no backslashes, so
+   fixing (1) *alone* put them back at 7 failures -- which is how the interaction
+   got noticed. The paths now go through a `json_str()` in the harness.
+
+`toolWriteFile()` now prints `self-test FIXTURE UNWRITABLE <path>` when the write
+fails. The test fails either way; the point is that it fails honestly, because the
+alternative is what just happened -- a wrong diagnosis written down.
+
+**One finding that is not about the tests, and wants a decision.**
+`json_args.cpp:82` is `default: out += e; // lenient`: an unrecognised escape
+keeps the character and **drops the backslash**. So a model emitting
+`{"path":"C:\Users\stash\x.txt"}` -- invalid JSON, but the single most common way
+models write Windows paths -- decodes to `C:Usersstashx.txt`. Not an error, a
+wrong path, and on a tool that can also create files that means a stray file in
+whatever the working directory is. `json_extract.cpp`'s reader does the same. On
+POSIX this is unreachable because there are no backslashes to get wrong. Preserving
+both characters for an unknown escape (`out += '\\'; out += e;`) would make these
+paths arrive intact and loses nothing, but it is a cross-platform parser policy
+change, so it is a decision rather than a fix made here.
 
 Gates: `gate98.py` is at **2 diagnostics on this tree and was at 2 before the
 change** (`settings.cpp` unused variable, `app.cpp` sign compare -- pre-existing,
