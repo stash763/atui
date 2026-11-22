@@ -9,9 +9,17 @@
 #if defined(_WIN32) || defined(__MSDOS__)
 #include <process.h>
 #include <stdlib.h>
+// MSVC's <stdlib.h> already names the environment block, as a macro onto
+// __p__environ() for the DLL runtime that every non-/MT build links.  Saying it
+// again underneath that macro is how warning C4273 ("__p__environ: inconsistent
+// dll linkage") appeared here on MSVC 19.16: the macro turned the declaration
+// into one for the function, without its _CRTIMP linkage.  Same reasoning the
+// OS/2 branch below records -- redeclare only where the header does not.
+#if !defined(_MSC_VER)
 // extern "C": the C library's environment block is a C object, and a bare
 // `extern char **_environ;` in a C++ translation unit is a C++ one.
 extern "C" { extern char **_environ; }
+#endif
 #define ATUI_ENV_BLOCK  _environ
 // Windows and DOS copy the string handed to _putenv, so a temporary std::string is
 // safe; removing a variable is the same call with an empty value.

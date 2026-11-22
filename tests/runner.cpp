@@ -73,4 +73,29 @@ int run()
     return ( failed == 0 ) ? 0 : 1;
 }
 
+void set_env( const char *name, const char *value )
+{
+#if defined( _WIN32 )
+    // No setenv() on Windows; _putenv_s takes the pair and copies it, which is
+    // all a test needs.  <stdlib.h> rather than <cstdlib> because the function
+    // is a POSIX-named extension that <cstdlib> does not promise.
+    _putenv_s( name, value );
+#else
+    ::setenv( name, value, 1 );
+#endif
+}
+
+void unset_env( const char *name )
+{
+#if defined( _WIN32 )
+    // Setting a variable to the empty string removes it on Windows.  It is not
+    // the same as setting it to "": there is no way to say "present but empty"
+    // here, which a test that cared about the difference would have to ask
+    // about differently -- none does.
+    _putenv_s( name, "" );
+#else
+    ::unsetenv( name );
+#endif
+}
+
 } // namespace atui_test

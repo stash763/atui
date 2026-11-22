@@ -2,12 +2,20 @@
 build/
 # the second configuration TESTING.md measures (-DATUI_HAVE_NETWORK=OFF)
 build-off/
+# Windows builds.  tools/win/env.bat puts the real build outside the tree, at
+# "<repo>-build"; these are for the in-tree names someone types by hand.
+build-win/
+build-msvc/
 cmake/
 *.o
 *.a
 *.obj
 *.out
 *.map
+# what an MSVC link leaves behind
+*.pdb
+*.ilk
+*.exp
 atui
 atui.exe
 .DS_Store

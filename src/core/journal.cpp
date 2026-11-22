@@ -17,6 +17,7 @@
 
 #if defined(_WIN32)
 #include <io.h>
+#include <process.h>    // _getpid lives here, not in <io.h> (measured: MSVC 19.16)
 #include <sys/types.h>
 #define ATUI_PID() ((long)_getpid())
 #elif defined(__OS2__)

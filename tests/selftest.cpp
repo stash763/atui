@@ -30,6 +30,13 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#else
+// The directory calls the suites make and clean up with are in <direct.h> on
+// MSVC, and under different names -- _mkdir, _rmdir.  makeDir() below already
+// knew that; nothing included the header that says so.
+#include <direct.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #endif
 
 #if defined(__unix__) || defined(__APPLE__)
@@ -603,8 +610,8 @@ public:
         atui::tui::setTheme( theme_ );
         atui::settings::wheelLines() = wheel_;
         atui::net::requestMinutes() = wait_;
-        if( hadConfig_ ) setenv( "ATUI_CONFIG", savedConfig_.c_str(), 1 );
-        else unsetenv( "ATUI_CONFIG" );
+        if( hadConfig_ ) set_env( "ATUI_CONFIG", savedConfig_.c_str() );
+        else unset_env( "ATUI_CONFIG" );
     }
 
 private:
@@ -698,7 +705,7 @@ int test_settings_provider_roundtrip()
     StoreGuard guard;
     const std::string path = tmpIniPath();
     std::remove( path.c_str() );
-    setenv( "ATUI_CONFIG", path.c_str(), 1 );
+    set_env( "ATUI_CONFIG", path.c_str() );
 
     std::vector<atui::net::ProviderSettings> list;
     list.push_back( atui::net::defaultProviderSettings() );
@@ -761,7 +768,7 @@ int test_settings_legacy_provider_section()
 {
     StoreGuard guard;
     const std::string path = tmpIniPath();
-    setenv( "ATUI_CONFIG", path.c_str(), 1 );
+    set_env( "ATUI_CONFIG", path.c_str() );
     writeFile( path,
         "[provider]\n"
         "base_url = http://legacy:1234/v1\n"
@@ -790,7 +797,7 @@ int test_settings_wheel_lines()
 {
     StoreGuard guard;
     const std::string path = tmpIniPath();
-    setenv( "ATUI_CONFIG", path.c_str(), 1 );
+    set_env( "ATUI_CONFIG", path.c_str() );
 
     // The clamp: nothing that scrolls no distance, nothing that flings the
     // whole transcript past at once, and the range's own ends untouched.
@@ -839,7 +846,7 @@ int test_settings_request_minutes()
 {
     StoreGuard guard;
     const std::string path = tmpIniPath();
-    setenv( "ATUI_CONFIG", path.c_str(), 1 );
+    set_env( "ATUI_CONFIG", path.c_str() );
 
     // The defaults are a promise to the user (a long prompt must survive a slow
     // model), so pin them - and make sure they are inside the range.
@@ -1381,9 +1388,9 @@ int test_child_environment()
     if( atui::core::envNamePasses( "NPM_TOKEN", "" ) ) return -15;
 
 #if !defined(_WIN32) && !defined(__MSDOS__)
-    ::setenv( "ATUI_SELFTEST_ONE_KEY", "x", 1 );
-    ::setenv( "ATUI_SELFTEST_TWO", "y", 1 );
-    ::setenv( "ATUI_SELFTEST_KEEP", "z", 1 );
+    set_env( "ATUI_SELFTEST_ONE_KEY", "x" );
+    set_env( "ATUI_SELFTEST_TWO", "y" );
+    set_env( "ATUI_SELFTEST_KEEP", "z" );
     {
         const atui::core::ChildEnvironment env( "ATUI_SELFTEST_TWO" );
         if( !blockHas( env.argv(), "ATUI_SELFTEST_TWO" ) ) return -16;
@@ -1394,7 +1401,7 @@ int test_child_environment()
 
     // The guard takes them out for the moment a child starts and puts them back
     // afterwards, so atui still has what its own requests need.
-    ::setenv( "ATUI_SELFTEST_SECRET_KEY", "hunter2", 1 );
+    set_env( "ATUI_SELFTEST_SECRET_KEY", "hunter2" );
     {
         const std::string nothing;
         atui::core::HiddenCredentials hide( nothing );
@@ -1403,10 +1410,10 @@ int test_child_environment()
     const char *back = std::getenv( "ATUI_SELFTEST_SECRET_KEY" );
     if( !back || std::string( back ) != "hunter2" ) return -21;
 
-    ::unsetenv( "ATUI_SELFTEST_ONE_KEY" );
-    ::unsetenv( "ATUI_SELFTEST_TWO" );
-    ::unsetenv( "ATUI_SELFTEST_KEEP" );
-    ::unsetenv( "ATUI_SELFTEST_SECRET_KEY" );
+    unset_env( "ATUI_SELFTEST_ONE_KEY" );
+    unset_env( "ATUI_SELFTEST_TWO" );
+    unset_env( "ATUI_SELFTEST_KEEP" );
+    unset_env( "ATUI_SELFTEST_SECRET_KEY" );
 #endif
     return 0;
 }
@@ -1415,12 +1422,17 @@ int test_run_command_environment()
 {
     atui::tools::RunCommandTool t;
 
+    // Declared out here because both halves below use it, and the first half is
+    // POSIX-only: the `$VAR` expansion it drives is a shell feature, so on
+    // Windows there is nothing to expand and the assertions would pass vacuously.
+    std::string r;
+
 #if !defined(_WIN32) && !defined(__MSDOS__)
     // A credential-shaped variable does not reach the command, so `env` in a build
     // step cannot read the machine's keys into a transcript and from there into a
     // model's context.
-    ::setenv( "ATUI_SELFTEST_SECRET_KEY", "hunter2", 1 );
-    std::string r = t.execute( "{\"command\":\"echo [$ATUI_SELFTEST_SECRET_KEY]\"}" );
+    set_env( "ATUI_SELFTEST_SECRET_KEY", "hunter2" );
+    r = t.execute( "{\"command\":\"echo [$ATUI_SELFTEST_SECRET_KEY]\"}" );
     if( !containsSub( r, "[]" ) ) return -1;
     if( containsSub( r, "hunter2" ) ) return -2;
 
@@ -1431,7 +1443,7 @@ int test_run_command_environment()
     r = t.execute( "{\"command\":\"echo [$ATUI_SELFTEST_SECRET_KEY]\"}" );
     atui::tools::passEnvNames().clear();
     if( !containsSub( r, "[hunter2]" ) ) return -3;
-    ::unsetenv( "ATUI_SELFTEST_SECRET_KEY" );
+    unset_env( "ATUI_SELFTEST_SECRET_KEY" );
 #endif
 
     if( !atui::tools::commandTimeoutIsEnforced() )
@@ -1584,6 +1596,18 @@ int makeDir( const std::string &path )
 #endif
 }
 
+// The other half of makeDir(), and the reason it is a function rather than six
+// calls: rmdir() is in <direct.h> as _rmdir on Windows, and a suite that spells
+// the POSIX name at every call site simply stops building there.
+int removeDir( const std::string &path )
+{
+#if defined(_WIN32)
+    return ::_rmdir( path.c_str() );
+#else
+    return ::rmdir( path.c_str() );
+#endif
+}
+
 // Restores everything the policy keeps in process-wide singletons, so a test
 // that changes the mode, the root or the log cannot leak into the next one.
 class PermissionGuard
@@ -1683,17 +1707,17 @@ private:
     {
         std::remove( ( base + "/outside.txt" ).c_str() );
         std::remove( ( base + "/proj-extra/x.txt" ).c_str() );
-        ::rmdir( ( base + "/proj-extra" ).c_str() );
+        removeDir( ( base + "/proj-extra" ) );
         std::remove( ( base + "/proj/linkout" ).c_str() );
         std::remove( ( base + "/proj/sshlink" ).c_str() );
         std::remove( ( base + "/.ssh/config" ).c_str() );
-        ::rmdir( ( base + "/.ssh" ).c_str() );
+        removeDir( ( base + "/.ssh" ) );
         std::remove( ( base + "/proj/sub/nested.txt" ).c_str() );
-        ::rmdir( ( base + "/proj/sub" ).c_str() );
+        removeDir( ( base + "/proj/sub" ) );
         std::remove( ( base + "/proj/inside.txt" ).c_str() );
         std::remove( ( base + "/proj/.env" ).c_str() );
-        ::rmdir( ( base + "/proj" ).c_str() );
-        ::rmdir( base.c_str() );
+        removeDir( ( base + "/proj" ) );
+        removeDir( base );
     }
 };
 
@@ -2825,7 +2849,7 @@ int test_settings_undo()
     StoreGuard store;
     JournalGuard journal;
     const std::string path = tmpIniPath();
-    setenv( "ATUI_CONFIG", path.c_str(), 1 );
+    set_env( "ATUI_CONFIG", path.c_str() );
 
     writeFile( path,
         "[undo]\n"
@@ -2911,7 +2935,7 @@ int test_settings_tools()
     const long wasTimeout = atui::tools::commandTimeoutSeconds();
     const std::string wasPass = atui::tools::passEnvNames();
     const std::string path = tmpIniPath();
-    setenv( "ATUI_CONFIG", path.c_str(), 1 );
+    set_env( "ATUI_CONFIG", path.c_str() );
 
     writeFile( path,
         "[tools]\n"
@@ -2954,7 +2978,7 @@ int test_settings_permissions()
     StoreGuard store;
     PermissionGuard perms;
     const std::string path = tmpIniPath();
-    setenv( "ATUI_CONFIG", path.c_str(), 1 );
+    set_env( "ATUI_CONFIG", path.c_str() );
 
     writeFile( path,
         "[permissions]\n"
@@ -3010,20 +3034,20 @@ int test_settings_permissions()
 // set rather than inherited, so this test does not care how it was started.)
 int test_provider_env_values_arrive_trimmed()
 {
-    setenv( "ATUI_BASE_URL", "  http://example.test:9/v1  ", 1 );
-    setenv( "ATUI_MODEL", "  a model  ", 1 );
+    set_env( "ATUI_BASE_URL", "  http://example.test:9/v1  " );
+    set_env( "ATUI_MODEL", "  a model  " );
     const atui::net::ProviderSettings s = atui::net::defaultProviderSettings();
-    unsetenv( "ATUI_BASE_URL" );
-    unsetenv( "ATUI_MODEL" );
+    unset_env( "ATUI_BASE_URL" );
+    unset_env( "ATUI_MODEL" );
 
     if( s.baseUrl != "http://example.test:9/v1" ) return -1;
     if( s.model != "a model" ) return -2;
 
     // The comma-separated model list, too: it is where a space is most likely and
     // least visible, since the separator already makes people write spacing.
-    setenv( "ATUI_MODELS", "one, two ,three", 1 );
+    set_env( "ATUI_MODELS", "one, two ,three" );
     const atui::net::ProviderSettings t = atui::net::defaultProviderSettings();
-    unsetenv( "ATUI_MODELS" );
+    unset_env( "ATUI_MODELS" );
     if( t.models.size() < 3 ) return -3;
     if( t.models[ 1 ] != "two" ) return -4;
     return 0;
