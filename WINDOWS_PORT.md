@@ -7,8 +7,8 @@ code has to keep, and `TESTING.md` is where the measurements go.
 Scope, in order: **VS2017 / Win32 / Windows 10 first**, then the older Windows
 targets. Nothing here changes what the OS/2, DOS, Linux or FreeBSD builds do.
 
-Status: P0-P2 done on the target, and W1-W3 of the cross-platform work landed.
-atui.exe builds and links for Win32, and 143 of its 146 self-tests pass; the three
+Status: P0-P2 done on the target, and W1-W4 of the cross-platform work landed.
+atui.exe builds and links for Win32, and 144 of its 147 self-tests pass; the three
 that do not are one cause (symlink containment, `W5`). See "Measured results" below.
 
 ## The rules for this work
@@ -257,7 +257,7 @@ which is why none of this was found there.
 | W3 | `CreateProcess` spawn: shared std pipe, process handle, killable tree | **done** -- stderr captured, the limit enforced, the tree killed and the kill asserted; the deadline tests now run on Windows too, through harness helpers that know `sleep` from `ping` |
 | W4 | Export the canonicaliser; tools decide and open the same path | **done** -- `tools::canonicalPath()`, `edit_file` opens that, and the test that makes cwd differ from the root was checked to fail without it |
 | W5 | `GetFinalPathNameByHandle` resolution, plus skip-aware harness | restores symlink containment on Windows; makes the remaining failures honest |
-| W6 | `PERMISSIONS.md`: shells, quoting, JSON escapes, and what Windows cannot promise | the policy has to say what the code now does |
+| W6 | `PERMISSIONS.md`: shells, quoting, JSON escapes, and what Windows cannot promise | part-way -- the two deadline passages and the containment bullet now say what the code does (`W3`, `W4`); the cmd.exe quoting rules, the JSON escape policy and the list of what Windows cannot promise are still to write |
 
 What this deliberately does **not** include: per-file `#ifdef _WIN32` sprays
 (the seams already exist and are used correctly), making POSIX do something worse
@@ -358,12 +358,15 @@ above about per-suite platform branches.
 (`ATUI_HAVE_NETWORK` off then on). This is the highest-value signal available over
 SSH because it needs no console: 18 test files, `tests/selftest.cpp`, compiled into
 the binary, so it tests statics too. *Exit: self-test passes, or every failure is
-understood and recorded rather than skipped.* **In progress -- 140 passed, 4
-failed** on the first run, from 137/7 once two test-portability bugs were fixed
-(`/tmp` assumed; paths concatenated into JSON without escaping backslashes). The
-four left are `run_command`'s stderr merging under `cmd.exe` and the permission
-model's Windows holes -- both P5, both understood. Detail in `TESTING.md`, which
-also carries a parser-lenience question this surfaced that needs a decision.
+understood and recorded rather than skipped.* **Met -- 144 passed, 3 failed**, and
+the three are one cause (symlink containment, `W5`), recorded and not skipped. This
+phase paid for itself: it is the first time the suite has ever been compiled on a
+non-POSIX host, and it found bugs that were not Windows cosmetic issues -- a `\u`
+decoder missing from both network readers (wrong text on every platform), a
+decision log that never rotated, and a policy that decided about one file while the
+tool opened another. The first run was 137/7; two of those were test-portability
+bugs (`/tmp` assumed; paths concatenated into JSON without escaping backslashes) and
+the rest are the gap table above. Detail in `TESTING.md`.
 
 **P3 -- Network.** Turn `ATUI_HAVE_NETWORK` on, which activates `sock_win.cpp`, and
 test against `tools/fake_stream.py` running **on the Mac** as an OpenAI-compatible
@@ -379,9 +382,17 @@ windows-mcp and drive it with `Screenshot`/`Snapshot`/`Type`. This is the phase
 where UTF-8 output, the code page, and keyboard input are actually verified.
 *Exit: the TUI renders, keys land, a session is usable on screen.*
 
-**P5 -- Fill the Windows gaps.** `screen_win.cpp`, the spawn deadline, `clock.cpp`,
-console CP, signal handling, and the permission-policy question above -- each behind
-its capability query, each measured before it is claimed.
+**P5 -- Fill the Windows gaps.** Each behind its capability query, each measured
+before it is claimed. Landed so far, as W1-W4 of the cross-platform work above: the
+spawn deadline and the merged output (`W3`), the decision log rotating (`W2`), one
+JSON decoder with working `\u` (`W1`), and the tool opening the path the policy
+decided about (`W4`). Still to do, in the order the gap table gives them: symlink
+containment (`W5`, which is also what stands between this and a green Windows
+suite), `src/platform/screen_win.cpp` -- there is no capture at all today and CMake
+has no `WIN32` branch for it, so the screenshot tool is simply absent -- plus
+`clock.cpp`'s reentrant time calls, a console control handler so `Ctrl+C` does not
+die mid-turn without closing the journal, and `.rc`/manifest handling, which is a
+prerequisite for the XP subsystem version rather than a nicety.
 
 **P6 -- Then the older Windows targets.** In rough order of how much they can
 reuse P1's work: v141_xp and v140_xp (both present; note the last SDK carrying XP
