@@ -1,6 +1,8 @@
 // Definitions for the minimal JSON + SSE helpers.
 #include "json_extract.h"
 
+#include "core/jsonstr.h"     // decodeJsonString: the one string decoder
+
 #include <cstring>
 
 namespace atui {
@@ -21,37 +23,17 @@ void skipWs( const std::string &s, size_t &i, size_t end )
 
 // Decode a JSON string literal whose opening '"' is at s[i]; advances i past
 // the closing quote and returns the decoded value. Bounded by end.
+//
+// The decoding itself lives in core/ (see core/jsonstr.h) because this and the
+// tool-argument reader were two copies of the same scanner, and copies drift:
+// this one had no `\u` at all, so a reply containing `caf\u00e9` arrived as the
+// eleven characters `cafu00e9` on every platform.  What stays here is the
+// tolerance -- a reply with a broken escape in it is still worth showing, so the
+// "was it well formed" answer is dropped along with the bound.
 std::string decodeString( const std::string &s, size_t &i, size_t end )
 {
     std::string out;
-    if( i >= end || s[i] != '"' ) return out;
-    ++i;
-    while( i < end && s[i] != '"' )
-    {
-        if( s[i] == '\\' && i + 1 < end )
-        {
-            char e = s[i + 1];
-            switch( e )
-            {
-                case 'n':  out += '\n'; break;
-                case 't':  out += '\t'; break;
-                case 'r':  out += '\r'; break;
-                case 'b':  out += '\b'; break;
-                case 'f':  out += '\f'; break;
-                case '"':  out += '"';  break;
-                case '\\': out += '\\'; break;
-                case '/':  out += '/';  break;
-                default:   out += e;    break;
-            }
-            i += 2;
-        }
-        else
-        {
-            out += s[i];
-            ++i;
-        }
-    }
-    if( i < end && s[i] == '"' ) ++i; // consume closing quote
+    core::decodeJsonString( s, i, end, out );
     return out;
 }
 
@@ -287,34 +269,7 @@ std::string deltaContent( const std::string &json )
         return std::string();
 
     // Decode the JSON string value.
-    ++i;
-    std::string out;
-    out.reserve( 64 );
-    while( i < json.size() && json[i] != '"' )
-    {
-        if( json[i] == '\\' && i + 1 < json.size() )
-        {
-            char e = json[i + 1];
-            switch( e )
-            {
-                case 'n': out += '\n'; break;
-                case 't': out += '\t'; break;
-                case 'r': out += '\r'; break;
-                case '"': out += '"';  break;
-                case '\\': out += '\\'; break;
-                case 'b': out += '\b'; break;
-                case 'f': out += '\f'; break;
-                default: out += e;     break;
-            }
-            i += 2;
-        }
-        else
-        {
-            out += json[i];
-            ++i;
-        }
-    }
-    return out;
+    return decodeString( json, i, json.size() );
 }
 
 std::string deltaReasoning( const std::string &json )

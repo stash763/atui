@@ -55,6 +55,11 @@ set(ATUI_SOURCES
     # std::string::compare, no to_string, no std::ostringstream, no std::getline,
     # no const map::find.  See the headers for what each one replaces.
     "${ATUI_SRC_DIR}/core/strutil.cpp"
+    # One JSON string decoder for the whole program: the tool-argument reader and
+    # the network reader were separate copies of the same scanner and drifted, so
+    # the copies are gone.  Always built, network or not, because tool arguments
+    # have to be decoded either way.
+    "${ATUI_SRC_DIR}/core/jsonstr.cpp"
     "${ATUI_SRC_DIR}/core/hostenv.cpp"
     "${ATUI_SRC_DIR}/core/promptfile.cpp"
     "${ATUI_SRC_DIR}/core/lines.cpp"

@@ -35,6 +35,13 @@ public:
         virtual ~Sink() {}
         // One complete payload, with `data:` and its single optional space removed,
         // and the line ending gone.  Called once per `data:` line, in order.
+        //
+        // Complete means complete, and something downstream depends on it more than
+        // the wording suggests: a payload is never half a line, so the JSON inside it
+        // is whole and its string literals are closed.  That is what lets
+        // `parseToolCallFrags` decode a fragment's `arguments` per payload and have
+        // the pieces concatenated already decoded -- correct only because no escape
+        // sequence can be left split across two calls.
         virtual void onPayload( const std::string &payload ) = 0;
         // `[DONE]` arrived.  Called at most once, after the last onPayload.
         virtual void onDone() = 0;

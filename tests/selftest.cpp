@@ -14,6 +14,7 @@
 #include "tools/judge.h"
 #include "core/journal.h"
 #include "core/paths.h"
+#include "core/jsonstr.h"
 #include "core/childenv.h"
 #include "settings/ini.h"
 #include "settings/settings.h"
@@ -1079,6 +1080,39 @@ int test_tool_call_args_with_braces()
         return -1;
     return 0;
 }
+
+// Escapes have to come out of the network reader the way they come out of the
+// tool-argument reader, and for a while they did not: the two were separate
+// scanners and this one had no `\u` in it at all.  A reply containing `caf\u00e9`
+// arrived as the eleven characters `cafu00e9` on every platform, from any server
+// that escapes non-ASCII -- which is most of them.
+int test_net_json_escapes()
+{
+    std::string text =
+        "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"caf\\u00e9\"}}]}";
+    if( atui::net::deltaContent( text ) != "caf\xC3\xA9" )
+        return -1;
+
+    // The Windows case, end to end.  A model that writes a path without doubling
+    // its backslashes sends `\U`, which is not a JSON escape; it is not the
+    // parser's place to read that as a different path.  Tool arguments arrive as
+    // JSON text and are read a second time from there, so both decodes have to
+    // hold or the file is written somewhere the model never named.
+    std::string chunk =
+        "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,"
+        "\"function\":{\"name\":\"edit_file\","
+        "\"arguments\":\"{\\\"path\\\":\\\"C:\\Users\\stash\\out\\\"}\"}}"
+        "]}}]}";
+    std::vector<atui::net::ToolCallFrag> frags;
+    if( !atui::net::parseToolCallFrags( chunk, frags ) || frags.size() != 1 )
+        return -2;
+    std::string path;
+    if( !atui::tools::jsonStringArg( frags[0].arguments, "path", path ) )
+        return -3;
+    if( path != "C:\\Users\\stash\\out" )
+        return -4;
+    return 0;
+}
 #endif // ATUI_HAVE_NETWORK
 
 int test_time_tool()
@@ -1129,6 +1163,98 @@ int test_tool_registry()
         return -1;
     if( json[0] != '[' || json[json.size() - 1] != ']' )
         return -1;
+    return 0;
+}
+
+// --- the JSON string decoder ---------------------------------------------------
+
+// One decoder for the whole program (core/jsonstr.h).  The cases are the ones
+// that went wrong: `\u` that never was, a surrogate pair that arrived as two
+// halves, and the backslash an under-escaped Windows path depends on.
+int test_json_string_decoder()
+{
+    std::string out;
+    std::size_t i = 0;
+
+    // \uXXXX, as a server that escapes non-ASCII sends it.  The network reader
+    // had no \u at all, so this is the shape of the bug: `café` arriving as the
+    // eleven characters `cafu00e9`.
+    std::string cafe = "\"caf\\u00e9\"";
+    if( !atui::core::decodeJsonString( cafe, i, cafe.size(), out ) )
+        return -1;
+    if( out != "caf\xC3\xA9" )
+        return -2;
+    if( i != cafe.size() )
+        return -3;
+
+    // A surrogate pair is one code point in four bytes.  Encoding each half as
+    // three bytes is CESU-8, which is not UTF-8: an emoji reached the terminal
+    // as two broken characters.
+    i = 0; out.clear();
+    std::string grin = "\"\\uD83D\\uDE00\"";
+    if( !atui::core::decodeJsonString( grin, i, grin.size(), out ) )
+        return -4;
+    if( out != "\xF0\x9F\x98\x80" )
+        return -5;
+
+    // A half on its own denotes nothing, and this says so rather than inventing
+    // a character for it; what is put in its place says where the damage was.
+    i = 0; out.clear();
+    std::string lone = "\"\\uD83D\"";
+    if( atui::core::decodeJsonString( lone, i, lone.size(), out ) )
+        return -6;
+    if( out != "\xEF\xBF\xBD" )
+        return -7;
+
+    // A `\u` that is not a code point stays on the page as written instead of
+    // half-converting, and the answer is no.
+    i = 0; out.clear();
+    std::string badhex = "\"\\u00\"";
+    if( atui::core::decodeJsonString( badhex, i, badhex.size(), out ) )
+        return -8;
+    if( out != "\\u00" )
+        return -9;
+
+    // An unknown escape is not an error, and both characters survive it.  This is
+    // why a Windows path works: `\U` is not JSON, and the lenient arm used to
+    // keep the `U` and drop the backslash, which turned `C:\Users\stash` into
+    // `C:Usersstash` -- not a failure, a different path, on a tool that writes
+    // files.
+    i = 0; out.clear();
+    std::string win = "\"C:\\Users\\stash\\atui\"";
+    if( !atui::core::decodeJsonString( win, i, win.size(), out ) )
+        return -10;
+    if( out != "C:\\Users\\stash\\atui" )
+        return -11;
+
+    // The limit of that rule, asserted so it stays a decision and not a surprise.
+    // `\t` *is* a JSON escape, so an under-escaped path through C:\temp cannot be
+    // told apart from a tab by any parser, and stays a tab: senders have to
+    // double the backslash.
+    i = 0; out.clear();
+    std::string tab = "\"C:\\temp\"";
+    if( !atui::core::decodeJsonString( tab, i, tab.size(), out ) )
+        return -12;
+    if( out != std::string( "C:\temp" ) )
+        return -13;
+
+    // Unterminated: reported, and the text that was there is still returned,
+    // because a reader of other people's streams would rather show half a message
+    // than none.
+    i = 0; out.clear();
+    std::string cut = "\"half a strin";
+    if( atui::core::decodeJsonString( cut, i, cut.size(), out ) )
+        return -14;
+    if( out != "half a strin" )
+        return -15;
+
+    // And a bound means a literal cannot be read past the object it arrived in.
+    i = 0; out.clear();
+    std::string wrapped = "\"in\",\"other\":\"out\"";
+    if( !atui::core::decodeJsonString( wrapped, i, 4, out ) )
+        return -16;
+    if( out != "in" )
+        return -17;
     return 0;
 }
 
@@ -3073,6 +3199,7 @@ void init()
     register_test( "finish_reason: parse", &test_finish_reason );
     register_test( "tool: call frags split", &test_tool_call_frags_split );
     register_test( "tool: args with braces", &test_tool_call_args_with_braces );
+    register_test( "net: json escapes", &test_net_json_escapes );
     // The transport first (tests/http_test.cpp): the request, the response, the
     // failures. Everything below is built on it.
     init_http_transport_tests();
@@ -3099,6 +3226,7 @@ void init()
                    &test_provider_env_values_arrive_trimmed );
     register_test( "tool: get_time", &test_time_tool );
     register_test( "tool: registry render", &test_tool_registry );
+    register_test( "json: string decoder", &test_json_string_decoder );
     register_test( "tool: json args strings", &test_json_args_strings );
     register_test( "tool: json args bool/nested", &test_json_args_bool_and_nested );
     register_test( "tool: json args looks object", &test_json_args_looks_object );

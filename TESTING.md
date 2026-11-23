@@ -6403,3 +6403,54 @@ handling once, looking for the backslash. `json_extract.cpp` has two decoders th
 have already drifted from each other (`\/` present in one, absent in the other,
 same outcome) and neither shares code with `json_args.cpp`; three decoders is how
 one of them came to be missing a case.
+
+## One JSON string decoder (W1)
+
+Three decoders became one: `core/jsonstr.{h,cpp}` is now the only place a JSON
+string literal is decoded, and the tool-argument reader (`json_args.cpp`) and both
+network readers (`json_extract.cpp`, including the one that was inline in
+`deltaContent`) call it.  What that changes in behaviour:
+
+| input | before, tool arguments | before, network readers | now |
+| --- | --- | --- | --- |
+| `caf\u00e9` | `café` | `cafu00e9` | `café` |
+| `\uD83D\uDE00` | two 3-byte halves, not UTF-8 | `uD83DuDE00` | one 4-byte code point |
+| `C:\Users\stash` | `C:Usersstash` | `C:Usersstash` | `C:\Users\stash` |
+| `\u00` | fails, text lost | `u00` | fails, `\u00` kept as written |
+| `"half a strin` | fails, text lost | `half a strin` | fails, text kept |
+
+The second row is the same carelessness as the first, one step along: encoding
+each half of a surrogate pair as three bytes is CESU-8, which is not UTF-8, so an
+emoji reached the terminal as two broken characters.  The last two rows are the
+other half of the design: a decoder reading a stream it does not control keeps the
+text and *reports* the damage, instead of choosing between losing the message and
+silently altering it.
+
+Unknown escapes are accepted rather than reported, deliberately. `C:\Users\stash`
+is not well-formed JSON, and a tool call carrying it should work rather than fail
+on a technicality; `decodeJsonString` returns true for it. A `\u` that is not a
+code point, a lone surrogate, and an unterminated literal are reported false.
+The limit is stated in the test that asserts it: `\t` *is* an escape, so an
+under-escaped `C:\temp` stays `C:` and a tab, and no parser can do otherwise.
+
+    build/     (network ON)   205 passed, 0 failed     was 203
+    build-off/ (network OFF)  149 passed, 0 failed     was 148
+    tools/gate98.py           2 diagnostics in 2 files -- unchanged, both
+                              pre-existing (settings.cpp unused variable,
+                              app.cpp sign compare)
+
+New tests: `json: string decoder` (always built), `net: json escapes` (network
+build; it puts an under-escaped Windows path through `delta.tool_calls` and then
+through `jsonStringArg`, because arguments are decoded twice -- once off the wire
+and once out of the JSON text they arrive as -- and both have to hold).
+
+**One thing I expected to find and did not.** `parseToolCallFrags` decodes each
+chunk's `arguments` and `mergeToolFrags` concatenates the decoded pieces, which
+reads like an escape split across two chunks surviving as a literal `\n`.  It
+cannot: `SseStream::feed` (`sse.cpp:16-28`) does not emit anything until it holds
+a whole line, so `applyStreamDelta` never sees half a payload and a literal is
+always closed before it is decoded.  Checked before writing the fix, which would
+otherwise have been a raw-accumulate-and-decode-later rewrite for a bug that was
+not there.  `sse.h` said "one complete payload" without saying what that meant for
+the JSON inside it, which is why the question came up at all; the consequence is
+now written next to the promise.

@@ -163,17 +163,37 @@ creates files. Preserving both characters costs one statement and cannot affect
 conformant input, because `\` followed by a non-escape character has no defined
 meaning to preserve *against*. Do the same in both `json_extract.cpp` readers.
 
+The rule has a limit worth writing down before anyone is surprised by it: `\t`,
+`\n`, `\b`, `\f` and `\r` *are* JSON escapes, so an under-escaped path through
+`C:\temp` is genuinely ambiguous and stays `C:` followed by a tab. No parser can
+settle that one -- the sender has to double the backslash -- and guessing in that
+direction would corrupt every legitimate tab in every edit the model makes. What
+preserving buys is the unambiguous majority: `\U`, `\s`, `\o`, and the rest of the
+letters that cannot escape.
+
 **3. Fix what that investigation found on every platform, not just Windows.**
-`case 'u'` exists in `json_args.cpp:62` and in **neither** `json_extract.cpp`
-reader. So `"\u00e9"` in a model's answer decodes to the five characters `u00e9`
-on Linux, macOS, OS/2 and Windows alike. Any API that escapes non-ASCII -- and
-several do -- is delivering mangled text today. That is a worse bug than the one
-that led to looking, and it would have been missed by treating this as a Windows
-issue. There are three independent JSON string decoders in this tree; there should
-be one. Related: `parseToolCallFrags` decodes `arguments` per SSE chunk and
-`mergeToolFrags` concatenates the *decoded* pieces, so an escape split across two
-chunks survives as a literal backslash-and-`n`. Merge the raw fragments, then
-decode once.
+`case 'u'` existed in `json_args.cpp:62` and in **neither** `json_extract.cpp`
+reader. So `"\u00e9"` in a model's answer decoded to the five characters `u00e9`
+on Linux, macOS, OS/2 and Windows alike: any API that escapes non-ASCII -- and
+several do -- was delivering mangled text, everywhere, today. That is a worse bug
+than the one that led to looking, and it would have been missed by treating this
+as a Windows issue. The three independent decoders are now one,
+`core/jsonstr.{h,cpp}`, which also joins surrogate pairs rather than encoding each
+half as three bytes -- an emoji reaching the terminal as two broken characters was
+the same carelessness one step along.
+
+One suspicion did not survive reading the transport, and it is recorded here
+because the fix it was asking for would have been a rewrite. `parseToolCallFrags`
+decodes `arguments` per chunk and `mergeToolFrags` concatenates the *decoded*
+pieces, which looks like an escape split across two chunks surviving as a literal
+backslash-and-`n`. It cannot survive: `SseStream::feed` does not emit a line until
+it has one (`sse.cpp:16-28`), so `applyStreamDelta` is never handed half a payload
+and every chunk's `arguments` literal is closed before it is decoded. There is no
+boundary for an escape to straddle. The fact the decoder was relying on -- that its input is a whole SSE frame rather
+than whatever the last read returned -- was promised by `sse.h` one level too
+abstractly to be noticed: it said "one complete payload" and said nothing about
+the JSON inside the payload, which is exactly what the caller was reasoning about.
+The consequence is now spelled out where the promise is made.
 
 **4. The path the policy decided on must be the path that gets opened.**
 `normalizePath()` is a file static in `permissions.cpp:113` and the tools cannot
@@ -212,7 +232,7 @@ which is why none of this was found there.
 
 | | | |
 |---|---|---|
-| W1 | One JSON string decoder: `\u` everywhere, lossless unknown escapes, decode after fragment merge | fixes wrong text on all platforms; small, testable against existing corpus |
+| W1 | One JSON string decoder: `\u` everywhere, lossless unknown escapes | **done** -- `core/jsonstr.{h,cpp}`, both readers calling it; fixes wrong text on all platforms |
 | W2 | Rotate the decision log on Windows (remove-then-rename, already the correct order) | closes a documented policy that silently does not happen |
 | W3 | `CreateProcess` spawn: shared std pipe, process handle, killable tree | fixes measured stderr loss, gives the deadline, kills backgrounded children |
 | W4 | Export the canonicaliser; tools decide and open the same path | closes decide/open divergence on every platform |

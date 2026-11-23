@@ -1,6 +1,8 @@
 // Minimal flat-JSON object reader. See json_args.h.
 #include "tools/json_args.h"
 
+#include "core/jsonstr.h"     // decodeJsonString: the one string decoder
+
 #include <cctype>
 
 namespace atui {
@@ -16,73 +18,12 @@ void skipWs( const std::string &s, std::size_t &i )
         ++i;
 }
 
-// Append the UTF-8 encoding of a code point to `out`.
-void appendUtf8( std::string &out, unsigned cp )
-{
-    if( cp < 0x80 )
-        out += (char) cp;
-    else if( cp < 0x800 )
-    {
-        out += (char) ( 0xC0 | ( cp >> 6 ) );
-        out += (char) ( 0x80 | ( cp & 0x3F ) );
-    }
-    else
-    {
-        out += (char) ( 0xE0 | ( cp >> 12 ) );
-        out += (char) ( 0x80 | ( ( cp >> 6 ) & 0x3F ) );
-        out += (char) ( 0x80 | ( cp & 0x3F ) );
-    }
-}
-
-// Parse a JSON string literal starting at s[i] == '"', appending the decoded
-// text to `out` and advancing i past the closing quote. Returns false if the
-// literal is malformed (unterminated / bad escape).
+// String literals are decoded by core/, in one place: see core/jsonstr.h for why
+// an unknown escape keeps both of its characters, and why a Windows path depends
+// on that.  All this adds is the bound -- these scans work on whole strings.
 bool readStringLiteral( const std::string &s, std::size_t &i, std::string &out )
 {
-    if( i >= s.size() || s[i] != '"' ) return false;
-    ++i;
-    out.clear();
-    while( i < s.size() )
-    {
-        char c = s[i++];
-        if( c == '"' ) return true;
-        if( c != '\\' ) { out += c; continue; }
-        if( i >= s.size() ) return false;   // trailing backslash
-        char e = s[i++];
-        switch( e )
-        {
-            case '"':  out += '"';  break;
-            case '\\': out += '\\'; break;
-            case '/':  out += '/';  break;
-            case 'b':  out += '\b'; break;
-            case 'f':  out += '\f'; break;
-            case 'n':  out += '\n'; break;
-            case 'r':  out += '\r'; break;
-            case 't':  out += '\t'; break;
-            case 'u':
-            {
-                if( i + 4 > s.size() ) return false;
-                unsigned cp = 0;
-                bool ok = true;
-                for( int k = 0; k < 4; ++k )
-                {
-                    char h = s[i + k];
-                    unsigned d;
-                    if( h >= '0' && h <= '9' ) d = h - '0';
-                    else if( h >= 'a' && h <= 'f' ) d = h - 'a' + 10;
-                    else if( h >= 'A' && h <= 'F' ) d = h - 'A' + 10;
-                    else { ok = false; break; }
-                    cp = ( cp << 4 ) | d;
-                }
-                if( !ok ) return false;
-                i += 4;
-                appendUtf8( out, cp );
-                break;
-            }
-            default:   out += e;   break;   // lenient
-        }
-    }
-    return false;   // unterminated
+    return core::decodeJsonString( s, i, s.size(), out );
 }
 
 // Skip a nested object/array at s[i], honouring strings so braces inside them
