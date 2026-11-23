@@ -41,12 +41,19 @@ bool envNamePasses( const std::string &name, const std::string &passList );
 // `argv()` is the NULL-terminated `char *[]` that `execve()` wants. The pointers
 // belong to this object and stay valid until it is destroyed or rebuilt, which is
 // the lifetime a fork/exec pair needs.
+//
+// `block()` is the same environment in the shape `CreateProcess` wants:
+// `NAME=VALUE\0` repeated with a second null ending it.  Two shapes because the
+// two calls ask for two shapes; one set of decisions, which is why the block is
+// built from the same entries here rather than assembled by whoever is about to
+// spawn something.
 class ChildEnvironment
 {
 public:
     explicit ChildEnvironment( const std::string &passList = std::string() );
 
     char *const * argv() const;
+    const char * block() const;
     std::size_t size() const;    // entries, not counting the terminating null
 
 private:
@@ -54,6 +61,7 @@ private:
 
     std::vector< std::string > entries_;
     std::vector< char * > pointers_;
+    std::string block_;
 };
 
 // Hides the credential-looking variables from any child started while it exists,

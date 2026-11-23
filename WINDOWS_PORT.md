@@ -7,8 +7,9 @@ code has to keep, and `TESTING.md` is where the measurements go.
 Scope, in order: **VS2017 / Win32 / Windows 10 first**, then the older Windows
 targets. Nothing here changes what the OS/2, DOS, Linux or FreeBSD builds do.
 
-Status: P0-P2 done on the target. atui.exe builds and links for Win32, and
-137 of its 144 self-tests pass. See "Measured results" below.
+Status: P0-P2 done on the target, and W1-W3 of the cross-platform work landed.
+atui.exe builds and links for Win32, and 143 of its 146 self-tests pass; the three
+that do not are one cause (symlink containment, `W5`). See "Measured results" below.
 
 ## The rules for this work
 
@@ -126,8 +127,8 @@ Ordered by how much it matters.
 | What | Where | Why it matters |
 |---|---|---|
 | **No screen capture on Windows** | `screen_none.cpp:10` claims the slot | Needs a new `src/platform/screen_win.cpp` (`EnumWindows`/`GetWindowRect`/`GetWindowText`, GDI `BitBlt`). `screen.h:13` already anticipates hex HWNDs. CMake needs an `if(WIN32)` block setting `ATUI_HAVE_WIN_CAPTURE`; none exists -- only APPLE/UNIX branches do. |
-| **A command's stderr is lost on Windows** | `run_command_tool.cpp:415-419` | Measured (probe, `TESTING.md`): `_popen` captures nothing when the command redirects itself, and `type nosuchfile` yields `rc=1` with **empty output** -- the message goes to the console. So a failed command tells the model "exit code 1" and nothing else, and the text escapes into the TUI. `_popen` cannot do better; `CreateProcess` with one shared output pipe can. |
-| **`spawnHasDeadline()` is false on Windows** | `run_command_tool.cpp:21-27` | `ATUI_SPAWN_WITH_DEADLINE` is 0 unless `__unix__`/`__APPLE__`, so the whole timeout implementation (L34-274) is dead and `run_command` can hang forever. Same fix as above: a process handle instead of a pipe gives `WaitForSingleObject` and a killable process group. |
+| **A command's stderr was lost on Windows** -- fixed, W3 | `run_command_tool.cpp` | `_popen` captured nothing when the command redirected for itself, and `type nosuchfile` came back as `rc=1` with **empty output**: a failed command told the model it failed and never said why, while the message went to the console underneath the TUI. One pipe handed to both of the child's output handles fixes it, because merging is a handle question and not a shell-syntax one -- appending `2>&1` was worse than nothing (measured both; `TESTING.md`). |
+| **`commandTimeoutIsEnforced()` was false on Windows** -- fixed, W3 | `run_command_tool.cpp` | The timeout was a message with no behaviour behind it, because `_popen` hands back nothing to hold on to. `CreateProcess` returns a handle and a job object is the process group, so the limit now stops the command *and* everything it started -- asserted by a test that was checked to fail without the job (`rc=-8`, a surviving `ping.exe`). |
 | **Symlink containment does not exist on Windows** | `permissions.cpp:165-174` | `realpath` is used only where `pathAnchor() == "/"`, and `_WIN32`/`__OS2__` return the normalised form unchanged. A link inside the project pointing out of it is therefore inside it. This is the single cause of the three failing permission self-tests, and `PERMISSIONS.md:435-442` already documents it as a known limit. |
 | **The decision log did not rotate on Windows** -- fixed, W2 | `permissions.cpp:1390` | The body of `rotateIfNeeded()` was inside `#if !defined(_WIN32)`, so `permissions.log` grew without bound and the 1 MiB / one-generation rule at `PERMISSIONS.md:416` silently did not happen. Not a platform limitation being worked around -- nobody had compiled it there. The remove-then-rename order the OS/2 comment explains was already the only order that works on Windows too; the guard was the whole bug. `permission: decision log rotates` now covers it, and was checked to cover it: the same test fails `rc=-3` against the previous file. |
 | `clock.cpp` takes the non-reentrant path | `clock.cpp:9-11` | `gmtime_r`/`localtime_r` are gated on `__unix__`/`__APPLE__`; MSVC wants `_gmtime64_s`/`_localtime64_s`. Compiles, silently worse and thread-unsafe. |
@@ -234,7 +235,7 @@ which is why none of this was found there.
 |---|---|---|
 | W1 | One JSON string decoder: `\u` everywhere, lossless unknown escapes | **done** -- `core/jsonstr.{h,cpp}`, both readers calling it; fixes wrong text on all platforms |
 | W2 | Rotate the decision log on Windows (remove-then-rename, already the correct order) | **done** -- and the new test was checked against the previous file to be sure it fails there |
-| W3 | `CreateProcess` spawn: shared std pipe, process handle, killable tree | fixes measured stderr loss, gives the deadline, kills backgrounded children |
+| W3 | `CreateProcess` spawn: shared std pipe, process handle, killable tree | **done** -- stderr captured, the limit enforced, the tree killed and the kill asserted; the deadline tests now run on Windows too, through harness helpers that know `sleep` from `ping` |
 | W4 | Export the canonicaliser; tools decide and open the same path | closes decide/open divergence on every platform |
 | W5 | `GetFinalPathNameByHandle` resolution, plus skip-aware harness | restores symlink containment on Windows; makes the remaining failures honest |
 | W6 | `PERMISSIONS.md`: shells, quoting, JSON escapes, and what Windows cannot promise | the policy has to say what the code now does |
@@ -308,7 +309,7 @@ that says why they are what they are:
 | `env.bat` | runs `vcvarsall x86` and puts CMake, Ninja and the tree's location in the environment. Called by the others; usable alone to get a shell that can build. Deliberately no `setlocal` -- see the note in it. |
 | `configure.bat` `[--release] [--net] [--clean]` | configures `"%USERPROFILE%\atui-build"`. Network off unless `--net`. Probes Ninja, falls back to MSBuild. |
 | `build.bat` `[-j N] [--keep] [--release]` | builds. `--keep` passes `-k 0` to Ninja, which turns a first pass over a new compiler from twenty round trips into one. |
-| `selftest.bat` | runs `atui.exe --self-test`, looking in both the single- and multi-config places for it. |
+| `selftest.bat` | runs `atui.exe --self-test`, looking in both the single- and multi-config places for it, and prints the binary's own build timestamp before the results. That line matters: a failed build leaves the previous `atui.exe` in place, and the suite will report a clean pass about code that does not compile. It happened -- see the W3 entry in `TESTING.md`. |
 
 The Mac-side driver that ties sync to these does not exist yet. The plan is still
 for it to be `tools/atui-win`, following `tools/atui-remote` -- which already does

@@ -19,6 +19,12 @@
 #include "settings/ini.h"
 #include "settings/settings.h"
 #include <chrono>
+#include <thread>   // sleep_for: the pause before asking what a killed tree left behind
+#include <cctype>   // std::tolower for containsSubFold. Not free: Apple's headers
+                    // hand it out via something else, so nothing on this machine
+                    // would have noticed it missing -- MSVC says C2039, and the
+                    // build that silently reuses the previous atui.exe turns that
+                    // into a passing run of code that does not compile.
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -1435,9 +1441,39 @@ int test_edit_file_errors()
 
 // --- run_command --------------------------------------------------------------
 
+// The same, ignoring ASCII case -- for output this test does not choose, where the
+// casing belongs to whatever produced it.  This one exists because `tasklist` prints
+// `PING.EXE` for the image named `ping.exe`: matched case-sensitively, "is anything
+// left after the kill" passed whether or not the process was running.  Measured on
+// the target, which is the only way it would have been noticed.
+bool containsSubFold( const std::string &h, const std::string &n )
+{
+    if( n.empty() ) return true;
+    for( std::size_t i = 0; i + n.size() <= h.size(); ++i )
+    {
+        std::size_t k = 0;
+        while( k < n.size() &&
+               std::tolower( (unsigned char) h[i + k] ) ==
+               std::tolower( (unsigned char) n[k] ) )
+            ++k;
+        if( k == n.size() ) return true;
+    }
+    return false;
+}
+
 bool containsSub( const std::string &h, const std::string &n )
 {
     return h.find( n ) != std::string::npos;
+}
+
+// A tool call asking that `command` be run, in the form the model sends it.
+// Built rather than written out, because the commands now come from the harness
+// (they are spelled differently per platform) and have to be JSON-escaped on the
+// way in -- which is precisely the step a hand-written literal skips and then
+// quietly gets wrong for any path containing a backslash.
+std::string toolCall( const std::string &command )
+{
+    return "{\"command\":\"" + json_str( command ) + "\"}";
 }
 
 int test_run_command_basic()
@@ -1540,37 +1576,47 @@ int test_child_environment()
 int test_run_command_environment()
 {
     atui::tools::RunCommandTool t;
-
-    // Declared out here because both halves below use it, and the first half is
-    // POSIX-only: the `$VAR` expansion it drives is a shell feature, so on
-    // Windows there is nothing to expand and the assertions would pass vacuously.
     std::string r;
 
-#if !defined(_WIN32) && !defined(__MSDOS__)
     // A credential-shaped variable does not reach the command, so `env` in a build
     // step cannot read the machine's keys into a transcript and from there into a
     // model's context.
+    //
+    // Spelled the way the shell that is really running it expands it: `$VAR` for a
+    // POSIX shell, `%VAR%` for cmd.exe.  Written the POSIX way on Windows this
+    // tested nothing -- nothing expands, so "the secret is not in the output" held
+    // while the secret was in the environment the whole time.
+#if defined(_WIN32)
+    const std::string expand = "%ATUI_SELFTEST_SECRET_KEY%";
+#else
+    const std::string expand = "$ATUI_SELFTEST_SECRET_KEY";
+#endif
     set_env( "ATUI_SELFTEST_SECRET_KEY", "hunter2" );
-    r = t.execute( "{\"command\":\"echo [$ATUI_SELFTEST_SECRET_KEY]\"}" );
-    if( !containsSub( r, "[]" ) ) return -1;
+    r = t.execute( toolCall( "echo [" + expand + "]" ) );
     if( containsSub( r, "hunter2" ) ) return -2;
+#if !defined(_WIN32) && !defined(__MSDOS__)
+    // The positive half, and the half Windows cannot have: an unset variable
+    // expands to nothing so the echo demonstrably ran and printed `[]`.  cmd leaves
+    // `%NAME%` standing, so there the absence above and the pass_env case below
+    // are the assertion.
+    if( !containsSub( r, "[]" ) ) return -1;
+#endif
 
     // ...unless the person named it: a build that really does read a token from the
     // environment exists in most toolchains, and the escape hatch has to be one
     // line in a config file rather than a rebuild.
     atui::tools::passEnvNames() = "atui_selftest_secret_key";
-    r = t.execute( "{\"command\":\"echo [$ATUI_SELFTEST_SECRET_KEY]\"}" );
+    r = t.execute( toolCall( "echo [" + expand + "]" ) );
     atui::tools::passEnvNames().clear();
     if( !containsSub( r, "[hunter2]" ) ) return -3;
     unset_env( "ATUI_SELFTEST_SECRET_KEY" );
-#endif
 
     if( !atui::tools::commandTimeoutIsEnforced() )
         return 0;   // below here needs a platform that can stop a process
 
     // A command reading standard input used to be the classic way a tool call
     // never came back: the terminal it was reading had nobody in front of it.
-    r = t.execute( "{\"command\":\"cat\"}" );
+    r = t.execute( toolCall( stdin_command() ) );
     if( !containsSub( r, "exit code 0 (no output)" ) ) return -4;
 
     // And a command that outlives its welcome is stopped, with the limit named in
@@ -1580,7 +1626,7 @@ int test_run_command_environment()
     limit = 1;
     const std::chrono::steady_clock::time_point start =
         std::chrono::steady_clock::now();
-    r = t.execute( "{\"command\":\"sleep 30\"}" );
+    r = t.execute( toolCall( wait_command( 30 ) ) );
     const long long ms = (long long)
         std::chrono::duration_cast< std::chrono::milliseconds >(
             std::chrono::steady_clock::now() - start ).count();
@@ -1590,9 +1636,20 @@ int test_run_command_environment()
 
     // Backgrounded work belongs to the same command: killing the shell alone would
     // leave whatever it started holding the session open.
-    r = t.execute( "{\"command\":\"sleep 30 & sleep 30\"}" );
+    r = t.execute( toolCall( background_wait_command( 30 ) ) );
     limit = was;
     if( !containsSub( r, "timed out" ) ) return -7;
+
+#if defined(_WIN32)
+    // And on Windows that sentence is a claim about a job object, so it gets
+    // checked rather than assumed: ask the machine what is still running.  When
+    // nothing matches, tasklist says so without naming the image, so a hit on
+    // "ping.exe" here is a process atui was supposed to have stopped.  Matched
+    // case-insensitively because tasklist names it `PING.EXE`.
+    std::this_thread::sleep_for( std::chrono::milliseconds( 300 ) );
+    r = t.execute( toolCall( "tasklist /FI \"IMAGENAME eq ping.exe\" /NH" ) );
+    if( containsSubFold( r, "ping.exe" ) ) return -8;
+#endif
     return 0;
 }
 

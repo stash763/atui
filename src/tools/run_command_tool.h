@@ -35,9 +35,12 @@ long clampCommandTimeout( long seconds );
 // `NPM_TOKEN` from the environment, as opposed to the ones that merely could.
 std::string &passEnvNames();
 
-// Whether this build can actually enforce the timeout (it needs fork(), a process
-// group and poll()). Where it cannot, the timeout is reported in the result of a
-// command that ran too long rather than enforced.
+// Whether this build can actually enforce the timeout -- which needs a handle on
+// the running command, whatever the platform calls it: a pid and a process group
+// and poll() on POSIX, a process handle and a job object on Windows. Where it
+// cannot (OS/2, MS-DOS: `_popen` hands back nothing), the timeout is reported in
+// the result of a command that ran too long rather than enforced, and the tool
+// description says so to the model as well.
 bool commandTimeoutIsEnforced();
 
 // Has a command used this terminal since the last time someone asked? Takes the

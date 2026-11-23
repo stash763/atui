@@ -102,9 +102,13 @@ it (`src/core/childenv.{h,cpp}`, `run_command_tool.cpp`):
   limit). The child runs in its own process group and the whole group is killed when
   the time is up, because the thing that hangs is rarely the shell - it is the
   grandchild still holding the pipe, and killing the shell alone would leave that
-  behind. Where the platform cannot stop a process - `cmd` hands back no pid to hold
-  on to - the timeout is not quietly pretended: `commandTimeoutIsEnforced()` says
-  so, and that platform keeps the documented limit instead of the real one.
+  behind. Windows reaches the same place with a job object
+  (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), which takes a `start /b` grandchild with it
+  and means a command cannot outlive atui either: the job handle goes when atui's
+  process does. Where a process cannot be stopped at all - OS/2 and MS-DOS, whose
+  `_popen` hands back nothing to hold on to - the timeout is not quietly pretended:
+  `commandTimeoutIsEnforced()` says so, the tool description says so, and those
+  platforms keep the documented limit instead of the real one.
 - **Signals belong to the command.** `exec()` resets signal *handlers* but not the
   signal *mask*, and atui makes its requests from a worker thread whose mask belongs
   to whatever the network library was doing on it. The child's mask is therefore
@@ -458,7 +462,9 @@ model wanted to do, including the sensitive paths it was refused.
   Neither does it confine anything: the command still runs with the user's own
   permissions, which is the point of asking before it runs at all.
 - **The deadline needs a process that can be stopped.** On Unix atui forks its own
-  child, so it has a pid, a process group and a `poll()` to time out on. `cmd`
+  child, so it has a pid, a process group and a `poll()` to time out on. Windows has
+  no fork and has the two things that matter: `CreateProcess` returns a handle, and a
+  job object is what a process group is called there. `_popen` - OS/2 and MS-DOS -
   hands back nothing to hold on to, so there the timeout is a line in the result
   rather than a stop, and `commandTimeoutIsEnforced()` is what the code says so
   with. A hung command on those platforms means killing atui, which the undo

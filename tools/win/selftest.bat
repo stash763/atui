@@ -26,6 +26,13 @@ echo selftest: no atui.exe under "%ATUI_BUILD%" -- run tools\win\build.bat first
 exit /b 1
 
 :found
-echo selftest: "%EXE%"
+REM Say which binary is about to be run, and when it was built.  This line is not
+REM decoration: a failed build leaves the previous atui.exe sitting exactly where
+REM it was, and the suite then reports a clean pass about code that does not
+REM compile.  That happened during the Windows port -- C2039 in a test file, a
+REM build that failed, and three "passing" runs afterwards of a binary none of the
+REM changes were in.  If the timestamp here is older than the build you just ran,
+REM the results under it are about somebody else's tree.
+for %%F in ("%EXE%") do echo selftest: %%~fF  built %%~tF
 "%EXE%" --self-test
 exit /b %ERRORLEVEL%

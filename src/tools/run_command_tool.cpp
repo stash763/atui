@@ -11,33 +11,64 @@
 
 #include "core/strutil.h"
 
-// The fork/exec path - the one with a deadline and a process group - is used where
-// fork() and poll() exist. MS-DOS has neither, and `cmd /c` gives no way to stop
-// what it started, so those platforms keep the plain pipe and the limit that comes
-// with it (documented in PERMISSIONS.md, because it is a difference a person can
-// notice).  OS/2 is in that second group for the same reason: Watcom has no fork,
-// and its C library spells the pipe functions _popen/_pclose (measured: <stdio.h>
-// declares _popen; an unsuffixed popen is not there).
+// Three spawn implementations, chosen here and nowhere else:
+//
+//   fork()/execve()  POSIX.  A deadline, a process group, and a curated
+//                    environment handed over explicitly.
+//   CreateProcess()  Windows.  The same three things: a job object plays the part
+//                    of the process group, and the environment goes as a block.
+//   _popen()         MS-DOS and OS/2.  Watcom has no fork, its C library spells
+//                    the pipe _popen (measured: <stdio.h> declares _popen and no
+//                    unsuffixed popen), and nothing there can be told to stop a
+//                    command once started -- so the limit is a message rather
+//                    than a behaviour, and `commandTimeoutIsEnforced()` says so
+//                    instead of letting the difference be discovered by someone
+//                    waiting for a build that finished an hour ago.
+//
+// Measured on the Windows target before this was written (probe_spawn.cpp, in the
+// TESTING.md entry): `_popen` on Windows loses a command's stderr and, worse,
+// loses the message cmd.exe prints when a command fails -- `type nosuchfile` came
+// back as "exit code 1" with nothing else.  That is what this third arm replaces.
 #if defined(__unix__) || defined(__APPLE__)
-#define ATUI_SPAWN_WITH_DEADLINE 1
+#define ATUI_SPAWN_FORK_EXEC 1
 #include <sys/wait.h>
-#define ATUI_POPEN( cmd, mode )  popen( ( cmd ), ( mode ) )
-#define ATUI_PCLOSE( p )         pclose( ( p ) )
+#elif defined(_WIN32)
+#define ATUI_SPAWN_WIN32 1
 #else
-#define ATUI_SPAWN_WITH_DEADLINE 0
 #define ATUI_POPEN( cmd, mode )  _popen( ( cmd ), ( mode ) )
 #define ATUI_PCLOSE( p )         _pclose( ( p ) )
 #endif
 
+// Can a command that outlives its limit actually be stopped?  Two of the three
+// arms above can; the question is asked by the capability function below, by the
+// tool's own description, and by the tests that would otherwise assert a
+// behaviour the platform cannot provide.
+#if defined( ATUI_SPAWN_FORK_EXEC ) || defined( ATUI_SPAWN_WIN32 )
+#define ATUI_SPAWN_HAS_DEADLINE 1
+#else
+#define ATUI_SPAWN_HAS_DEADLINE 0
+#endif
+
 #include "core/signals.h"
 
-#if ATUI_SPAWN_WITH_DEADLINE
+#if defined( ATUI_SPAWN_FORK_EXEC )
 #include <cerrno>
 #include <csignal>
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
 #include <unistd.h>
+#endif
+
+#if defined( ATUI_SPAWN_WIN32 )
+// Lean, and without min/max: they are function-like macros that eat identifiers
+// in whatever header happens to come next, and there is no reason for this file
+// to export them to the rest of atui.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <vector>
 #endif
 
 namespace atui {
@@ -109,7 +140,7 @@ void appendCapped( ChildResult &r, const char *data, std::size_t n )
     else { r.output.append( data, room ); r.truncated = true; }
 }
 
-#if ATUI_SPAWN_WITH_DEADLINE
+#if defined( ATUI_SPAWN_FORK_EXEC )
 
 // Runs `shellCmd` through /bin/sh and waits for it, with two things a pipe from
 // popen() cannot offer: a deadline that actually stops the command, and an
@@ -272,13 +303,222 @@ ChildResult runCaptured( const std::string &shellCmd,
     return r;
 }
 
-#else // !ATUI_SPAWN_WITH_DEADLINE
+#elif defined( ATUI_SPAWN_WIN32 )
 
-// The portable fallback: popen() through the shell, with the credential-shaped
-// variables removed from this process's environment for as long as the child takes
-// to start. No deadline, because nothing here can be told to stop: popen() does not
-// hand back the pid it spawned, and a timeout that cannot be enforced is a message
-// rather than a behaviour.
+// The Windows spawn: CreateProcess, with the three things the fork/exec path has
+// and _popen cannot give -- a deadline, a kill that reaches the whole tree, and an
+// environment chosen rather than inherited -- plus the merge that this whole file
+// exists to get right.
+//
+// The merge is a handle question, not a syntax question.  `hStdError` is set to the
+// same handle as `hStdOutput`, so there is no second stream for a message to escape
+// down; measured against the alternative (probe_spawn.cpp, and _popen in
+// probe_popen.cpp, both in TESTING.md):
+//
+//   command                _popen captured      this captured
+//   echo boom 1>&2         nothing              boom
+//   type nosuchfile.txt    nothing, rc=1        The system cannot find the file
+//                                               specified., rc=1
+//   nosuchcommand          nothing              'nosuchcommand' is not recognized...
+//
+// The second row is the one that matters: a command that fails for a reason the
+// shell reports used to reach the model as "exit code 1" and nothing else, the
+// explanation having gone to the console underneath the TUI.
+//
+// And appending `2>&1` to the command, which is what this file used to do, is worse
+// than doing nothing: cmd.exe applies redirections left to right, so for
+// `echo boom 1>&2 2>&1` the second one points stderr at what is already stderr and
+// nothing reaches the pipe (measured).
+ChildResult runCaptured( const std::string &shellCmd,
+                         const std::string &passList,
+                         long timeoutSeconds )
+{
+    ChildResult r;
+    const atui::core::ChildEnvironment env( passList );
+
+    // One pipe, both of the child's output handles on the write end.
+    SECURITY_ATTRIBUTES sa;
+    sa.nLength = sizeof( sa );
+    sa.lpSecurityDescriptor = 0;
+    sa.bInheritHandle = TRUE;
+    HANDLE readEnd = 0, writeEnd = 0;
+    if( !::CreatePipe( &readEnd, &writeEnd, &sa, 0 ) ) { r.started = false; return r; }
+    // The read end must not be inherited.  It is not only tidiness: a handle the
+    // child holds open is a writer's half of a pipe that never ends, and the drain
+    // below waits for the last writer to go.
+    ::SetHandleInformation( readEnd, HANDLE_FLAG_INHERIT, 0 );
+
+    // stdin is NUL, as on POSIX: a command reading input from a session where the
+    // input is a model's decision is the classic way a tool call never comes back,
+    // and end-of-file is the honest answer to give it.
+    HANDLE nullIn = ::CreateFileA( "NUL", GENERIC_READ,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                   0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0 );
+
+    STARTUPINFOA si;
+    ::ZeroMemory( &si, sizeof( si ) );
+    si.cb = sizeof( si );
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = ( nullIn != INVALID_HANDLE_VALUE )
+                 ? nullIn : ::GetStdHandle( STD_INPUT_HANDLE );
+    si.hStdOutput = writeEnd;
+    si.hStdError = writeEnd;
+
+    PROCESS_INFORMATION pi;
+    ::ZeroMemory( &pi, sizeof( pi ) );
+
+    // CreateProcess does not run a shell, and what the model writes is a shell
+    // command line, so cmd.exe it is -- `/s /c "..."` so a command that contains
+    // its own quotes still reaches cmd as one unit (measured: a tasklist filter
+    // with a quoted argument survives this form).
+    const std::string line = "cmd.exe /s /c \"" + shellCmd + "\"";
+    std::vector<char> cmdLine( line.begin(), line.end() );
+    cmdLine.push_back( '\0' );   // CreateProcess writes to this buffer
+
+    // CreateProcess takes the environment as LPVOID and only reads it; the const
+    // belongs to this object, not to the API, so it comes off at the call rather
+    // than in the accessor where it would misdescribe what `block()` hands back.
+    const BOOL started = ::CreateProcessA(
+        0, &cmdLine[0], 0, 0, TRUE,
+        CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP,
+        const_cast< char * >( env.block() ), 0, &si, &pi );
+
+    // The parent's copy of the write end goes now, whether or not the child came:
+    // while we hold it, the pipe has a live writer and every read waits for
+    // something that will never arrive.
+    ::CloseHandle( writeEnd );
+
+    if( !started )
+    {
+        ::CloseHandle( readEnd );
+        if( nullIn != INVALID_HANDLE_VALUE ) ::CloseHandle( nullIn );
+        r.started = false;
+        return r;
+    }
+    r.started = true;
+
+    // The process group of this platform is a job object, and the child is put in
+    // it before its first instruction runs -- which is why it was created
+    // suspended.  KILL_ON_JOB_CLOSE is what makes "killed along with everything it
+    // started" true: a `start /b` grandchild goes with the job (measured, and the
+    // self-test asserts it), and closing the handle kills the tree even if atui
+    // itself dies, so a command cannot outlive the session that ran it.
+    //
+    // Assignment can fail -- a box where atui is itself inside a job that forbids
+    // nesting.  Then the kill reaches the command alone, which is worse and is not
+    // a reason to refuse to run it; the tests report it as a failure rather than a
+    // pass, so the difference cannot hide.
+    HANDLE job = ::CreateJobObjectA( 0, 0 );
+    bool inJob = false;
+    if( job )
+    {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
+        ::ZeroMemory( &limits, sizeof( limits ) );
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        inJob = ::SetInformationJobObject( job, JobObjectExtendedLimitInformation,
+                                           &limits, sizeof( limits ) ) &&
+                ::AssignProcessToJobObject( job, pi.hProcess );
+    }
+    ::ResumeThread( pi.hThread );
+
+    const std::chrono::steady_clock::time_point deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds( timeoutSeconds );
+
+    // The same fifth of a second the POSIX loop wakes on, for the same reason: a
+    // stop request should not have to wait out the command to be noticed.  Here it
+    // is a poll rather than a poll() timeout because a named pipe has no waitable
+    // "data arrived" object without overlapped I/O, and this is not worth the two
+    // extra handles and the completion event it would take.  Measured cost of the
+    // loop: a command that does nothing returns in 31 ms.
+    const DWORD kPollMs = 50;
+
+    bool exited = false;
+    char buf[ 4096 ];
+    for( ;; )
+    {
+        if( atui::core::shutdownRequested() )
+        {
+            // On Windows this is currently always false -- core/signals.cpp has no
+            // console control handler -- so the exit that ought to take the tree
+            // with it does not go through here.  The job handle is what covers it:
+            // when atui's process goes, so do its handles, and KILL_ON_JOB_CLOSE
+            // does the rest.  The check stays because it is the right place for the
+            // one, whenever signals.cpp grows it.
+            r.stopRequested = true;
+            break;
+        }
+
+        // Drain first, always, and as much as there is: a command that fills the
+        // pipe while we were looking for something else is a command that never
+        // continues.  Past the cap the bytes are dropped rather than kept, and the
+        // reading goes on, which is what stops the child blocking on a full pipe.
+        DWORD available = 0, total = 0;
+        if( !::PeekNamedPipe( readEnd, 0, 0, 0, &available, &total ) )
+            break;                       // broken: every writer has gone
+        if( available > 0 )
+        {
+            DWORD got = 0;
+            if( !::ReadFile( readEnd, buf, sizeof buf, &got, 0 ) || got == 0 ) break;
+            appendCapped( r, buf, (std::size_t) got );
+            continue;
+        }
+
+        if( ::WaitForSingleObject( pi.hProcess, 0 ) == WAIT_OBJECT_0 )
+            exited = true;
+
+        if( timeoutSeconds > 0 &&
+            std::chrono::steady_clock::now() >= deadline ) { r.timedOut = true; break; }
+        if( exited ) break;
+        ::Sleep( kPollMs );
+    }
+
+    if( r.timedOut || r.stopRequested )
+    {
+        if( inJob ) ::TerminateJobObject( job, 1 );
+        else        ::TerminateProcess( pi.hProcess, 1 );
+
+        // What it printed before it was stopped is usually the answer to why.
+        // Bounded, and bounded by data rather than by the clock: the tree is dead,
+        // so the pipe has either finished emptying or has a writer outside the job
+        // that atui is not going to wait for.
+        for( int guard = 0; guard < 64; ++guard )
+        {
+            DWORD available = 0, total = 0;
+            if( !::PeekNamedPipe( readEnd, 0, 0, 0, &available, &total ) ||
+                available == 0 )
+                break;
+            DWORD got = 0;
+            if( !::ReadFile( readEnd, buf, sizeof buf, &got, 0 ) || got == 0 ) break;
+            appendCapped( r, buf, (std::size_t) got );
+        }
+    }
+
+    ::WaitForSingleObject( pi.hProcess, 5000 );
+    DWORD code = 0;
+    if( ::GetExitCodeProcess( pi.hProcess, &code ) )
+        r.code = (int) code;
+    // No `signalled`: Windows has no wait status, and a crash arrives as its
+    // NTSTATUS exit code (0xC0000005 and friends).  That is reported as an exit
+    // code, which is what it is here, rather than dressed up as a signal number.
+
+    ::CloseHandle( pi.hThread );
+    ::CloseHandle( pi.hProcess );
+    if( job ) ::CloseHandle( job );
+    ::CloseHandle( readEnd );
+    if( nullIn != INVALID_HANDLE_VALUE ) ::CloseHandle( nullIn );
+    return r;
+}
+
+#else // OS/2, MS-DOS: the pipe that cannot be stopped
+
+// The last fallback, for the two platforms with nothing better: popen() through
+// the shell, with the credential-shaped variables removed from this process's
+// environment for as long as the child takes to start (which is why
+// `HiddenCredentials` exists -- popen copies the parent's environment at the
+// moment of the call, so that is the only moment to have removed them).  No
+// deadline, because nothing here can be told to stop: popen() does not hand back
+// the pid it spawned, and a timeout that cannot be enforced is a message rather
+// than a behaviour.
 ChildResult runCaptured( const std::string &shellCmd,
                          const std::string &passList,
                          long /*timeoutSeconds*/ )
@@ -321,7 +561,7 @@ ChildResult runCaptured( const std::string &shellCmd,
     return r;
 }
 
-#endif // ATUI_SPAWN_WITH_DEADLINE
+#endif // spawn implementation
 
 } // anonymous namespace
 
@@ -347,7 +587,11 @@ std::string &passEnvNames()
 
 bool commandTimeoutIsEnforced()
 {
-    return ATUI_SPAWN_WITH_DEADLINE != 0;
+    // The capability is the question "can a command that outlives its limit be
+    // stopped", and it is answered here, once, rather than by each caller guessing
+    // from the platform: OS/2 and MS-DOS say no and say it out loud (the tool
+    // description and PERMISSIONS.md both), Windows now says yes.
+    return ATUI_SPAWN_HAS_DEADLINE != 0;
 }
 
 const char *RunCommandTool::name() const
@@ -362,9 +606,20 @@ const char *RunCommandTool::description() const
            "listing or printing files, etc. The command runs in the app's "
            "working directory through the system shell and with the user's own "
            "permissions. It gets no standard input (reading it gives end-of-file) "
-           "and none of the credential-shaped environment variables, and if it is "
-           "still running when the time limit expires it is killed along with "
-           "everything it started. Very long output is truncated. "
+           "and none of the credential-shaped environment variables. "
+#if ATUI_SPAWN_HAS_DEADLINE
+           "If it is still running when the time limit expires it is killed "
+           "along with everything it started. "
+#else
+           // The claim above is a capability, and on these platforms it is not
+           // one: the shell gives nothing back to stop, so a command that hangs
+           // hangs, and the model is told that rather than promised a kill that
+           // will not come.  `commandTimeoutIsEnforced()` is the same answer in
+           // code; this is it in the sentence the model reads.
+           "This host cannot stop a command that has started, so the time limit "
+           "ends atui's wait rather than the command: keep each command short. "
+#endif
+           "Very long output is truncated. "
 #if defined( __OS2__ )
            "The shell here is the OS/2 command processor (cmd.exe), NOT a "
            "POSIX sh: use OS/2 commands and backslash paths, as the system "
@@ -407,14 +662,23 @@ std::string RunCommandTool::execute( const std::string &argumentsJson )
     if( command.empty() )
         return "run_command: 'command' is required";
 
-    // Merge stderr into stdout so the model sees errors too. The shell runs the
-    // string; on POSIX we redirect the shell's stderr onto its stdout (the pipe)
-    // up front so even commands that themselves do `1>&2` are captured; cmd.exe
-    // has no `exec`, so append `2>&1` there -- which is also why OS/2 is on this
-    // side of the test: its shell is a command processor, not a POSIX shell.
-#if defined(__unix__) || defined(__APPLE__)
+    // Merge stderr into stdout so the model sees errors too -- and merge it where
+    // the platform can actually do it.
+#if defined( ATUI_SPAWN_FORK_EXEC )
+    // POSIX: redirect the shell's own stderr onto its stdout before the command
+    // runs, so even a command that says `1>&2` itself is captured.  `exec` is what
+    // makes that stick for everything the shell goes on to run.
     const std::string shellCmd = "exec 2>&1; " + command;
+#elif defined( ATUI_SPAWN_WIN32 )
+    // Windows: nothing at all, because the child's two output handles are the same
+    // handle (see runCaptured) and there is no second stream left to merge.  This
+    // used to append `2>&1`, which is worse than nothing: cmd.exe applies
+    // redirections left to right, so `echo boom 1>&2 2>&1` points stderr at what
+    // is already stderr, and the output captured was empty (measured).
+    const std::string shellCmd = command;
 #else
+    // OS/2 and MS-DOS: the shell is a command processor with no `exec`, and the
+    // pipe is a plain popen, so a redirection string is all there is.
     const std::string shellCmd = command + " 2>&1";
 #endif
 

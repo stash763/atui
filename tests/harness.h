@@ -35,6 +35,24 @@ void unset_env( const char *name );
 // toolTmpPath(), and its tests were the first to go red on Windows.
 std::string temp_dir();
 
+// A command that takes roughly `seconds` to finish, in the syntax of the shell
+// atui runs commands through.  POSIX has sleep(); a base Windows install has no
+// sleep and no other way to wait for a moment, and `ping -n N` at one reply per
+// second is the spelling everyone uses (measured on the target: -n 4 took 3.1s).
+// Named once because a deadline tested on one platform only is how Windows ended
+// up with a timeout that was never enforced and never mentioned.
+std::string wait_command( long seconds );
+
+// A command that reads standard input until end-of-file and prints nothing: `cat`
+// on POSIX, `more` on Windows, measured to exit 0 with no output when stdin is the
+// NUL device atui gives every command.
+std::string stdin_command();
+
+// A command that starts a second one running in the background and then waits --
+// the case a timeout has to reach through, since what hangs is rarely the command
+// itself and usually something it started.
+std::string background_wait_command( long seconds );
+
 // Wraps a string as a JSON string literal's contents -- backslash and quote
 // escaped -- for the tests that build a tool call by concatenating one.  A
 // Windows path is the case that makes it necessary: "C:\Users\stash" is not a

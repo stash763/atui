@@ -117,6 +117,51 @@ std::string temp_dir()
     return s;
 }
 
+std::string wait_command( long seconds )
+{
+    char buf[ 64 ];
+#if defined( _WIN32 )
+    // One second per echo, and the target address keeps it from needing a
+    // network.  `>nul` because the replies are not the point and they would
+    // otherwise arrive as the output under test.
+    std::snprintf( buf, sizeof buf, "ping -n %ld 127.0.0.1 >nul", seconds + 1 );
+#else
+    std::snprintf( buf, sizeof buf, "sleep %ld", seconds );
+#endif
+    return std::string( buf );
+}
+
+std::string stdin_command()
+{
+    // Both read stdin to end-of-file and print nothing when there is nothing
+    // there, which is the behaviour under test: atui gives a command no input, and
+    // a command that waits for input has to be told there is none rather than
+    // left waiting for a person who is not coming.
+#if defined( _WIN32 )
+    return std::string( "more" );
+#else
+    return std::string( "cat" );
+#endif
+}
+
+std::string background_wait_command( long seconds )
+{
+    char buf[ 256 ];
+#if defined( _WIN32 )
+    // `start /b` is cmd's background, and the grandchild is another cmd running
+    // ping: a separate process, holding the same handles.  Quoting note -- the
+    // inner quotes are what `cmd /s /c "..."` hands to cmd as part of the command,
+    // and they survive it (measured).
+    std::snprintf( buf, sizeof buf,
+                   "start /b cmd /c \"ping -n %ld 127.0.0.1 >nul\" "
+                   "& ping -n %ld 127.0.0.1 >nul",
+                   seconds + 1, seconds + 1 );
+#else
+    std::snprintf( buf, sizeof buf, "sleep %ld & sleep %ld", seconds, seconds );
+#endif
+    return std::string( buf );
+}
+
 std::string json_str( const std::string &s )
 {
     std::string out;

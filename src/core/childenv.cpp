@@ -130,11 +130,27 @@ void ChildEnvironment::rebuild( const std::string &passList )
     for( std::size_t i = 0; i < entries_.size(); ++i )
         pointers_.push_back( &entries_[i][0] );
     pointers_.push_back( 0 );
+
+    // And the CreateProcess block, from the same entries, in the same pass worth
+    // of order.  Built here rather than on demand because the caller hands the
+    // pointer straight to the API and cannot be handed a temporary.
+    block_.clear();
+    for( std::size_t i = 0; i < entries_.size(); ++i )
+    {
+        block_ += entries_[i];
+        block_ += '\0';
+    }
+    block_ += '\0';   // the empty entry that says the block has ended
 }
 
 char *const * ChildEnvironment::argv() const
 {
     return pointers_.empty() ? 0 : &pointers_[0];
+}
+
+const char * ChildEnvironment::block() const
+{
+    return block_.c_str();
 }
 
 std::size_t ChildEnvironment::size() const

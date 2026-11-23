@@ -6490,3 +6490,77 @@ appends instead of rotating again: one generation back, not one per write.
     Windows (Win32, network OFF) 142 passed, 4 failed -- the same four
                                  as before W1 and W2, caused by neither
     tools/gate98.py           unchanged: 2 diagnostics, both pre-existing
+
+## A native spawn: stderr, a deadline that stops things, and a stale binary (W3)
+
+`_popen` was the whole story of `run_command` on Windows: it does not merge the
+child's two output streams, does not hand back anything to stop, and loses the
+messages that matter. `probe_spawn.cpp` measured the replacement recipe on the box
+before any of it went into `src/`:
+
+| command | `_popen` captured | `CreateProcess` captured |
+| --- | --- | --- |
+| `echo hello` | `hello` | `hello` |
+| `echo boom 1>&2` | *nothing* | `boom` |
+| `type nosuchfile_zzz.txt` | *nothing*, rc=1 | `The system cannot find the file specified.`, rc=1 |
+| `nosuchcommand_zzz` | *nothing* | `'nosuchcommand_zzz' is not recognized as an internal or external command...`, rc=1 |
+| `ping -n 4 127.0.0.1` | -- | waits 3.1s (so `ping -n N` is the `sleep` cmd has no equivalent of) |
+| `echo [%PATH%]` with an env block | -- | the full PATH, so the block form is accepted |
+| `ping -n 30` with a 1s limit | no way to ask | back in 1016 ms, killed |
+| `echo first & ping -n 30` with 1s | -- | `first`, then killed |
+
+The third and fourth rows are the ones that change what the model can do: a command
+that fails for a reason the *shell* reports used to arrive as `exit code 1` with
+nothing else, the explanation having gone to the console underneath the TUI.
+
+What the Windows arm is: one pipe, `hStdError` set to the same handle as
+`hStdOutput` (the merge, in one statement, instead of a `2>&1` that cmd.exe applies
+left to right and so captures nothing), stdin on `NUL`, the scrubbed environment as
+a block from `ChildEnvironment::block()`, `CREATE_SUSPENDED` so the process can be
+put in its job before it runs, and `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` so the kill
+reaches a `start /b` grandchild and a command cannot outlive atui. `PeekNamedPipe`
+in a 50 ms loop rather than overlapped I/O: two handles instead of four, and a
+command that does nothing comes back in 31 ms.
+
+`commandTimeoutIsEnforced()` is now true on Windows, and the tool's own description
+says the kill happens *where it happens* -- OS/2 and MS-DOS keep the honest wording,
+"the time limit ends atui's wait rather than the command".
+
+**The tests were not testing it.** The deadline half of `run_command: environment and
+deadline` sat behind `if( !commandTimeoutIsEnforced() ) return 0;`, so on Windows it
+had never run, and its commands were `cat` and `sleep` -- POSIX words that do not
+exist in cmd. The harness now spells those per platform (`wait_command`,
+`stdin_command`, `background_wait_command`), the credential check uses `%VAR%` where
+`$VAR` expands to nothing and so proves nothing, and the Windows arm asks `tasklist`
+afterwards whether anything survived.
+
+**Two rounds of checking that the tree-kill assertion means anything**, both worth
+writing down because each one looked like a passing test:
+
+1. `tasklist` prints the image as `PING.EXE`. The assertion looked for `ping.exe`, so
+   it passed whether or not the process was running. `containsSubFold` now does the
+   comparison; the uppercase output is what showed it up, from asking whether the
+   filter named a live ping at all.
+2. Building with the job kill disabled, the assertion still passed. First cause: the
+   patch disabled `TerminateJobObject` while `CloseHandle(job)` went on killing the
+   tree -- so the experiment tested the wrong thing. With no job created at all it
+   still passed, and *that* was the interesting one: the build had been failing on
+   `std::tolower` (MSVC does not provide it without `<cctype>`; Apple's headers leak
+   it in, so nothing on the Mac noticed) and the self-test had been running the
+   previous `atui.exe` for three runs. Against a real job-less build the test fails
+   `rc=-8`, a surviving `ping.exe`; against the real one it passes.
+
+So `tools/win/selftest.bat` prints the binary's build timestamp above its results.
+A suite that reports on a stale binary is worse than no suite, and the fix is one
+line the reader cannot miss.
+
+    build/     (network ON)   206 passed, 0 failed
+    build-off/ (network OFF)  150 passed, 0 failed
+    Windows (Win32, network OFF) 143 passed, 3 failed
+                                 was 142/4: `tool: run_command basic` (the stderr
+                                 merge) is fixed, and the deadline test went from
+                                 skipped to actually running
+    tools/gate98.py           unchanged: 2 diagnostics, both pre-existing
+    tools/watcom-gaps.py      unchanged: no hits in the files W3 touched
+
+The three failures left are symlink containment (`W5`), one cause, unchanged.
