@@ -40,6 +40,22 @@ timeout, an answer that cannot be parsed, a non-network build - lands on *ask*.
   the host. A policy that only understood `/` could be walked past by typing `\`:
   `C:\Windows\win.ini` used to have the project root glued in front of it, which
   made it *start* with the root and read as inside.
+- **Paths arrive inside JSON strings, and that is somewhere information goes missing.**
+  A decoder that drops a backslash turns `C:\Users\ann` into `C:Usersann` - not the
+  file it named, and not an error either - and there were three of them in atui, which
+  is also how one came to have no `\u` at all (`caf\u00e9` arrived as eleven literal
+  characters, from any server that escapes non-ASCII, on every platform). The policy
+  is in `src/core/jsonstr.{h,cpp}` and has two rules: **an unknown escape keeps both
+  characters and is not an error** (`\U` decodes to `\U`), because a tolerant parser
+  may accept what the grammar forbids but may not quietly mean something else; and
+  **decoding continues past a problem**, so a malformed `\u` is reported *and* decoded
+  as far as it can be, leaving the caller to decide whether damaged text is worth
+  more than none. Surrogate pairs join into one 4-byte sequence. One consequence
+  cannot be fixed by any decoder, because JSON itself decides it: `\t` is a tab, so a
+  sender that writes `"C:\temp"` has written `C:` and a tab, and a conformant sender
+  doubles the backslash. atui does not guess which was meant - and the test suite
+  asserts that it does not, rather than leaving that to be discovered by someone whose
+  temporary directory is a path.
 - **The deny-list.** Files that are never read or written unattended, in the tree
   or out: `.git`/`.hg`/`.svn`, `.ssh`, `.aws`, `.gnupg`, `.kube`, `.docker`,
   `.vscode`, `.idea`, `.config/gh`, `.config/gcloud`, `Keychain(s)`, `.mozilla`;
@@ -103,8 +119,38 @@ it (`src/core/childenv.{h,cpp}`, `run_command_tool.cpp`):
   genuinely reads out of the environment - the escape hatch is one line of config,
   and the default is the one that is right when nobody has thought about it.
 - **No standard input.** A command that reads from a terminal nobody is looking at
-  is the second classic way a tool call never returns. Its stdin is `/dev/null`, so
-  it gets end-of-file, which is the honest answer.
+  is the second classic way a tool call never returns. Its stdin is `/dev/null`
+  (`NUL` on the DOS-derived platforms), so it gets end-of-file, which is the honest
+  answer.
+- **Which shell, and therefore what quoting means.** The string runs through the
+  platform's own command processor, because that is what both a person and a model
+  write: `/bin/sh -c` on POSIX, `cmd.exe /s /c "..."` on Windows, and
+  `_popen` - the same command processor with less control - on OS/2 and MS-DOS. What
+  is load-bearing is that the whole command travels inside one pair of quotes, so cmd
+  receives the command that was approved rather than the part of it up to the first
+  quote; `/s` is kept so cmd strips exactly that outer pair instead of applying its
+  own rule for when to strip anything. Measured across the shapes where cmd's rules
+  are said to part company - a quoted `tasklist` filter, a nested quoted executable
+  (`"C:\Windows\System32\cmd.exe" /c echo inner`), a redirection onto a quoted path,
+  a caret-escaped operator, four quotes plus an `&`, and a literal `%` in a name - the
+  two forms agreed on every one, on this machine, which is worth knowing precisely
+  because it means the quotes are doing the work and `/s` is not rescuing anything.
+  The differences a person can notice follow from the shell, not from atui: `& | < > ^`
+  and `%VAR%` are cmd's operators, `$VAR` is nothing at all to cmd and everything to
+  sh, and a path with a `%` in it names a variable atui cannot see - which is why such
+  a path is not placed rather than guessed at, even though `echo 100%.txt` prints
+  `100%.txt` when no such variable exists.
+- **Both output streams, merged by the strongest means the platform offers.** Output
+  is captured rather than left on the user's terminal, and the two streams go to the
+  same place so the model reads the error and not only the exit code. POSIX does it
+  with `exec 2>&1` before the command runs, so a command that redirects for itself is
+  still caught. Windows does it with handles - one pipe, given to both of the child's
+  output handles - because merging is a question about handles, and appending `2>&1`
+  there was worse than doing nothing: cmd applies redirections left to right, so for
+  `echo x 1>&2 2>&1` the second one points at what is already stderr and the captured
+  output is empty. Measured, and the reason the append is gone from Windows. That
+  leaves OS/2 and MS-DOS as the only platforms where a redirection string is all there
+  is, since all they have is `popen`.
 - **A deadline that stops it.** `[tools] command_timeout` (default 300s, 0 for no
   limit). The child runs in its own process group and the whole group is killed when
   the time is up, because the thing that hangs is rarely the shell - it is the
@@ -456,6 +502,13 @@ model wanted to do, including the sensitive paths it was refused.
   both kinds are followed, including through a junction to a file below it, and an
   8.3 alias (`PROJEC~1\x.c`) comes back as the long name, so it is recognised as
   the project's own file rather than read as a second one.
+- **Windows has no orderly stop.** `Ctrl+C` there is a console control event rather
+  than a signal, and atui installs no handler for it, so the process ends the way the
+  console prefers instead of the way atui would: no final decision-log line, no chance
+  to close off what it was in the middle of recording. What is *not* lost is the
+  command tree - a command runs in a job whose close kills it, so nothing atui started
+  outlives atui - which is more than OS/2 and MS-DOS can say. The missing handler is
+  in the gap list in `WINDOWS_PORT.md`.
 - **What is still not asked, and why.** A share (`\\server\share`) is not opened:
   an anchor has to match the root's before a path can be inside it, so a share is
   already outside as far as containment goes, and opening one is how a policy

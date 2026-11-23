@@ -7,7 +7,7 @@ code has to keep, and `TESTING.md` is where the measurements go.
 Scope, in order: **VS2017 / Win32 / Windows 10 first**, then the older Windows
 targets. Nothing here changes what the OS/2, DOS, Linux or FreeBSD builds do.
 
-Status: P0-P2 done on the target, and W1-W5 of the cross-platform work landed.
+Status: P0-P2 done on the target, and the cross-platform work (W1-W6) is finished.
 atui.exe builds and links for Win32 and **passes all 148 of its self-tests** -- the
 first non-POSIX host to run the suite, and it is green. See "Measured results"
 below. What that does *not* yet cover is the two phases that cannot be measured
@@ -260,7 +260,7 @@ which is why none of this was found there.
 | W3 | `CreateProcess` spawn: shared std pipe, process handle, killable tree | **done** -- stderr captured, the limit enforced, the tree killed and the kill asserted; the deadline tests now run on Windows too, through harness helpers that know `sleep` from `ping` |
 | W4 | Export the canonicaliser; tools decide and open the same path | **done** -- `tools::canonicalPath()`, `edit_file` opens that, and the test that makes cwd differ from the root was checked to fail without it |
 | W5 | `GetFinalPathNameByHandle` resolution, plus skip-aware harness | **done** -- reparse points resolved on Windows, Windows suite green at 148/0, and a host that cannot make a link now reports a counted skip instead of a silent `#ifdef` |
-| W6 | `PERMISSIONS.md`: shells, quoting, JSON escapes, and what Windows cannot promise | part-way -- the two deadline passages and the containment bullet now say what the code does (`W3`, `W4`); the cmd.exe quoting rules, the JSON escape policy and the list of what Windows cannot promise are still to write |
+| W6 | `PERMISSIONS.md`: shells, quoting, JSON escapes, and what Windows cannot promise | **done** -- and one sentence in it had to be reversed after measuring (`/s` is not what keeps a quoted command whole; the quotes are) |
 
 What this deliberately does **not** include: per-file `#ifdef _WIN32` sprays
 (the seams already exist and are used correctly), making POSIX do something worse

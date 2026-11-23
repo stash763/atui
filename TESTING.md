@@ -6680,3 +6680,40 @@ make the fixture", six tests deep.
 
 Checked for dependence the usual way: with the Windows resolver forced off, the new
 test fails `rc=-2` against a fresh build; with it on, the suite is green.
+
+## Saying what the code now does, and one claim that did not survive measuring (W6)
+
+The documentation pass over `PERMISSIONS.md`: which shell a command runs through and
+what that means for quoting, how the two output streams are merged on each platform,
+the JSON escape policy that decides what a path looks like by the time the policy sees
+it, and the one thing Windows still cannot promise.
+
+**A claim of mine, measured and corrected.** I wrote that `/s` is what lets a command
+with quotes of its own arrive intact "instead of being split at the first one it
+holds". Plausible, documented in several places, and wrong on the machine: the same
+`CreateProcess` call with and without it, across the six shapes where cmd's rules for
+`/c "..."` are said to part company --
+
+    tasklist /FI "IMAGENAME eq ping.exe" /NH      a quoted filter argument
+    "C:\Windows\System32\cmd.exe" /c echo inner   the classic nested quoted executable
+    echo hi> "C:\Users\Public\atui_qt_test.txt"   a redirection onto a quoted path
+    echo a^&b                                     a caret-escaped operator
+    echo "a b" & echo "c d"                       four quotes and an operator
+    echo 100%.txt                                 a literal percent
+
+-- produced identical output and exit codes for every pair. So the sentence in
+`PERMISSIONS.md` says what was measured instead: the quotes around the whole command
+are what keep it one command, `/s` makes cmd strip exactly that outer pair, and
+nothing here needed rescuing. Worth the reversal on a small point, because the same
+confident reasoning is what produces the wrong sentence about a bigger one, and the
+only difference is whether anyone bothered to run it.
+
+Two facts fell out that are worth having: `echo 100%.txt` prints `100%.txt` (cmd
+leaves a `%` alone when no variable of that name exists -- which is *why* the policy
+refuses to place a path containing `%` rather than assume either case, since it cannot
+see which one the shell will), and the nested quoted executable works, which is the
+case most likely to appear when a model writes an absolute path to a program under
+`C:\Program Files\`.
+
+Nothing in `src/` changed for W6, so the numbers are W5's: 208 / 152 / 148, no
+failures, no skips.
