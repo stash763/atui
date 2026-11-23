@@ -1389,18 +1389,30 @@ const long kMaxLogBytes = 1024 * 1024;
 
 void rotateIfNeeded( const std::string &path )
 {
-#if !defined(_WIN32)
+    // Every platform, which until now was not what happened: the body of this
+    // function used to sit inside `#if !defined(_WIN32)`, so the 1 MiB ceiling
+    // this file says it keeps -- and PERMISSIONS.md says it keeps -- simply did
+    // not occur on Windows, where permissions.log grew without limit and nothing
+    // reported it.  It was not a Windows limitation being worked around; nobody
+    // had ever compiled it there.  The only platform difference left is the one
+    // core/paths.cpp already records: MSVC spells the call _stat.
+#if defined(_WIN32)
+    struct _stat st;
+    if( ::_stat( path.c_str(), &st ) != 0 ) return;
+#else
     struct stat st;
     if( ::stat( path.c_str(), &st ) != 0 ) return;
+#endif
     if( st.st_size < kMaxLogBytes ) return;
     std::string bak = path + ".1";
     std::remove( bak.c_str() );
     // std::, not ::: Watcom declares rename() in namespace std and makes no
     // global promise.  Removing the old generation first is not tidiness either --
     // OS/2's rename refuses to replace a file that exists (measured), so on the
-    // DOS-derived platforms this order is the only one that works.
+    // DOS-derived platforms this order is the only one that works.  Windows is
+    // DOS-derived in exactly this respect, which is a second reason the order was
+    // already right and only the guard was wrong.
     std::rename( path.c_str(), bak.c_str() );
-#endif
 }
 
 } // anonymous namespace

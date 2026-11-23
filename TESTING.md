@@ -6454,3 +6454,39 @@ otherwise have been a raw-accumulate-and-decode-later rewrite for a bug that was
 not there.  `sse.h` said "one complete payload" without saying what that meant for
 the JSON inside it, which is why the question came up at all; the consequence is
 now written next to the promise.
+
+## The decision log rotated only where the code was compiled (W2)
+
+`rotateIfNeeded()` kept its whole body inside `#if !defined(_WIN32)`, so on Windows
+the 1 MiB ceiling that `PERMISSIONS.md` states and this file states did not occur:
+`permissions.log` grew without limit, silently. There was nothing platform-specific
+about the bug -- the remove-then-rename order the OS/2 comment explains is the order
+Windows needs as well, since `rename` there also refuses to replace a file that
+exists. Only the guard was wrong.
+
+The fix is `::_stat` under `_WIN32` (`::_stat`, not `::stat`: MSVC deprecates the
+plain name and says so, and `core/paths.cpp:175-185` already recorded that), with
+everything else shared.
+
+New test `permission: decision log rotates`, and the part worth recording is that
+it was tested against the file it is supposed to catch. A test that passes before
+and after proves nothing, so the previous `permissions.cpp` was built on the Windows
+box and the suite run against it:
+
+    pre-fix permissions.cpp, Windows   self-test FAIL permission: decision log rotates (rc=-3)
+                                       self-test summary: 141 passed, 5 failed
+    fixed permissions.cpp, Windows     self-test PASS permission: decision log rotates
+                                       self-test summary: 142 passed, 4 failed
+
+`rc=-3` is the assertion that the oversized log became the `.1` file, which is the
+thing that was not happening. The test fills a log past 1 MiB directly rather than
+by logging ten thousand decisions -- what is under test is what happens to a log
+that is already too big, and how it got that way is somebody else's behaviour. It
+then checks the live log restarted, and that a second decision under the limit
+appends instead of rotating again: one generation back, not one per write.
+
+    build/     (network ON)   206 passed, 0 failed
+    build-off/ (network OFF)  150 passed, 0 failed
+    Windows (Win32, network OFF) 142 passed, 4 failed -- the same four
+                                 as before W1 and W2, caused by neither
+    tools/gate98.py           unchanged: 2 diagnostics, both pre-existing

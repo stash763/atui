@@ -2540,6 +2540,65 @@ int test_permission_log()
     return 0;
 }
 
+// Size in bytes, or -1 for "not there" -- the rotation test has to be able to
+// tell those two apart, which reading the file cannot.
+long sizeOnDisk( const std::string &path )
+{
+    std::ifstream f( path.c_str(), std::ios::in | std::ios::binary );
+    if( !f ) return -1;
+    f.seekg( 0, std::ios::end );
+    return (long) f.tellg();
+}
+
+// The ceiling has a number in it, PERMISSIONS.md states it, and until the body of
+// rotateIfNeeded() was compiled on Windows it did not happen there: the log grew
+// without limit and nothing said so.  No test had noticed, because no test
+// looked -- which is the reason this one exists as much as the bug is.
+int test_permission_log_rotation()
+{
+    PermissionGuard guard;
+    const std::string path = tmpPath( "atui_perm_rotate.log" );
+    const std::string bak  = path + ".1";
+    std::remove( path.c_str() );
+    std::remove( bak.c_str() );
+    atui::tools::decisionLogPath() = path;
+    atui::tools::logDecisions()    = true;
+
+    // Past the 1 MiB the policy names, by a margin, without needing a thousand
+    // decisions to get there: what is being tested is what happens to a log that
+    // is already too big, and how it got that way is somebody else's behaviour.
+    {
+        std::ofstream f( path.c_str(), std::ios::out | std::ios::binary | std::ios::trunc );
+        if( !f ) return -1;
+        const std::string filler( 1024, 'x' );
+        for( int i = 0; i < 1025; ++i )   // 1025 KiB: over the limit
+            f << filler;
+        f.close();
+    }
+    if( sizeOnDisk( path ) < 1024 * 1024 ) return -2;
+
+    atui::tools::Permission p;
+    p.outcome = atui::tools::poRun;
+    p.rung    = atui::tools::prPlanCleared;
+    atui::tools::logDecision( "run_command", p, "tiny-model", 1, "make test" );
+
+    // One generation back: the oversized log is now the .1 file...
+    if( sizeOnDisk( bak ) < 1024 * 1024 ) return -3;
+    // ...and the live log restarted with the one decision that triggered it.
+    const long now = sizeOnDisk( path );
+    if( now <= 0 || now > 4096 ) return -4;
+
+    // Under the limit, the next decision appends rather than rotating again: one
+    // generation back is the policy, not one per write.
+    atui::tools::logDecision( "run_command", p, "tiny-model", 1, "make test" );
+    if( sizeOnDisk( bak ) < 1024 * 1024 ) return -5;
+    if( sizeOnDisk( path ) <= now ) return -6;
+
+    std::remove( path.c_str() );
+    std::remove( bak.c_str() );
+    return 0;
+}
+
 int test_permission_mode_names()
 {
     PermissionGuard guard;
@@ -3266,6 +3325,8 @@ void init()
                    &test_permission_agent_plans );
     register_test( "permission: plan cache", &test_permission_plan_cache );
     register_test( "permission: decision log", &test_permission_log );
+    register_test( "permission: decision log rotates",
+                   &test_permission_log_rotation );
     register_test( "permission: mode names and clamps",
                    &test_permission_mode_names );
     register_test( "settings: undo section", &test_settings_undo );
