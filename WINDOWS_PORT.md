@@ -7,9 +7,12 @@ code has to keep, and `TESTING.md` is where the measurements go.
 Scope, in order: **VS2017 / Win32 / Windows 10 first**, then the older Windows
 targets. Nothing here changes what the OS/2, DOS, Linux or FreeBSD builds do.
 
-Status: P0-P2 done on the target, and W1-W4 of the cross-platform work landed.
-atui.exe builds and links for Win32, and 144 of its 147 self-tests pass; the three
-that do not are one cause (symlink containment, `W5`). See "Measured results" below.
+Status: P0-P2 done on the target, and W1-W5 of the cross-platform work landed.
+atui.exe builds and links for Win32 and **passes all 148 of its self-tests** -- the
+first non-POSIX host to run the suite, and it is green. See "Measured results"
+below. What that does *not* yet cover is the two phases that cannot be measured
+headless: `--net` has never been compiled (P3) and the TUI has never been seen on a
+Windows screen (P4).
 
 ## The rules for this work
 
@@ -129,7 +132,7 @@ Ordered by how much it matters.
 | **No screen capture on Windows** | `screen_none.cpp:10` claims the slot | Needs a new `src/platform/screen_win.cpp` (`EnumWindows`/`GetWindowRect`/`GetWindowText`, GDI `BitBlt`). `screen.h:13` already anticipates hex HWNDs. CMake needs an `if(WIN32)` block setting `ATUI_HAVE_WIN_CAPTURE`; none exists -- only APPLE/UNIX branches do. |
 | **A command's stderr was lost on Windows** -- fixed, W3 | `run_command_tool.cpp` | `_popen` captured nothing when the command redirected for itself, and `type nosuchfile` came back as `rc=1` with **empty output**: a failed command told the model it failed and never said why, while the message went to the console underneath the TUI. One pipe handed to both of the child's output handles fixes it, because merging is a handle question and not a shell-syntax one -- appending `2>&1` was worse than nothing (measured both; `TESTING.md`). |
 | **`commandTimeoutIsEnforced()` was false on Windows** -- fixed, W3 | `run_command_tool.cpp` | The timeout was a message with no behaviour behind it, because `_popen` hands back nothing to hold on to. `CreateProcess` returns a handle and a job object is the process group, so the limit now stops the command *and* everything it started -- asserted by a test that was checked to fail without the job (`rc=-8`, a surviving `ping.exe`). |
-| **Symlink containment does not exist on Windows** | `permissions.cpp:165-174` | `realpath` is used only where `pathAnchor() == "/"`, and `_WIN32`/`__OS2__` return the normalised form unchanged. A link inside the project pointing out of it is therefore inside it. This is the single cause of the three failing permission self-tests, and `PERMISSIONS.md:435-442` already documents it as a known limit. |
+| **Symlink containment did not exist on Windows** -- fixed, W5 | `permissions.cpp` | `realpath` was used only where `pathAnchor() == "/"`, so every drive-anchored path came back unresolved and a link inside the project pointing out of it counted as inside. Windows asks a different question -- open the path and ask the handle what it turned out to be -- which follows the whole class of reparse point, junction included, and a junction needs no privilege to create (`mklink /J`), which is what made this a hole rather than a limitation. Measured; see `TESTING.md`. |
 | **The decision log did not rotate on Windows** -- fixed, W2 | `permissions.cpp:1390` | The body of `rotateIfNeeded()` was inside `#if !defined(_WIN32)`, so `permissions.log` grew without bound and the 1 MiB / one-generation rule at `PERMISSIONS.md:416` silently did not happen. Not a platform limitation being worked around -- nobody had compiled it there. The remove-then-rename order the OS/2 comment explains was already the only order that works on Windows too; the guard was the whole bug. `permission: decision log rotates` now covers it, and was checked to cover it: the same test fails `rc=-3` against the previous file. |
 | `clock.cpp` takes the non-reentrant path | `clock.cpp:9-11` | `gmtime_r`/`localtime_r` are gated on `__unix__`/`__APPLE__`; MSVC wants `_gmtime64_s`/`_localtime64_s`. Compiles, silently worse and thread-unsafe. |
 | No console signal handling | `signals.cpp:7` | `_WIN32` excluded, correct for `sigaction`, but nothing replaces it. `Ctrl+C` kills the process mid-turn with no journal close. `SetConsoleCtrlHandler` is the answer, if we want one. |
@@ -256,7 +259,7 @@ which is why none of this was found there.
 | W2 | Rotate the decision log on Windows (remove-then-rename, already the correct order) | **done** -- and the new test was checked against the previous file to be sure it fails there |
 | W3 | `CreateProcess` spawn: shared std pipe, process handle, killable tree | **done** -- stderr captured, the limit enforced, the tree killed and the kill asserted; the deadline tests now run on Windows too, through harness helpers that know `sleep` from `ping` |
 | W4 | Export the canonicaliser; tools decide and open the same path | **done** -- `tools::canonicalPath()`, `edit_file` opens that, and the test that makes cwd differ from the root was checked to fail without it |
-| W5 | `GetFinalPathNameByHandle` resolution, plus skip-aware harness | restores symlink containment on Windows; makes the remaining failures honest |
+| W5 | `GetFinalPathNameByHandle` resolution, plus skip-aware harness | **done** -- reparse points resolved on Windows, Windows suite green at 148/0, and a host that cannot make a link now reports a counted skip instead of a silent `#ifdef` |
 | W6 | `PERMISSIONS.md`: shells, quoting, JSON escapes, and what Windows cannot promise | part-way -- the two deadline passages and the containment bullet now say what the code does (`W3`, `W4`); the cmd.exe quoting rules, the JSON escape policy and the list of what Windows cannot promise are still to write |
 
 What this deliberately does **not** include: per-file `#ifdef _WIN32` sprays
@@ -358,8 +361,9 @@ above about per-suite platform branches.
 (`ATUI_HAVE_NETWORK` off then on). This is the highest-value signal available over
 SSH because it needs no console: 18 test files, `tests/selftest.cpp`, compiled into
 the binary, so it tests statics too. *Exit: self-test passes, or every failure is
-understood and recorded rather than skipped.* **Met -- 144 passed, 3 failed**, and
-the three are one cause (symlink containment, `W5`), recorded and not skipped. This
+understood and recorded rather than skipped.* **Met, and then some -- 148 passed,
+0 failed** since `W5`; at the point it was first met it was 144/3 with the three
+understood, which is what the criterion asked for. This
 phase paid for itself: it is the first time the suite has ever been compiled on a
 non-POSIX host, and it found bugs that were not Windows cosmetic issues -- a `\u`
 decoder missing from both network readers (wrong text on every platform), a
@@ -392,7 +396,9 @@ suite), `src/platform/screen_win.cpp` -- there is no capture at all today and CM
 has no `WIN32` branch for it, so the screenshot tool is simply absent -- plus
 `clock.cpp`'s reentrant time calls, a console control handler so `Ctrl+C` does not
 die mid-turn without closing the journal, and `.rc`/manifest handling, which is a
-prerequisite for the XP subsystem version rather than a nicety.
+prerequisite for the XP subsystem version rather than a nicety. Symlink containment
+is no longer in that list: `W5` closed it, and the Windows suite has no failures
+left to close.
 
 **P6 -- Then the older Windows targets.** In rough order of how much they can
 reuse P1's work: v141_xp and v140_xp (both present; note the last SDK carrying XP

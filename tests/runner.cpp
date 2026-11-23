@@ -6,6 +6,10 @@
 
 #if defined( _WIN32 )
 #include <direct.h>       // _getcwd, for current_dir()
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>      // CreateSymbolicLinkA, for make_link()
 #else
 #include <unistd.h>       // getcwd
 #endif
@@ -13,6 +17,12 @@
 namespace atui_test {
 
 namespace {
+    // What skip_test() returns, and the reason it gives.  The value is deliberately
+    // not a plausible failure code: a test that fails for real has to keep looking
+    // like a failure, and one that reports a skip has to look like neither.
+    const int kSkipped = 23577;
+    const char *g_skip_why = 0;
+
     // A fixed array rather than a container, because this file is compiled into
     // the C++98 build as well and has to work in a Watcom program with no
     // allocator to spare.  The number is generous and going over it is an error
@@ -44,6 +54,7 @@ int run()
 {
     int passed = 0;
     int failed = 0;
+    int skipped = 0;
 
     if( m_dropped > 0 )
     {
@@ -68,7 +79,12 @@ int run()
             r = -1;
         }
 
-        if( r == 0 ) {
+        if( r == kSkipped ) {
+            ++skipped;
+            std::fprintf( stderr, "self-test SKIP %s - %s\n", e.name,
+                          g_skip_why ? g_skip_why : "no reason given" );
+            g_skip_why = 0;
+        } else if( r == 0 ) {
             ++passed;
             std::fprintf( stderr, "self-test PASS %s\n", e.name );
         } else {
@@ -77,8 +93,33 @@ int run()
         }
     }
 
-    std::fprintf( stderr, "self-test summary: %d passed, %d failed\n", passed, failed );
+    // Skips are counted in the line people read, not filed away: the failure mode
+    // this whole mechanism exists to avoid is a suite that has quietly stopped
+    // checking something and still reports 200 passed.
+    std::fprintf( stderr, "self-test summary: %d passed, %d failed, %d skipped\n",
+                  passed, failed, skipped );
     return ( failed == 0 ) ? 0 : 1;
+}
+
+int skip_test( const char *why )
+{
+    g_skip_why = why;
+    return kSkipped;
+}
+
+bool make_link( const std::string &target, const std::string &link, bool directory )
+{
+#if defined( _WIN32 )
+    // SYMBOLIC_LINK_FLAG_DIRECTORY is 1, and the kind is fixed when the link is
+    // made -- unlike POSIX, where a link is just a link.  Windows 10 lets an
+    // unprivileged process do this only with developer mode or the privilege; where
+    // it says no, the caller skips, because a junction would not test the file case.
+    return ::CreateSymbolicLinkA( link.c_str(), target.c_str(),
+                                  directory ? 1 : 0 ) != 0;
+#else
+    (void) directory;
+    return ::symlink( target.c_str(), link.c_str() ) == 0;
+#endif
 }
 
 void set_env( const char *name, const char *value )

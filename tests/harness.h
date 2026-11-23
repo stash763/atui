@@ -42,6 +42,25 @@ std::string temp_dir();
 // somebody else's suite.
 std::string current_dir();
 
+// A test returns 0 when it passes and anything else when it fails.  Some assertions
+// need a capability the machine may not have -- creating a symbolic link is the one
+// that forced this to exist, needing a privilege or developer mode -- and neither
+// existing answer is true there: failing blames the software for the host, and
+// passing claims a check that was never made.  Return skip_test( why ) instead.
+// The reason is printed and counted in the summary, so a suite that checks less than
+// it used to says so in its own line rather than looking like a suite that passes.
+int skip_test( const char *why );
+
+// Creates a link at `link` pointing at `target`, for the tests that judge a link by
+// where it leads.  Returns false when the host will not do it, and a caller that
+// ignores that has to report a skip: an assertion about a link that was never
+// created is not an assertion.  `directory` matters on Windows, where a symbolic
+// link records which kind it is when it is made.  Both symbolic links and junctions
+// are reparse points, and atui's policy is about the class, so either serves the
+// test -- but only a symbolic link can point at a file, which is what the deny-list
+// case needs.
+bool make_link( const std::string &target, const std::string &link, bool directory );
+
 // A command that takes roughly `seconds` to finish, in the syntax of the shell
 // atui runs commands through.  POSIX has sleep(); a base Windows install has no
 // sleep and no other way to wait for a moment, and `ping -n N` at one reply per

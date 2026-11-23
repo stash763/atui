@@ -1881,8 +1881,9 @@ struct ScratchTree
     std::string root;   // .../atui_perm_selftest/proj, resolved
     std::string priorCwd;
     bool ok;
+    bool linksOk;   // the host let the links be made; see test_permission_links()
 
-    ScratchTree() : ok( false )
+    ScratchTree() : ok( false ), linksOk( false )
     {
         base = tmpPath( "atui_perm_selftest" );
         removeTree();
@@ -1897,16 +1898,21 @@ struct ScratchTree
         writeFile( base + "/outside.txt", "elsewhere\n" );
         makeDir( base + "/proj-extra" );
         writeFile( base + "/proj-extra/x.txt", "x\n" );
-#if !defined(_WIN32)
-        // One link out of the tree, and one pointing at a key file: a symlink is
-        // judged by what it leads to, in both directions.
-        ::symlink( ( base + "/outside.txt" ).c_str(),
-                   ( proj + "/linkout" ).c_str() );
+        // Links for the assertions that judge a link by what it leads to: one out
+        // of the tree, one pointing at a key file, and a directory leading out (the
+        // shape a Windows junction has).  Created wherever the host allows it, with
+        // whether it allowed it recorded, because the assertions about them are a
+        // test of their own that reports a skip when the links are not there -- an
+        // assertion about a link that was never created is not an assertion, and
+        // until this was written the whole set of them was `#if`-ed away on Windows,
+        // which is how three of them became failures rather than news.
         makeDir( base + "/.ssh" );
         writeFile( base + "/.ssh/config", "Host *\n" );
-        ::symlink( ( base + "/.ssh/config" ).c_str(),
-                   ( proj + "/sshlink" ).c_str() );
-#endif
+        makeDir( base + "/outsidedir" );
+        writeFile( base + "/outsidedir/nested.txt", "n\n" );
+        linksOk  = make_link( base + "/outside.txt", proj + "/linkout", false );
+        linksOk &= make_link( base + "/.ssh/config", proj + "/sshlink", false );
+        linksOk &= make_link( base + "/outsidedir", proj + "/dirout", true );
         // The root comes back resolved (macOS /var is /private/var), which is
         // exactly why tests build expectations from projectRoot().
         atui::tools::setProjectRoot( proj );
@@ -1935,6 +1941,16 @@ private:
         removeDir( ( base + "/proj-extra" ) );
         std::remove( ( base + "/proj/linkout" ).c_str() );
         std::remove( ( base + "/proj/sshlink" ).c_str() );
+        // A directory link wants `remove` on POSIX (where rmdir refuses a symlink)
+        // and RemoveDirectory on Windows (where DeleteFile refuses a directory), so
+        // try both and ignore which one did it.  Getting this wrong does not show up
+        // here: it leaves the scratch tree behind, and the next test to build one
+        // fails with "could not make the fixture" -- which is the cascade of -1s this
+        // cost the first time.
+        std::remove( ( base + "/proj/dirout" ).c_str() );
+        removeDir( ( base + "/proj/dirout" ) );
+        std::remove( ( base + "/outsidedir/nested.txt" ).c_str() );
+        removeDir( ( base + "/outsidedir" ) );
         std::remove( ( base + "/.ssh/config" ).c_str() );
         removeDir( ( base + "/.ssh" ) );
         std::remove( ( base + "/proj/sub/nested.txt" ).c_str() );
@@ -2065,9 +2081,6 @@ int test_permission_paths()
     if( atui::tools::pathInsideProject( "" ) ) return -12;
     if( atui::tools::pathInsideProject( "~/somewhere" ) ) return -13;
 
-    // A link inside the tree is judged by where it leads, not where it sits.
-    if( atui::tools::pathInsideProject( s.root + "/linkout" ) ) return -14;
-
     // Shapes from the platforms with drive letters and shares. They are answered
     // here as they will be there: `C:\Windows\win.ini` used to have the project
     // root glued in front of it, which made it *start* with the root and read as
@@ -2099,7 +2112,13 @@ int test_permission_paths()
     if( atui::tools::pathInsideProject( "D:\\proj\\x.c" ) ) return -27;
     if( atui::tools::pathInsideProject( "/etc/hosts" ) ) return -28;
     if( atui::tools::pathInsideProject( "\\\\srv\\proj\\x.c" ) ) return -29;
-    if( atui::tools::pathInsideProject( "C:\\PROJ\\X.C" ) ) return -30;
+    // Case: whether `C:\PROJ\X.C` is the project's `C:\proj\x.c` is a fact about the
+    // host, and the policy reads it from a switch -- so the expectation asks the
+    // switch.  Written as an unconditional `false`, which is the POSIX answer, this
+    // was the other thing the `-14` above had been hiding: on a folding host the two
+    // names are one file, and saying otherwise is the bug, not the platform.
+    const bool folded = atui::core::pathsAreCaseInsensitive();
+    if( atui::tools::pathInsideProject( "C:\\PROJ\\X.C" ) != folded ) return -30;
     {
         CaseFoldGuard fold;
         atui::core::setPathsAreCaseInsensitive( true );
@@ -2166,16 +2185,45 @@ int test_permission_deny_list()
         std::string why;
         if( atui::tools::denyListed( mustNotAsk[i], why ) ) return -200 - (int) i;
     }
+    return 0;
+}
 
-    // A link inside the project that leads to a key file is that file: the check
-    // is on what it resolves to, not on where the name happens to sit.
+// A link is judged by what it leads to, in both directions: an escape out of the
+// tree is outside whatever the name says, and a name inside the tree that leads to a
+// key file is that key file.  This is its own test rather than three lines in three
+// other tests because it needs something the host may refuse to provide, and the
+// honest answer to that is a skip that is counted -- not a failure blamed on the
+// software, and not the silence of an `#ifdef` that stops being tested.
+int test_permission_links()
+{
+    PermissionGuard guard;
+    ScratchTree s;
+    if( !s.ok ) return -1;
+    if( !s.linksOk )
+        return skip_test( "this host will not create symbolic links (Windows wants "
+                          "developer mode or the privilege; atui resolves junctions "
+                          "too, but only a symbolic link reaches a file)" );
+
+    // Out of the tree by file link.
+    if( atui::tools::pathInsideProject( s.root + "/linkout" ) ) return -2;
+    // ...and by directory link, which is where the not-yet-existing leaf matters:
+    // the file below it may not exist yet, and creating it still has to count as
+    // writing outside the project.
+    if( atui::tools::pathInsideProject( s.root + "/dirout/nested.txt" ) ) return -3;
+    if( atui::tools::pathInsideProject( s.root + "/dirout/newcomer.txt" ) ) return -4;
+
+    // In through the front door: a project-relative name that resolves to a key
+    // file is on the deny-list, because the check is on what it resolves to.
     std::string why;
-    if( !atui::tools::denyListed( s.root + "/sshlink", why ) )
-        return -300;
-    // And the ordinary outside file is only outside, not forbidden: the ladder
-    // asks about it for a different reason.
-    if( atui::tools::denyListed( s.root + "/linkout", why ) )
-        return -301;
+    if( !atui::tools::denyListed( s.root + "/sshlink", why ) ) return -5;
+    // And the ordinary outside file is only outside, not forbidden: the ladder asks
+    // about it for a different reason.
+    if( atui::tools::denyListed( s.root + "/linkout", why ) ) return -6;
+
+    // The ladder agrees with the containment check rather than with the spelling.
+    const atui::tools::Permission d =
+        atui::tools::decide( pathOf( s.root + "/linkout" ) );
+    if( d.rung != atui::tools::prPathOutside ) return -7;
     return 0;
 }
 
@@ -2403,9 +2451,6 @@ int test_permission_decide_files()
     d = atui::tools::decide( none );
     if( d.outcome != atui::tools::poAsk ||
         d.rung != atui::tools::prUnknownCall ) return -6;
-
-    d = atui::tools::decide( pathOf( s.root + "/linkout" ) );
-    if( d.rung != atui::tools::prPathOutside ) return -7;
 
     // Even the agent mode cannot talk an in-tree file into running when the root
     // is the whole home directory.
@@ -3417,6 +3462,8 @@ void init()
     register_test( "run_command: signals belong to the command",
                    &test_run_command_signal_mask );
     register_test( "permission: paths", &test_permission_paths );
+    register_test( "permission: links are judged by what they lead to",
+                   &test_permission_links );
     register_test( "permission: deny list", &test_permission_deny_list );
     register_test( "permission: unverified surface", &test_permission_surface );
     register_test( "permission: publishing elsewhere",

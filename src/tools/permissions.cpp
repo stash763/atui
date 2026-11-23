@@ -38,6 +38,20 @@
 #include <sys/stat.h>
 #endif
 
+#if defined(_WIN32)
+// For the reparse-point resolution in resolvePath(): open the path and ask the
+// handle what it turned out to be.  Lean, and without min/max -- they are
+// function-like macros that eat `std::max` in any header that comes after, and this
+// file includes <algorithm>.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace atui {
 namespace tools {
 
@@ -153,11 +167,126 @@ std::string normalizePath( const std::string &path )
     return out;
 }
 
+#if defined(_WIN32)
+
+// The `\\?\` form the handle API answers in is a namespace marker, not part of the
+// path: it means "do not parse this any further", which is precisely wrong for a
+// string atui compares against another path and prints to a person.  `\\?\UNC\` is
+// the same object as a share, and atui spells a share the way `pathAnchor()` does.
+std::string fromFinalPathForm( const std::string &native )
+{
+    std::string s;
+    if( core::startsWith( native, "\\\\?\\UNC\\" ) )
+        s = "//" + native.substr( 8 );
+    else if( core::startsWith( native, "\\\\?\\" ) )
+        s = native.substr( 4 );
+    else
+        s = native;
+    for( std::size_t i = 0; i < s.size(); ++i )
+        if( s[i] == '\\' ) s[i] = '/';
+    return s;
+}
+
+// What the object at `path` really is, with reparse points followed, in atui's
+// internal form -- false when nothing could be asked.  Opening for no access asks
+// for metadata only, which is all containment needs and still works on a file the
+// user may not read.
+bool finalPathOf( const std::string &path, std::string &out )
+{
+    const DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    HANDLE h = ::CreateFileA( path.c_str(), 0, share, 0, OPEN_EXISTING, 0, 0 );
+    if( h == INVALID_HANDLE_VALUE )
+    {
+        // A directory cannot be opened by name without saying that is what it is,
+        // and the spelling does not tell you: `C:\proj\link` is a directory with no
+        // trailing separator.  So ask twice rather than guess once.
+        h = ::CreateFileA( path.c_str(), 0, share, 0, OPEN_EXISTING,
+                           FILE_FLAG_BACKUP_SEMANTICS, 0 );
+        if( h == INVALID_HANDLE_VALUE ) return false;
+    }
+    char buf[ 4096 ];
+    const DWORD n = ::GetFinalPathNameByHandleA( h, buf, sizeof buf, 0 );
+    ::CloseHandle( h );
+    if( n == 0 || n >= sizeof buf ) return false;
+    out = fromFinalPathForm( std::string( buf, n ) );
+    return !out.empty();
+}
+
+// `path` with every reparse point followed for as much of it as exists and the rest
+// appended unchanged -- the same contract as the realpath walk below, because
+// creating a file is a write like any other and a path whose leaf is not there yet
+// still has to be placed inside or outside the tree.
+bool resolveReparsePoints( const std::string &path, std::string &out )
+{
+    std::string rest;
+    std::string head = path;
+    for( ;; )
+    {
+        std::string ask = head;
+        // `C:` alone is not a location: it means "drive C, at wherever this process's
+        // working directory on drive C happens to be", which is somewhere else.  The
+        // root of the drive is `C:/`, and that is what is worth asking about.
+        if( ask.size() == 2 && ask[1] == ':' ) ask += "/";
+
+        std::string got;
+        if( finalPathOf( ask, got ) )
+        {
+            if( !rest.empty() )
+            {
+                if( got[got.size() - 1] != '/' ) got += "/";
+                got += rest;
+            }
+            out = got;
+            return true;
+        }
+
+        const std::string::size_type sep = head.find_last_of( "/\\" );
+        if( sep == std::string::npos ) return false;
+        const std::string part = head.substr( sep + 1 );
+        if( !part.empty() ) rest = rest.empty() ? part : part + "/" + rest;
+        head.erase( sep );
+        if( head.empty() ) return false;
+    }
+}
+
+#endif // _WIN32
+
 // Resolves symlinks for as much of `absolute` as exists and appends the rest
 // unchanged: creating a file is a write like any other, so a path that does not
 // exist yet still has to be placed inside or outside the tree.
+//
+// On Windows the class to look through is a reparse point, which is what both a
+// symbolic link and a junction is, and it is the junction that makes this a hole
+// rather than a limitation: `mklink /J` needs no privilege and no developer mode, so
+// an escape from the project tree is something a person can create on a stock
+// install with the tools that ship with it.  Measured (probe_links.cpp): the handle
+// API sees through both kinds, including through a junction to a file inside it, and
+// does not see a hard link -- correctly, since a hard link has no other place it
+// really is, and realpath is exactly as blind about one.
+//
+// What is not resolved is a share (`\\server\share`), and that is not an oversight:
+// an anchor has to match the root's before a path can be inside it, so a share is
+// already outside as far as containment is concerned, and opening one is the way to
+// make the policy wait on a server that is not answering while it is deciding
+// whether to ask a person a question.  The same reasoning keeps a drive that is
+// really a map to a dead server in the limit column: reading a path there hangs
+// wherever atui asks about it, which is recorded in PERMISSIONS.md rather than
+// pretended away.
 std::string resolvePath( const std::string &absolute )
 {
+#if defined(_WIN32)
+    // A drive with a separator after it (`C:/...` after normalising) is the case
+    // that can hide a reparse point on the way to the project.  A bare `C:` is not a
+    // location at all and is left as normalisePath() left it, and a share for the
+    // reason above.
+    const std::string anchor = atui::core::pathAnchor( absolute );
+    if( anchor.size() > 2 && anchor[1] == ':' )
+    {
+        std::string resolved;
+        if( resolveReparsePoints( absolute, resolved ) ) return resolved;
+    }
+    return normalizePath( absolute );
+#else
     // Only a path anchored at "/" can be asked of realpath, and a drive or a share
     // is anything else. Trying it is worse than useless: the search for a part of
     // the path that exists walks up to `/` and re-roots there, which turns
@@ -165,9 +294,7 @@ std::string resolvePath( const std::string &absolute )
     if( atui::core::pathAnchor( absolute ) != "/" )
         return normalizePath( absolute );
 
-#if defined(_WIN32)
-    return normalizePath( absolute );
-#elif defined(__OS2__)
+#if defined(__OS2__)
     // No realpath in Watcom's C library, and nothing to resolve with: FAT and
     // HPFS have no symbolic links.  Normalising "." and ".." is the whole of what
     // is true here, which is the same answer the Windows branch gives.
@@ -199,7 +326,8 @@ std::string resolvePath( const std::string &absolute )
         if( head == "/" ) break;
     }
     return normalizePath( absolute );
-#endif
+#endif   // the realpath branch
+#endif   // _WIN32
 }
 
 std::string cwdPath()

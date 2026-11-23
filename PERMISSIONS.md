@@ -19,7 +19,8 @@ timeout, an answer that cannot be parsed, a non-network build - lands on *ask*.
 **Facts** (`src/tools/permissions.cpp`), all deterministic and testable offline:
 
 - **Containment.** The project root is captured at startup (`realpath()` of the
-  cwd, or `--root DIR`). A path is inside if its expanded, `..`-normalised,
+  cwd, or `--root DIR`; on Windows, the same question asked of a handle). A path is
+  inside if its expanded, `..`-normalised,
   `realpath`-resolved form *is* the root or lies below it, compared component by
   component so `/home/u/proj-extra` is not inside `/home/u/proj`. This is what
   makes symlinks out of the tree visible instead of surprising. The tool that
@@ -442,14 +443,26 @@ model wanted to do, including the sensitive paths it was refused.
 - **In-tree writes are trusted**, including files the project executes later
   beyond `.git/hooks`: a `Makefile` or `setup.py` edit is auto-approved, and the
   `make` that follows is judged on its own.
-- **Hardlinks are invisible** to realpath containment; symlinks are not.
-- **Only `realpath` can say "the same file".** Containment compares paths, and on
-  the platforms where atui cannot ask the filesystem what a name really means -
-  Windows has no `realpath` here - two spellings of one file are two paths. That
-  fails safe in the direction that matters: an 8.3 alias (`PROJEC~1\x.c`) is not
-  recognised as the project's own `Project\x.c`, so it is a question rather than an
-  auto-approval. A junction or reparse point *inside* the tree that leads out of it
-  is invisible, exactly as a hardlink is.
+- **Hardlinks are invisible to containment; links are not.** A hard link has no
+  other place it really is, so no operating system can report one, and neither
+  `realpath` nor a Windows handle pretends otherwise.
+- **Asking the filesystem what a name means is how containment avoids being
+  bypassed by one.** On POSIX that question is `realpath()`. On Windows it is a
+  handle: open the path and ask what it turned out to be, which follows a
+  *reparse point* - the class that both a symbolic link and a junction belongs to.
+  Seeing through the class is what matters, because a junction needs no privilege
+  and no developer mode (`mklink /J`), so an escape built from one is something a
+  person can create with the tools a stock install ships. Measured on the target:
+  both kinds are followed, including through a junction to a file below it, and an
+  8.3 alias (`PROJEC~1\x.c`) comes back as the long name, so it is recognised as
+  the project's own file rather than read as a second one.
+- **What is still not asked, and why.** A share (`\\server\share`) is not opened:
+  an anchor has to match the root's before a path can be inside it, so a share is
+  already outside as far as containment goes, and opening one is how a policy
+  decision ends up waiting on a server that is not answering. A drive that is
+  really a map to a dead server has the same property in miniature - anything that
+  asks where it points will wait - which is a limit of the machine rather than of
+  atui, and recorded here rather than argued away.
 - **A variable is a question.** `cp x $OUT/file` and `copy x %OUT%\file` name a
   location this process cannot see, and guessing that it was somewhere inside the
   project is the one error containment cannot survive. It costs a question whenever

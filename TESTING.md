@@ -6606,3 +6606,77 @@ identically on macOS and Windows.
 
 `PERMISSIONS.md`'s containment bullet now says the write follows the decision, and
 WINDOWS_PORT.md's rule 4 records the plan against what was built.
+
+## Seeing through a link on Windows, and a suite with nothing left to skip (W5)
+
+Three failures were said to be one cause, and they were -- but not the cause that
+was fixed first. `resolvePath()` used `realpath` only where the anchor was `/`, so
+every drive-anchored path on Windows came back unresolved. And the fixture that
+judges a link by where it leads was wrapped in `#if !defined(_WIN32)`, so on Windows
+there was no link to judge either. Fixing only the resolver would have left three
+tests asserting about a file that was never created.
+
+`probe_links.cpp` measured the ground before writing any of it:
+
+| question | measured answer |
+| --- | --- |
+| Can an SSH-started process create a symbolic link? | yes, file and directory both |
+| ...a junction (`mklink /J`)? | yes -- and no privilege is needed for one, which is the point |
+| Does `GetFinalPathNameByHandleA` see through them? | both kinds, including *through* a junction to a file below it |
+| In what spelling? | `\\?\C:\Users\...` -- prefix to strip, `\` to fold to `/`, `\\?\UNC\` to `//` |
+| And a hard link? | no: its final path is its own name, and it carries no reparse attribute |
+| An 8.3 alias? | resolves to the long name (`ATUI_L~1\...` → `atui_links_probe\...`) |
+| A `subst` drive? | resolves to the real path -- so the root and the path must go through the same resolver or every project path reads as outside |
+| A mapped network drive? | not measurable here: `net use \\localhost\c$` was refused, so it stays an open item rather than a claim |
+
+So the hard link row is not a gap being accepted sloppily: a hard link has no other
+place it really is, and `realpath` is exactly as blind. The 8.3 row is a free
+improvement -- `PROJEC~1\x.c` was a question before because it looked like a second
+file, and is now recognised as the project's own.
+
+The resolver is `CreateFileA` for no access (metadata only, works on a file the user
+cannot read), retried with `FILE_FLAG_BACKUP_SEMANTICS` because a directory cannot be
+opened by name without saying so and the spelling does not tell you which it is, then
+`GetFinalPathNameByHandleA`, then the same walk-up-the-ancestors fallback the POSIX
+branch uses, so a file that does not exist yet still gets placed. Shares are
+deliberately not opened: the anchor has to match the root's before a path can be
+inside it, and opening a share is how a policy decision ends up waiting on a machine
+that is not answering.
+
+**The link assertions are now one test, and it can say "skipped".** Three of them
+were lines in three other tests, and those tests have dozens of assertions that must
+keep running everywhere, so "skip the link check" had nowhere to go. They are now
+`permission: links are judged by what they lead to`, which returns the harness's new
+third answer when the host refuses to make a link:
+
+    self-test SKIP permission: links are judged by what they lead to - this host will
+      not create symbolic links (Windows wants developer mode or the privilege ...)
+    self-test summary: 147 passed, 0 failed, 1 skipped
+
+Verified both directions, because a skip mechanism is exactly as easy to make
+invisible as it is useful: forcing the fixture's `linksOk` off prints the reason and
+counts it and leaves the exit code 0.
+
+**Two things the mask had been hiding.** `permission: paths` bailed at `-14` on
+Windows, so everything after it had never run, and the first of those was `-30`: it
+asserted that `C:\PROJ\X.C` is *not* inside a project rooted at `C:\proj`, which is
+the POSIX answer, delivered unconditionally. Windows' compile-time case-folding
+default is correct -- it is the assertion that assumed the host. It asks
+`pathsAreCaseInsensitive()` now, and the same run says the opposite thing on a
+folding filesystem, correctly.
+
+The second: removing the scratch tree broke on the new directory link, because
+POSIX's `rmdir` refuses a symlink and Windows' `DeleteFile` refuses a directory. The
+teardown tries both. Getting it wrong did not look like this at all -- it left the
+fixture on disk, and every later test that builds one failed with `rc=-1` "could not
+make the fixture", six tests deep.
+
+    build/     (network ON)   208 passed, 0 failed, 0 skipped   (was 207)
+    build-off/ (network OFF)  152 passed, 0 failed, 0 skipped   (was 151)
+    Windows (Win32, network OFF) 148 passed, 0 failed, 0 skipped   (was 143/3)
+    tools/gate98.py           unchanged: 2 diagnostics, both pre-existing
+    tools/watcom-gaps.py      unchanged at 31 (two new `compare(pos,len,...)` hits
+                              went away by using the file's own `core::startsWith`)
+
+Checked for dependence the usual way: with the Windows resolver forced off, the new
+test fails `rc=-2` against a fresh build; with it on, the suite is green.
