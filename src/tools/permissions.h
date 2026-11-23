@@ -124,6 +124,24 @@ bool rootTooBroad();
 // safe answer, rather than as somewhere inside by default.
 bool pathInsideProject( const std::string &path );
 
+// The path the policy decided about: `path` made absolute against projectRoot(),
+// with `~` and `%USERPROFILE%` expanded, `.`/`..` collapsed and symlinks followed
+// for the part that exists.  This is the function `pathInsideProject()` reasons
+// with, and it is exported for one reason: a tool that is approved for one file
+// and opens another is a hole no approval prompt can close, so the tool that opens
+// the file has to ask the same question the policy asked.
+//
+// atui keeps cwd and projectRoot() the same by chdir'ing at startup, and while
+// that holds the two spellings of a relative path name the same file.  It is an
+// assumption about start-up order and a successful chdir; it is not worth relying
+// on when the answer is one call.
+//
+// Empty when the path cannot be placed at all -- a bare drive (`C:file`), a name
+// whose position depends on a variable atui cannot resolve, no root.  A caller then
+// uses the path as written; the policy has already declined to prove containment
+// for those, so it asks a person instead.
+std::string canonicalPath( const std::string &path );
+
 // Every token in `text` that looks like a path, in order, de-duplicated, capped.
 // Only used to ask whether something escapes the project: nothing here
 // interprets the command, which is what the agent is for. Tokens are kept exactly

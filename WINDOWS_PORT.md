@@ -196,7 +196,7 @@ abstractly to be noticed: it said "one complete payload" and said nothing about
 the JSON inside the payload, which is exactly what the caller was reasoning about.
 The consequence is now spelled out where the promise is made.
 
-**4. The path the policy decided on must be the path that gets opened.**
+**4. The path the policy decided on must be the path that gets opened.** -- done, W4
 `normalizePath()` is a file static in `permissions.cpp:113` and the tools cannot
 see it, so `edit_file` asks permission about one string and `fopen`s another
 (`edit_file_tool.cpp:163,177,183,191`), including a journal entry built from a
@@ -205,6 +205,25 @@ third form (`core::absolutePath`, which does not collapse `..`). Move it into
 subject, the open and the journal. On Windows this also removes the drive-relative
 and mixed-separator cases at the same time; on POSIX it closes the gap between
 what `realpath` reasoned about and what gets written.
+
+What was built is one notch different, and better for it: `normalizePath` stayed
+where it is, and `tools::canonicalPath()` was exported from `permissions.h` as a
+one-line wrapper over the same internal `absolutePath()` the decision uses. Moving
+the canonicaliser would have given the tool a second function to keep in step with
+the policy; a wrapper over the policy's own answer cannot drift. `edit_file` now
+canonicalises once at the top of `execute()` and uses that for the read, the
+writability check, the journal entry and the write, while its messages still quote
+the path the model wrote (recognising its own words matters more than a second
+spelling of the same file). `core::absolutePath` then receives an already absolute
+path and returns it unchanged, so the journal names the file that was written
+without it changing.
+
+The case the fix is for is not exotic and was not hypothetical: `main.cpp:158,391`
+chdir to the project root at start-up, so cwd and root coincide -- and the
+divergence appears exactly when that does not happen (a failed `chdir`, a root set
+after start-up). `tool: edit_file opens what it approved` makes them differ on
+purpose, and was checked to fail (`rc=-3`, the edit landing in the working
+directory's file) against the pre-W4 tool.
 
 **5. Where the OS has a real primitive, use it instead of emulating POSIX.**
 The measured case: `command + " 2>&1"` does not merge stderr under `cmd.exe`
@@ -236,7 +255,7 @@ which is why none of this was found there.
 | W1 | One JSON string decoder: `\u` everywhere, lossless unknown escapes | **done** -- `core/jsonstr.{h,cpp}`, both readers calling it; fixes wrong text on all platforms |
 | W2 | Rotate the decision log on Windows (remove-then-rename, already the correct order) | **done** -- and the new test was checked against the previous file to be sure it fails there |
 | W3 | `CreateProcess` spawn: shared std pipe, process handle, killable tree | **done** -- stderr captured, the limit enforced, the tree killed and the kill asserted; the deadline tests now run on Windows too, through harness helpers that know `sleep` from `ping` |
-| W4 | Export the canonicaliser; tools decide and open the same path | closes decide/open divergence on every platform |
+| W4 | Export the canonicaliser; tools decide and open the same path | **done** -- `tools::canonicalPath()`, `edit_file` opens that, and the test that makes cwd differ from the root was checked to fail without it |
 | W5 | `GetFinalPathNameByHandle` resolution, plus skip-aware harness | restores symlink containment on Windows; makes the remaining failures honest |
 | W6 | `PERMISSIONS.md`: shells, quoting, JSON escapes, and what Windows cannot promise | the policy has to say what the code now does |
 

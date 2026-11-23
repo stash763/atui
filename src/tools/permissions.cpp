@@ -758,6 +758,15 @@ bool rootTooBroad()
 
 // --- facts ---------------------------------------------------------------------
 
+std::string canonicalPath( const std::string &path )
+{
+    // A wrapper, deliberately: the answer has to come from the same function the
+    // decision came from, so the two cannot drift apart by one rule -- an expansion
+    // added here and not there, or the other way round -- and leave a tool writing
+    // a file the prompt never named.
+    return absolutePath( path );
+}
+
 bool pathInsideProject( const std::string &path )
 {
     const std::string root = projectRoot();

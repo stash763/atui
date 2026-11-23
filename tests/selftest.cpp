@@ -1406,6 +1406,61 @@ int test_edit_file_first_and_all()
     return 0;
 }
 
+// The approval and the write have to name one file.
+//
+// The policy places a path relative to the project root; fopen() places a relative
+// path relative to the process working directory.  atui keeps the two the same by
+// chdir'ing at start-up, so while that holds the difference is invisible -- which is
+// precisely why it needs a test that makes them differ.  A failed chdir, or a root
+// set after start-up, would otherwise mean a person approved "<root>/notes.txt" and
+// atui wrote ./notes.txt wherever the process happened to be standing.
+int test_edit_file_opens_the_approved_path()
+{
+    JournalOff noJournal;
+    const std::string was = current_dir();
+    if( was.empty() ) return 0;   // cannot move the directory, so cannot test this
+
+    // Two trees, one file name: whichever of them the write lands in says which
+    // base the tool used.
+    const std::string root    = toolTmpPath( "decide_root" );
+    const std::string cwdTree = toolTmpPath( "decide_cwd" );
+    atui::core::makeDirectory( root );
+    atui::core::makeDirectory( cwdTree );
+    if( !atui::core::isDirectory( root ) || !atui::core::isDirectory( cwdTree ) )
+        return -1;
+
+    const std::string inRoot = root + "/notes.txt";
+    const std::string inCwd  = cwdTree + "/notes.txt";
+    toolWriteFile( inRoot, "root copy\n" );
+    toolWriteFile( inCwd, "somewhere else\n" );
+
+    const std::string savedRoot = atui::tools::projectRoot();
+    atui::tools::setProjectRoot( root );
+    const bool moved = atui::core::setWorkingDirectory( cwdTree );
+
+    // The way a model writes a path when it means the project: relative.
+    atui::tools::EditFileTool t;
+    t.execute( "{\"path\":\"notes.txt\",\"old_text\":\"root\",\"new_text\":\"ROOT\"}" );
+
+    const std::string rootText = toolReadFile( inRoot );
+    const std::string cwdText  = toolReadFile( inCwd );
+
+    // Both restored before returning, so this test cannot move the ground under
+    // the ones that run after it.
+    atui::core::setWorkingDirectory( was );
+    atui::tools::setProjectRoot( savedRoot );
+
+    if( !moved ) return -2;
+    // The file the policy was asked about is the one that changed...
+    if( rootText != "ROOT copy\n" ) return -3;
+    // ...and the file only the working directory claims is untouched.
+    if( cwdText != "somewhere else\n" ) return -4;
+
+    std::remove( inRoot.c_str() );
+    std::remove( inCwd.c_str() );
+    return 0;
+}
+
 int test_edit_file_errors()
 {
     JournalOff noJournal;
@@ -3348,6 +3403,8 @@ void init()
     register_test( "tool: json args looks object", &test_json_args_looks_object );
     register_test( "tool: edit_file first/all", &test_edit_file_first_and_all );
     register_test( "tool: edit_file errors", &test_edit_file_errors );
+    register_test( "tool: edit_file opens what it approved",
+                  &test_edit_file_opens_the_approved_path );
     register_test( "tool: run_command basic", &test_run_command_basic );
     register_test( "tool: call previews", &test_tool_call_previews );
 

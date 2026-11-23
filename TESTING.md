@@ -6564,3 +6564,45 @@ line the reader cannot miss.
     tools/watcom-gaps.py      unchanged: no hits in the files W3 touched
 
 The three failures left are symlink containment (`W5`), one cause, unchanged.
+
+## The file it approves is the file it writes (W4)
+
+Two functions answered "which file is this?" and disagreed. The policy's
+`absolutePath()` joins a relative path to `projectRoot()`, expands `~` and
+`%USERPROFILE%`, collapses `..` and resolves symlinks. `core::absolutePath()` --
+which the undo journal uses to record what it is about to change -- joins it to the
+*process working directory*, does no `..` collapsing and resolves nothing.
+`edit_file` asked the policy about the first and opened the second with `std::fopen`,
+which resolves relative paths against the working directory in whichever way the
+operating system feels about a `..` behind a symlink.
+
+Nothing was broken, because `main.cpp:158,391` chdir to the project root at startup
+and the three bases coincide. Which is the worst state for a divergence like this:
+it is invisible until the chdir fails, or a root is set after startup, and then the
+prompt names `<root>/notes.txt` and the write lands in `./notes.txt` wherever the
+process is standing.
+
+`tools::canonicalPath()` is now exported as a one-line wrapper over the policy's own
+`absolutePath()`, and `edit_file` canonicalises once at the top of `execute()` and
+uses that for the read, the writability check, `journal::begin()` and the write. The
+wrapper rather than a moved `normalizePath()`, deliberately: the tool and the policy
+then cannot be given two implementations to keep in step. Messages still quote the
+path the model wrote -- recognising its own words in a result is worth more than a
+second spelling of the same file -- and `core::absolutePath()` now receives a path
+that is already absolute, so it returns it unchanged and the journal names the file
+that was actually written without that function changing.
+
+The test makes the two bases differ on purpose: a root, a working directory that is
+not the root, the same file name in both, and an edit asked for by relative name.
+Checked the way W2 and W3 were -- with the canonicalisation removed the test fails
+`rc=-3`, the edit landing in the working directory's copy; with it, it passes. Run
+identically on macOS and Windows.
+
+    build/     (network ON)   207 passed, 0 failed   (was 206)
+    build-off/ (network OFF)  151 passed, 0 failed   (was 150)
+    Windows (Win32, network OFF) 144 passed, 3 failed   (was 143/3)
+    tools/gate98.py           unchanged: 2 diagnostics, both pre-existing
+    tools/watcom-gaps.py      unchanged: 31 hits, none new
+
+`PERMISSIONS.md`'s containment bullet now says the write follows the decision, and
+WINDOWS_PORT.md's rule 4 records the plan against what was built.

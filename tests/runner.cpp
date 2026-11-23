@@ -4,6 +4,12 @@
 #include <exception>
 #include <string>
 
+#if defined( _WIN32 )
+#include <direct.h>       // _getcwd, for current_dir()
+#else
+#include <unistd.h>       // getcwd
+#endif
+
 namespace atui_test {
 
 namespace {
@@ -115,6 +121,18 @@ std::string temp_dir()
     while( s.size() > 1 && ( s[ s.size() - 1 ] == '/' || s[ s.size() - 1 ] == '\\' ) )
         s.erase( s.size() - 1 );
     return s;
+}
+
+std::string current_dir()
+{
+    char buf[ 4096 ];
+#if defined( _WIN32 )
+    if( ::_getcwd( buf, sizeof buf ) ) return std::string( buf );
+#else
+    if( ::getcwd( buf, sizeof buf ) ) return std::string( buf );
+#endif
+    (void) buf;
+    return std::string();
 }
 
 std::string wait_command( long seconds )

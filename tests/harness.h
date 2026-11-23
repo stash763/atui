@@ -35,6 +35,13 @@ void unset_env( const char *name );
 // toolTmpPath(), and its tests were the first to go red on Windows.
 std::string temp_dir();
 
+// The process's working directory, for the test that has to move it and put it
+// back.  POSIX spells it getcwd() and Windows _getcwd(); named once for the same
+// reason set_env() is.  A test that changes the working directory without restoring
+// it changes every test that runs after it, which is a failure that shows up in
+// somebody else's suite.
+std::string current_dir();
+
 // A command that takes roughly `seconds` to finish, in the syntax of the shell
 // atui runs commands through.  POSIX has sleep(); a base Windows install has no
 // sleep and no other way to wait for a moment, and `ping -n N` at one reply per

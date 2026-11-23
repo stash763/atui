@@ -4,6 +4,7 @@
 #include "core/paths.h"
 #include "core/strutil.h"
 #include "tools/json_args.h"
+#include "tools/permissions.h"   // canonicalPath(): open the file that was approved
 
 #include <cstdio>
 #include <string>
@@ -159,8 +160,18 @@ std::string EditFileTool::execute( const std::string &argumentsJson )
     if( oldText.empty() )
         return "edit_file: 'old_text' must not be empty";
 
+    // Open the file the approval was about.  The policy decides on this canonical
+    // form -- absolute, `~` expanded, `..` collapsed, symlinks followed -- and
+    // until this line the tool opened the spelling the model typed, so a working
+    // directory that is not the project root (a failed chdir at start-up, a root
+    // set after it) put the write in a file the prompt never named.  The messages
+    // below still quote `path`: the model asked for that, and recognising its own
+    // words in a result is worth more than a second spelling of the same file.
+    const std::string canonical = atui::tools::canonicalPath( path );
+    const std::string &target = canonical.empty() ? path : canonical;
+
     std::string data;
-    if( !readFile( path, data ) )
+    if( !readFile( target, data ) )
         return "edit_file: cannot read file '" + path + "'";
 
     int found = countOccurrences( data, oldText );
@@ -174,13 +185,13 @@ std::string EditFileTool::execute( const std::string &argumentsJson )
     // Before the write, in this order, because each step is cheaper than the next
     // and none of them may be skipped: refuse a file that cannot be written,
     // then put the current contents where they survive the attempt, then write.
-    if( !atui::core::isWritableFile( path ) )
+    if( !atui::core::isWritableFile( target ) )
         return "edit_file: '" + path + "' is not writable. No changes made.";
 
     atui::core::journal::Pending pend;
     std::string jerr;
     const std::string op = std::string( "replace:" ) + ( all ? "all" : "first" );
-    if( !atui::core::journal::begin( path, "edit_file", op, pend, jerr ) )
+    if( !atui::core::journal::begin( target, "edit_file", op, pend, jerr ) )
     {
         // No copy, no edit. The policy normally asks a person about this before
         // the call is made (tools::prNoUndoNet); reaching here means the journal
@@ -188,7 +199,7 @@ std::string EditFileTool::execute( const std::string &argumentsJson )
         return "edit_file: not edited - " + jerr;
     }
 
-    if( !writeFileAll( path, updated ) )
+    if( !writeFileAll( target, updated ) )
     {
         // Whether the original survived depends on where it failed, and that is
         // not knowable from here. So the entry stays pending rather than being

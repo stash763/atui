@@ -22,7 +22,13 @@ timeout, an answer that cannot be parsed, a non-network build - lands on *ask*.
   cwd, or `--root DIR`). A path is inside if its expanded, `..`-normalised,
   `realpath`-resolved form *is* the root or lies below it, compared component by
   component so `/home/u/proj-extra` is not inside `/home/u/proj`. This is what
-  makes symlinks out of the tree visible instead of surprising.
+  makes symlinks out of the tree visible instead of surprising. The tool that
+  writes then opens that same resolved path -- `tools::canonicalPath()` is the
+  answer the decision was made from, exported so the two cannot be given different
+  questions -- because an approval for one file and a write to another is a hole no
+  prompt can close. atui keeps the working directory and the root the same by
+  chdir'ing at startup, and it is that coincidence, not the assumption, that the
+  tool no longer relies on.
 - **Path shapes.** Answered for every platform atui builds for, on whichever one
   it happens to be running (`src/core/paths.{h,cpp}`): `/etc/hosts`, `C:\Windows`,
   `C:/Windows`, `\\server\c$\share` and the DOS drive-relative `C:notes.txt` are
