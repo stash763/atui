@@ -179,6 +179,23 @@ int test_a_stop_request_reaches_a_running_command()
 
 #endif // ATUI_TEST_SIGNALS
 
+#if defined( _WIN32 )
+
+// The four tests above cannot run here, and registering nothing is not the honest way to
+// say so -- it leaves the Windows suite four assertions smaller than every other
+// platform's without that showing anywhere in its own line.  What is missing is one
+// thing, and it is the product's, not the host's: `Ctrl+C` is a console control event,
+// atui installs no handler for it, so nothing ever asks the process to stop and
+// `shutdownRequested()` is false for all of its life.  When `SetConsoleCtrlHandler`
+// lands -- `WINDOWS_PORT.md` carries the gap -- this function goes away and the four
+// take its place.
+int test_being_asked_to_stop()
+{
+    return skip_test( "no console control handler: nothing asks atui to stop" );
+}
+
+#endif // _WIN32
+
 } // anonymous namespace
 
 // Registers the shutdown tests.
@@ -190,6 +207,8 @@ void init_signals_tests()
     register_test( "signal: the default action is replaced", &test_the_default_action_is_replaced );
     register_test( "signal: a stop request reaches a running command",
                    &test_a_stop_request_reaches_a_running_command );
+#elif defined( _WIN32 )
+    register_test( "signal: being asked to stop", &test_being_asked_to_stop );
 #endif
 }
 

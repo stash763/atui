@@ -26,9 +26,7 @@
 #include <chrono>
 #include <cstdio>
 #include <string>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
+#include <sys/stat.h>     // stat, for exists() below
 #include <vector>
 
 namespace atui_test {
@@ -145,9 +143,9 @@ public:
         , savedProvider_( atui::net::providerSettings() )
     {
         base = temp_dir() + "/atui_turn";
-        ::mkdir( base.c_str(), 0755 );          // may already exist
+        makeDir( base );          // may already exist
         root = base + "/proj";
-        ::mkdir( root.c_str(), 0755 );
+        makeDir( root );
 
         atui::tools::setProjectRoot( root );
         root = atui::tools::projectRoot();
@@ -189,10 +187,19 @@ void useServer( int port )
     p.temperature = 0.0;
 }
 
+// Whether a path is there -- one function with the platform inside it, rather than the
+// call at each of the places that asks, because MSVC only offers `stat` as a name when
+// it is feeling generous about POSIX spellings and this file should not have to find
+// that out five times.
 bool exists( const std::string &path )
 {
+#if defined(_WIN32)
+    struct _stat st;
+    return ::_stat( path.c_str(), &st ) == 0;
+#else
     struct stat st;
     return ::stat( path.c_str(), &st ) == 0;
+#endif
 }
 
 // A `run_command` call running `command` if it is allowed to.
@@ -205,7 +212,7 @@ std::string commandCall( const std::string &id, const std::string &command )
 // ... and one that would create `path` if it ran.
 std::string touchCall( const std::string &id, const std::string &path )
 {
-    return commandCall( id, "touch '" + path + "'" );
+    return commandCall( id, make_file_command( path ) );
 }
 
 // Something to install as the permission agent: ChatTurn only asks whether one
@@ -456,7 +463,9 @@ int test_turn_asks_when_the_judgement_is_unreadable()
     ::remove( ran.c_str() );
 
     server.enqueueResponse(
-        sseResponse( commandCall( "c1", "cd '" + f.root + "' && touch ran_judged.txt" ) ) );
+        sseResponse( commandCall( "c1",
+                                  in_dir_command( f.root,
+                                                  make_file_command( "ran_judged.txt" ) ) ) ) );
     // The agent's turn: prose, and no effects listed, so nothing was described.
     server.enqueueResponse(
         sseResponse( sseAnswer( "this command seems harmless to me" ) ) );

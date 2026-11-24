@@ -6717,3 +6717,119 @@ case most likely to appear when a model writes an absolute path to a program und
 
 Nothing in `src/` changed for W6, so the numbers are W5's: 208 / 152 / 148, no
 failures, no skips.
+
+## P3: the network on Windows, and the risk was not where the plan put it
+
+`ATUI_HAVE_NETWORK=ON` for the first time. `src/net/sock_win.cpp` -- written against the
+Winsock API and never once seen by a compiler -- compiled clean, with no warnings, first
+try. That is the least informative result a file like that can produce, and the phase's
+real findings were two files away.
+
+**The transport had never been compiled on Windows because the test harness had not
+either.** `tests/http_pipe.h`, the scripted responder that every HTTP, SSE and chat-turn
+test talks to, included `<arpa/inet.h>`, `<netinet/in.h>`, `<poll.h>`, `<sys/socket.h>`.
+Five POSIX headers, so every one of those test files failed to build, and the failure
+message named a header instead of the fact that mattered: the transport had no test on
+this platform. It now goes through one seam, `tests/pipe_sock.h`, which provides the six
+operations a scripted server needs (start the stack, listen, wait with a timeout, read,
+write, close).
+
+That seam deliberately does **not** reuse `src/net/sock.h`. Reusing it would have been
+less code and no evidence: the harness exists to talk to the transport from outside, and
+if both sides of the conversation were the same six functions then a misunderstanding
+between them has no way to appear. So the harness speaks Winsock directly and the
+transport speaks its own layer, and a pass means two independent pieces of code agreed
+over a real socket. One detail decided the same way: `stop()` shuts the listening socket
+down, joins the thread, and only then closes. A Winsock socket closed by one thread while
+another waits on it is not something Winsock promises anything about; shutting it down is,
+and the wait has a 50 ms timeout so the close has nothing to wake.
+
+**The first Windows run of the transport: 202 passed, 2 failed.** Both failures were
+commands spelled for the other shell.
+
+    turn: an allowed call happens                        rc=-6
+    turn: a session allowance is exact to the arguments  rc=-5
+
+Both ran `touch '<path>'`. cmd has no `touch`, and does not treat a single quote as
+quoting either -- it says `The filename, directory name, or volume label syntax is
+incorrect` and creates nothing. The spelling belongs in the harness, like `wait_command`
+and `stdin_command` before it, so it was measured before being written down:
+
+    type nul > "C:\Users\stash\atui_qt\a_back.txt"   created
+    type nul > "C:/Users/stash/atui_qt/b_fwd.txt"    created
+    cd "C:\Users\stash\atui_qt" && type nul > c_rel.txt   created
+    type nul > 'C:\Users\stash\atui_qt\d_sq.txt'    nothing at all
+
+Forward separators are fine inside quotes, which matters because a fixture path is built
+as `temp_dir() + "/name"`. Hence `make_file_command()` and `in_dir_command()`. With those
+the suite was **204 passed, 0 failed**.
+
+**An assertion that had been quietly dropped on Windows, and its proof.** While diffing
+the test *names* between macOS and Windows -- worth doing, it is the only way to see what
+a platform is not testing -- exactly four differed, the `signal:` ones. But another had
+been dropped in a place where Windows has the capability: the read-only refusal. The
+journal test that asserts `edit_file` refuses a file it cannot write, *before* copying or
+truncating it, was inside `#if !defined(_WIN32)` because it spelled `chmod`. Measured what
+Windows actually does:
+
+    state                     attribute   _access(,2)  fopen("r+")     CreateFile(write)
+    just created              writable    0            opened          opened
+    _chmod(path, _S_IREAD)    READ-ONLY   -1 errno 13  FAILED errno 13 FAILED err 5
+    SetFileAttributes +R      READ-ONLY   -1 errno 13  FAILED errno 13 FAILED err 5
+    restored                  writable    0            opened          opened
+
+So `isWritableFile()` -- which is `_access(path, 2)` -- is right on Windows, and the
+refusal is a real behaviour there rather than a POSIX-only one. The assertion now runs
+there, through `set_read_only()` in the harness, and it was checked to bite: with
+`isWritableFile()` replaced by `return true`, Windows reports `journal: edit_file writes
+behind it (rc=-6)` and `203 passed, 1 failed`, and green again when the line is restored.
+Two smaller things came with it: the old test restored the mode only on the success path,
+so a failure left the fixture locked for every test after it, and `_chmod` is not declared
+in UCRT's `<sys/stat.h>` at all -- it comes from `<io.h>`, which is why one probe compiled
+and the harness did not. The helper uses `SetFileAttributesA`, the attribute itself.
+
+**The four `signal:` tests, and the suite saying what it is not doing.** They are
+compiled out on Windows, OS/2 and DOS. Registering nothing is the same silence as having
+no tests, so Windows now registers one that skips:
+
+    self-test SKIP signal: being asked to stop - no console control handler:
+                          nothing asks atui to stop
+
+The suite also prints its configuration on the first line -- `self-test build:
+network=on, 205 tests registered` -- because 208 and 152 are both "all of them" and only
+the line beside them says which.
+
+**A turn over a real network.** `tools/fake_stream.py` on the Mac, which needed
+`--listen` (it bound loopback, correctly, and a streaming endpoint should not open itself
+on a LAN by default), and atui on Windows pointed at `http://10.196.88.116:8799/v1`:
+
+    self-test PASS live: model list
+    self-test PASS live: chat stream
+    self-test FAIL live: reasoning (rc=-2)          -- no reasoning deltas: no model behind it
+    self-test FAIL live: tool round trip (rc=-2)    -- never calls live_probe: same reason
+
+A chat turn completes, streaming, from Windows to a peer on another machine: the P3
+criterion. The two failures are the server, not the transport, and they would fail
+against that endpoint on macOS too.
+
+**One claim of mine corrected, and this one crashes.** `tests/pipe_sock.h` said the C
+library's `close()` "accepts the type, returns -1, and leaks the handle", extending to
+Windows what `sock.h` records for OS/2. The probe written to confirm it died before it
+printed anything, and with output unbuffered it said where:
+
+    a. stack up
+    b. socket = 000000B8
+    (process ends, 0xC0000409)
+
+`_close()` on a Winsock socket does not return. The UCRT treats a descriptor it does not
+own as an invalid *parameter*, and the default action for that is a fastfail -- the same
+status code a real stack overrun reports, which is how anyone would have to explain it.
+Ordering mattered for the measurement: the control case (`_close(9999)`) is fatal in the
+same way, and a probe that dies on the control has proved nothing about the case it was
+written for, so the two were swapped to watch the socket one die on its own. `sock.h`'s
+Winsock list, which had been inferred from the API, now says what was measured; so does
+the harness comment that had it wrong.
+
+Windows: **204 passed, 0 failed, 1 skipped**, network compiled in, transport exercised
+against both its own loopback and another machine. macOS unchanged at 208 (network on)
+and 152 (off), no failures, no skips.

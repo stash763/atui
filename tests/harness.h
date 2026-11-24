@@ -42,6 +42,25 @@ std::string temp_dir();
 // somebody else's suite.
 std::string current_dir();
 
+// Makes and removes one directory.  Named once for the reason set_env() is: MSVC puts
+// them in <direct.h> as `_mkdir` and `_rmdir`, and `_mkdir` takes no mode, so a suite
+// that writes the POSIX call at every site learns about Windows by failing to build --
+// and a suite that does not build is a suite that is not tested.  Returns what the
+// platform call returns, because a fixture that tolerates "already exists" and one that
+// requires it are two different assertions worth making.
+int makeDir( const std::string &path );
+int removeDir( const std::string &path );
+
+// Makes a file read-only, or lets it be written again, and says whether the host has any
+// such idea.  This is the seam that the read-only refusal test was missing: it spelled
+// the call `chmod`, so it went inside a `#if !defined(_WIN32)` and a promise about every
+// platform -- refuse before copying or truncating -- stopped being tested on one of them.
+// On Windows the idea is a file attribute -- the one `attrib +R` sets -- and
+// `isWritableFile()`'s `_access(path, 2)` reports the result as -1/EACCES (measured), so
+// the refusal is a real behaviour there and worth watching fail.  False means no
+// assertion was made, which a caller reports as a skip rather than a pass.
+bool set_read_only( const std::string &path, bool readOnly );
+
 // A test returns 0 when it passes and anything else when it fails.  Some assertions
 // need a capability the machine may not have -- creating a symbolic link is the one
 // that forced this to exist, needing a privilege or developer mode -- and neither
@@ -73,6 +92,18 @@ std::string wait_command( long seconds );
 // on POSIX, `more` on Windows, measured to exit 0 with no output when stdin is the
 // NUL device atui gives every command.
 std::string stdin_command();
+
+// A command that creates an empty file at `path`, and a command that runs another one
+// from inside a directory.  Both shells differ in the verb and in what a quote means:
+// POSIX has `touch`, and single quotes that are quoting there and ordinary characters
+// in cmd, where the second case does not quietly do the wrong thing but says "the
+// filename, directory name, or volume label syntax is incorrect" (measured, as was that
+// `type nul > "path"` creates the file with either separator, which matters because a
+// fixture path is built as temp_dir() + "/name").  Named once for the reason
+// wait_command() is: a command spelled for one shell, written into a test, does not
+// fail there -- it passes without testing anything.
+std::string make_file_command( const std::string &path );
+std::string in_dir_command( const std::string &dir, const std::string &command );
 
 // A command that starts a second one running in the background and then waits --
 // the case a timeout has to reach through, since what hangs is rarely the command

@@ -1,20 +1,21 @@
 // Windows over Winsock2: the third spelling of the same four operations.
 //
-// NOT YET COMPILED.  Windows has no toolchain in this tree yet (there is no CI, and
-// no cross compiler has been chosen -- see the platform coverage note in
-// TESTING.md), so what follows is written against the API and not against a
-// compiler.  That is worth saying plainly rather than letting the file look as
-// settled as the two above it, which were each compiled and run before a line of
-// them was written.  The state machine that uses this is exercised on the platforms
-// where it can be, and when a Windows build exists this file's first job is to be
-// wrong in a way the tests notice.
+// This file spent a long time written against the API rather than against a compiler --
+// there was no Windows toolchain in the project -- and the first thing it did once it
+// had one was compile clean, which is the least informative result a file can produce.
+// What it is now measured by is the suite with `--net`: the scripted responder in
+// `tests/http_pipe.h` speaks Winsock on its own, deliberately not through this layer, so
+// a turn completing here is two independent pieces of Winsock code agreeing over a real
+// socket, on loopback and over a LAN with the peer on another machine (P3, TESTING.md).
 //
-// The differences from the POSIX path that matter here: a socket is a `SOCKET`
-// (pointer-sized) and not a descriptor, so it is closed with `closesocket()`; the
-// error number is `WSAGetLastError()` and it is always maintained; non-blocking is
-// `ioctlsocket(s, FIONBIO, &on)`; and nothing works at all until `WSAStartup()` has
-// been called, which is reference counted and therefore has to be balanced by
-// `WSACleanup()` at exit.
+// The differences from the POSIX path that matter here, all of them in `sock.h`'s list
+// and none of them above this line: a socket is a `SOCKET` (pointer-sized) and not a
+// descriptor, and the C library's `close()` on one does not fail quietly but ends the
+// process; the error number is `WSAGetLastError()` and it is always maintained;
+// non-blocking is `ioctlsocket(s, FIONBIO, &on)`; and nothing works at all until
+// `WSAStartup()` has been called, which is reference counted -- so it is asked for
+// again on every connection and never released, because a process that exits releases
+// the stack anyway.
 #include "sock.h"
 
 #ifdef _WIN32

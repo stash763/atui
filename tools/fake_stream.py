@@ -7,6 +7,13 @@ Streams a canned answer of `--words` words, `--chunk` words at a time, `--delay`
 seconds between chunks.  It exists so two builds of atui can be shown the
 *identical* stream: measuring a layout cost against a live model compares two
 answers of different length, which measures nothing.
+
+`--listen` defaults to loopback, which is right for everything measured on one
+machine and should not be given up by default: a streaming endpoint open on a LAN is
+an invitation.  It is there because some transports can only be proven from another
+host -- the Windows build meeting a peer that is not its own loopback, with a real
+round trip and a real segmentation of the same bytes, is the case that settled
+`sock_win.cpp` (WINDOWS_PORT.md P3).
 """
 import argparse
 import json
@@ -88,11 +95,14 @@ def main():
     p.add_argument("--chunk", type=int, default=6)
     p.add_argument("--delay", type=float, default=0.01)
     p.add_argument("--raw", help="stream this file's bytes instead of the canned answer")
+    p.add_argument("--listen", default="127.0.0.1",
+                   help="bind address; 0.0.0.0 to let another machine reach it")
     a = p.parse_args()
     CFG.update(words=a.words, chunk=a.chunk, delay=a.delay, raw=a.raw)
-    print("fake stream on %d: %s, %d-byte chunks, %s s apart"
-          % (a.port, a.raw or "%d words" % a.words, a.chunk, a.delay), flush=True)
-    ThreadingHTTPServer(("127.0.0.1", a.port), H).serve_forever()
+    print("fake stream on %s:%d: %s, %d-byte chunks, %s s apart"
+          % (a.listen, a.port, a.raw or "%d words" % a.words, a.chunk, a.delay),
+          flush=True)
+    ThreadingHTTPServer((a.listen, a.port), H).serve_forever()
 
 
 main()

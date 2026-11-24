@@ -28,11 +28,7 @@
 #include <thread>
 #include <vector>
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include "pipe_sock.h"
 
 namespace atui_test {
 
@@ -61,7 +57,7 @@ public:
     };
 
     ScriptedHttp()
-        : listenFd_( -1 ), port_( 0 ), stop_( false ), connections_( 0 )
+        : listenFd_( kPipeInvalid ), port_( 0 ), stop_( false ), connections_( 0 )
     {
     }
 
@@ -72,11 +68,15 @@ public:
 
     bool start()
     {
+        if( !pipeStackInit() )
+            return false;
+
         listenFd_ = ::socket( AF_INET, SOCK_STREAM, 0 );
-        if( listenFd_ < 0 )
+        if( listenFd_ == kPipeInvalid )
             return false;
         int one = 1;
-        ::setsockopt( listenFd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof( one ) );
+        ::setsockopt( listenFd_, SOL_SOCKET, SO_REUSEADDR, (const char *) &one,
+                      sizeof( one ) );
 
         sockaddr_in addr;
         std::memset( &addr, 0, sizeof( addr ) );
@@ -85,7 +85,7 @@ public:
         addr.sin_port = 0;
         if( ::bind( listenFd_, (sockaddr *) &addr, sizeof( addr ) ) != 0 )
             return false;
-        socklen_t len = sizeof( addr );
+        PipeLen len = sizeof( addr );
         if( ::getsockname( listenFd_, (sockaddr *) &addr, &len ) != 0 )
             return false;
         port_ = ntohs( addr.sin_port );
@@ -98,14 +98,20 @@ public:
     void stop()
     {
         stop_ = true;
-        if( listenFd_ >= 0 )
-        {
-            ::shutdown( listenFd_, SHUT_RDWR );
-            ::close( listenFd_ );
-            listenFd_ = -1;
-        }
+        // Woken, joined, and only then closed.  The order is a Windows order: a socket
+        // closed by one thread while another is waiting on it is not something Winsock
+        // promises anything about, whereas shutting it down is, and the shutdown is what
+        // makes the waiting `accept` come back.  POSIX cares about neither, and gets the
+        // same sequence.
+        if( listenFd_ != kPipeInvalid )
+            pipeWake( listenFd_ );
         if( thread_.joinable() )
             thread_.join();
+        if( listenFd_ != kPipeInvalid )
+        {
+            pipeClose( listenFd_ );
+            listenFd_ = kPipeInvalid;
+        }
     }
 
     int port() const { return port_; }
@@ -163,23 +169,19 @@ private:
     {
         while( !stop_ )
         {
-            pollfd pfd;
-            pfd.fd = listenFd_;
-            pfd.events = POLLIN;
-            const int ready = ::poll( &pfd, 1, 50 );
-            if( ready <= 0 )
+            if( !pipeReadable( listenFd_, 50 ) )
                 continue;
 
-            const int client = ::accept( listenFd_, 0, 0 );
-            if( client < 0 )
+            const PipeFd client = ::accept( listenFd_, 0, 0 );
+            if( client == kPipeInvalid )
                 return;
             ++connections_;
             handle( client );
-            ::close( client );
+            pipeClose( client );
         }
     }
 
-    void handle( int client )
+    void handle( PipeFd client )
     {
         // A hanging-up peer is scripted, not raced: take the instruction before
         // reading anything, so the timing is the script's and not the test's.
@@ -210,13 +212,10 @@ private:
         std::string request;
         for( int idle = 0; idle < 20; ++idle )
         {
-            pollfd pfd;
-            pfd.fd = client;
-            pfd.events = POLLIN;
-            if( ::poll( &pfd, 1, 50 ) <= 0 )
+            if( !pipeReadable( client, 50 ) )
                 break;
             char buf[ 4096 ];
-            const ssize_t n = ::recv( client, buf, sizeof( buf ), 0 );
+            const PipeCount n = ::recv( client, buf, (int) sizeof( buf ), 0 );
             if( n <= 0 )
                 break;
             request.append( buf, (size_t) n );
@@ -263,19 +262,20 @@ private:
         return request.size() >= head + 4 + want;
     }
 
-    static void writeAll( int fd, const std::string &data )
+    static void writeAll( PipeFd fd, const std::string &data )
     {
         size_t sent = 0;
         while( sent < data.size() )
         {
-            const ssize_t n = ::send( fd, data.data() + sent, data.size() - sent, 0 );
+            const PipeCount n = ::send( fd, data.data() + sent,
+                                        (int) ( data.size() - sent ), 0 );
             if( n <= 0 )
                 return;
             sent += (size_t) n;
         }
     }
 
-    int listenFd_;
+    PipeFd listenFd_;
     int port_;
     std::atomic<bool> stop_;
     std::thread thread_;

@@ -36,10 +36,30 @@
 //   * there is no `O_NONBLOCK` in `<fcntl.h>`: non-blocking is
 //     `ioctl(s, FIONBIO, &on)`.
 //
-// Windows is the third member of this family with its own spellings (`SOCKET`,
-// `closesocket`, `WSAGetLastError`, `WSAStartup`), and DOS with a packet driver
-// will be the fourth.  None of that belongs above this line: the state machine
-// below asks for bytes and is told "not yet", "the peer is finished", or "here".
+// Windows is the third member of the family, and since the Windows build existed long
+// enough to run this suite its list has been measured as well (P3, numbers in
+// TESTING.md).  The spellings -- `SOCKET`, `closesocket()`, `WSAGetLastError()`,
+// `WSAStartup()` -- are the part that merely fails to compile.  These are the ones that
+// would have been bugs:
+//
+//   * no SIGPIPE, so the peer-that-hangs-up case is not about a disposition at all: the
+//     write returns an error and the process is still there, which is what the test
+//     asserts on every platform and how it comes to be the same assertion;
+//   * `closesocket()` is not a preference.  On OS/2, `close()` on a socket returns -1
+//     and leaks it; on Windows the UCRT treats a descriptor it does not own as an
+//     invalid *parameter* and fails fast, ending the process with 0xC0000409 -- the code
+//     a stack overrun also reports, which is how this mistake would be diagnosed as
+//     something else.  A `socket()` followed by the C library's `close()` on its value
+//     does not reach the next statement (measured);
+//   * `WSAGetLastError()` is always maintained, so "not yet" versus "the peer is
+//     finished" never depends on whether somebody remembered to clear a stale number;
+//   * nothing works before `WSAStartup()`.  It is reference counted, so
+//     `sockConnectStart()` asking again is harmless and no `WSACleanup()` is issued --
+//     a process that exits releases the stack.
+//
+// DOS with a packet driver will be the fourth.  None of that belongs above this line:
+// the state machine below asks for bytes and is told "not yet", "the peer is finished",
+// or "here".
 //
 // Nothing here starts a thread or waits for anything except the timeout it is
 // given, because it is called from the code that owns the screen.

@@ -7,12 +7,13 @@ code has to keep, and `TESTING.md` is where the measurements go.
 Scope, in order: **VS2017 / Win32 / Windows 10 first**, then the older Windows
 targets. Nothing here changes what the OS/2, DOS, Linux or FreeBSD builds do.
 
-Status: P0-P2 done on the target, and the cross-platform work (W1-W6) is finished.
-atui.exe builds and links for Win32 and **passes all 148 of its self-tests** -- the
-first non-POSIX host to run the suite, and it is green. See "Measured results"
-below. What that does *not* yet cover is the two phases that cannot be measured
-headless: `--net` has never been compiled (P3) and the TUI has never been seen on a
-Windows screen (P4).
+Status: P0-P3 done on the target, and the cross-platform work (W1-W6) is finished.
+atui.exe builds and links for Win32, with the network compiled in, and **passes 204 of
+its self-tests with one skipped** -- the first non-POSIX host to run the suite, and it
+is green, transport included, against a peer on another machine. The measurements are
+in `TESTING.md`. What that does *not* yet cover is the phase that cannot be measured
+headless at all: the TUI has never been seen on a Windows screen (P4). And the one skip
+is itself the finding it says it is -- on Windows there is no way to ask atui to stop.
 
 ## The rules for this work
 
@@ -135,7 +136,7 @@ Ordered by how much it matters.
 | **Symlink containment did not exist on Windows** -- fixed, W5 | `permissions.cpp` | `realpath` was used only where `pathAnchor() == "/"`, so every drive-anchored path came back unresolved and a link inside the project pointing out of it counted as inside. Windows asks a different question -- open the path and ask the handle what it turned out to be -- which follows the whole class of reparse point, junction included, and a junction needs no privilege to create (`mklink /J`), which is what made this a hole rather than a limitation. Measured; see `TESTING.md`. |
 | **The decision log did not rotate on Windows** -- fixed, W2 | `permissions.cpp:1390` | The body of `rotateIfNeeded()` was inside `#if !defined(_WIN32)`, so `permissions.log` grew without bound and the 1 MiB / one-generation rule at `PERMISSIONS.md:416` silently did not happen. Not a platform limitation being worked around -- nobody had compiled it there. The remove-then-rename order the OS/2 comment explains was already the only order that works on Windows too; the guard was the whole bug. `permission: decision log rotates` now covers it, and was checked to cover it: the same test fails `rc=-3` against the previous file. |
 | `clock.cpp` takes the non-reentrant path | `clock.cpp:9-11` | `gmtime_r`/`localtime_r` are gated on `__unix__`/`__APPLE__`; MSVC wants `_gmtime64_s`/`_localtime64_s`. Compiles, silently worse and thread-unsafe. |
-| No console signal handling | `signals.cpp:7` | `_WIN32` excluded, correct for `sigaction`, but nothing replaces it. `Ctrl+C` kills the process mid-turn with no journal close. `SetConsoleCtrlHandler` is the answer, if we want one. |
+| No console signal handling | `signals.cpp:7` | `_WIN32` excluded, correct for `sigaction`, but nothing replaces it. `Ctrl+C` kills the process mid-turn with no journal close. `SetConsoleCtrlHandler` is the answer, if we want one. | The suite says so out loud now: where every other platform registers four `signal:` tests, Windows registers one that skips, because four assertions that cannot compile are the same silence as having none.
 | No `.rc`/manifest handling | `CMakeLists.txt` | OS/2 needed `tools/os2/atuipm.rc`; a Windows console app may want a manifest, and an XP build needs `SubSystem,5.01`. |
 | `.gitignore` has no Windows build dir | `.gitignore:34-35` | `atui.exe` (L12) and `*.obj` (L8) are covered; `build-msvc/` is not. |
 
@@ -363,7 +364,11 @@ SSH because it needs no console: 18 test files, `tests/selftest.cpp`, compiled i
 the binary, so it tests statics too. *Exit: self-test passes, or every failure is
 understood and recorded rather than skipped.* **Met, and then some -- 148 passed,
 0 failed** since `W5`; at the point it was first met it was 144/3 with the three
-understood, which is what the criterion asked for. This
+understood, which is what the criterion asked for. (That was the no-network
+configuration; the same suite with `--net` is 204 passed and 1 skipped, which is P3, and
+the binary now prints `self-test build: network=on|off` on the first line because a
+number that changes with the configuration is not evidence until the configuration is
+beside it.) This
 phase paid for itself: it is the first time the suite has ever been compiled on a
 non-POSIX host, and it found bugs that were not Windows cosmetic issues -- a `\u`
 decoder missing from both network readers (wrong text on every platform), a
@@ -380,6 +385,37 @@ about: no `SIGPIPE`, `close()` on a socket handle, `errno` not maintained,
 non-blocking `connect()` returning -1 while succeeding -- without needing a model.
 *Exit: a chat turn completes against the fake server; the Winsock quirks are
 confirmed or corrected in `sock.h`.*
+
+**Done**, and the file that was supposed to be the risk turned out to be the least
+interesting part of it: `sock_win.cpp` compiled clean first time. Two things worth more
+than that came out of the phase.
+
+The first is that **the test harness, not the product, was the POSIX-only part.**
+`tests/http_pipe.h` is the scripted responder every transport test talks to, and it
+included `<arpa/inet.h>` and `<poll.h>` -- so the transport had never been *tested* on
+Windows either, which no failing build had mentioned. It goes through one seam now,
+`tests/pipe_sock.h`, and that seam deliberately does not reuse `src/net/sock.h`: a
+harness that shares its subject's code cannot show the subject wrong, and the green
+result would have been two copies of one misunderstanding. With the seam in, the first
+Windows run of the transport was 202/2 and both failures were commands spelled for the
+other shell -- `touch 'path'`, where cmd treats a single quote as a character and says
+the syntax is incorrect -- now spelled through `make_file_command()` and
+`in_dir_command()` after measuring what cmd does with each quoting and separator
+(`type nul > "path"` creates the file with either separator, measured).
+
+The second is the exit criterion met one step beyond loopback: `tools/fake_stream.py`
+on the Mac -- with `--listen`, because a streaming endpoint should not open itself on a
+LAN by default -- and `live: model list` and `live: chat stream` passing from Windows
+across a real network to it. The other two live tests fail against that server exactly
+as they would anywhere, since it has no model behind it: no reasoning deltas, no tool
+call. Recorded, not hidden.
+
+And one item in `sock.h`'s Winsock list, which had been inferred from the API, was
+**wrong in the direction of danger**: the C library's `close()` on a socket handle does
+not return -1 and leak, the way it does on OS/2. The UCRT treats a descriptor it does
+not own as an invalid parameter and fails the process fast, 0xC0000409 -- the same code
+a stack overrun reports, which is how the mistake would be diagnosed. Numbers and the
+rest of it in `TESTING.md`.
 
 **P4 -- Look at it.** Launch `atui.exe` in a console window on the desktop via
 windows-mcp and drive it with `Screenshot`/`Snapshot`/`Type`. This is the phase

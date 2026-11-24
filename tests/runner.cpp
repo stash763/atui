@@ -12,6 +12,7 @@
 #include <windows.h>      // CreateSymbolicLinkA, for make_link()
 #else
 #include <unistd.h>       // getcwd
+#include <sys/stat.h>     // mkdir, for makeDir()
 #endif
 
 namespace atui_test {
@@ -52,6 +53,18 @@ void register_test( const char *name, int (*fn)( void ) )
 
 int run()
 {
+    // What this binary was configured with, before anything about it passes or fails.
+    // The summary's number cannot be read without it: the same suite is 208 tests with
+    // the transport compiled in and 152 without, and a clean result off a build that
+    // never compiled the network is not evidence about the network.
+#if defined( ATUI_HAVE_NETWORK )
+    const char *const net = "on";
+#else
+    const char *const net = "off";
+#endif
+    std::fprintf( stderr, "self-test build: network=%s, %d tests registered\n",
+                  net, m_count );
+
     int passed = 0;
     int failed = 0;
     int skipped = 0;
@@ -176,6 +189,29 @@ std::string current_dir()
     return std::string();
 }
 
+// The two directory calls, named once.  `<direct.h>` owns them on MSVC as `_mkdir`
+// and `_rmdir`, and `_mkdir` takes no mode -- which a suite that spells the POSIX name
+// at each of its eight call sites only discovers by not building there, and a suite
+// that does not build is a suite that is not tested.  The mode is 0755 everywhere it
+// is asked for, so nothing is lost by fixing it here.
+int makeDir( const std::string &path )
+{
+#if defined( _WIN32 )
+    return ::_mkdir( path.c_str() );
+#else
+    return ::mkdir( path.c_str(), 0755 );
+#endif
+}
+
+int removeDir( const std::string &path )
+{
+#if defined( _WIN32 )
+    return ::_rmdir( path.c_str() );
+#else
+    return ::rmdir( path.c_str() );
+#endif
+}
+
 std::string wait_command( long seconds )
 {
     char buf[ 64 ];
@@ -200,6 +236,49 @@ std::string stdin_command()
     return std::string( "more" );
 #else
     return std::string( "cat" );
+#endif
+}
+
+bool set_read_only( const std::string &path, bool readOnly )
+{
+#if defined( _WIN32 )
+    // The attribute itself, which is what a user's `attrib +R` sets and what
+    // `isWritableFile()`'s `_access(path, 2)` then reports as EACCES -- measured, both
+    // halves.  The CRT's POSIX-shaped `_chmod` is not what this wants even where it
+    // exists: it is a translation layer over the attribute, and the file is one bit.
+    const DWORD attr = GetFileAttributesA( path.c_str() );
+    if( attr == INVALID_FILE_ATTRIBUTES )
+        return false;
+    const DWORD want = readOnly ? ( attr | FILE_ATTRIBUTE_READONLY )
+                                : ( attr & ~FILE_ATTRIBUTE_READONLY );
+    return SetFileAttributesA( path.c_str(), want ) != 0;
+#else
+    const mode_t keep = S_IRUSR | S_IRGRP | S_IROTH;
+    const mode_t mode = readOnly ? keep : ( keep | S_IWUSR );
+    return ::chmod( path.c_str(), mode ) == 0;
+#endif
+}
+
+std::string make_file_command( const std::string &path )
+{
+#if defined( _WIN32 )
+    // Redirecting nothing into the name is cmd's `touch`: an empty file, created, and
+    // nothing on stdout.  The tests ask only whether the file a command promised
+    // appeared, so what matters is the quoting, not the verb.
+    return std::string( "type nul > \"" ) + path + "\"";
+#else
+    return std::string( "touch '" ) + path + "'";
+#endif
+}
+
+std::string in_dir_command( const std::string &dir, const std::string &command )
+{
+    // `&&` means the same thing in both, which is the one part of a command line here
+    // that does.
+#if defined( _WIN32 )
+    return std::string( "cd \"" ) + dir + "\" && " + command;
+#else
+    return std::string( "cd '" ) + dir + "' && " + command;
 #endif
 }
 

@@ -33,19 +33,6 @@
 #include <string>
 #include <vector>
 
-#if !defined(_WIN32)
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
-#else
-// The directory calls the suites make and clean up with are in <direct.h> on
-// MSVC, and under different names -- _mkdir, _rmdir.  makeDir() below already
-// knew that; nothing included the header that says so.
-#include <direct.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#endif
-
 #if defined(__unix__) || defined(__APPLE__)
 #include <csignal>
 #include <pthread.h>
@@ -1812,27 +1799,6 @@ std::string tmpPath( const char *name )
     return temp_dir() + "/" + name;
 }
 
-int makeDir( const std::string &path )
-{
-#if defined(_WIN32)
-    return ::_mkdir( path.c_str() );
-#else
-    return ::mkdir( path.c_str(), 0755 );
-#endif
-}
-
-// The other half of makeDir(), and the reason it is a function rather than six
-// calls: rmdir() is in <direct.h> as _rmdir on Windows, and a suite that spells
-// the POSIX name at every call site simply stops building there.
-int removeDir( const std::string &path )
-{
-#if defined(_WIN32)
-    return ::_rmdir( path.c_str() );
-#else
-    return ::rmdir( path.c_str() );
-#endif
-}
-
 // Restores everything the policy keeps in process-wide singletons, so a test
 // that changes the mode, the root or the log cannot leak into the next one.
 class PermissionGuard
@@ -3111,17 +3077,22 @@ int test_journal_edit_file()
 
     // A file atui cannot write is refused before anything is copied or opened:
     // the DOS and Windows read-only attribute is a real case, and finding it out
-    // after truncating the file is how one refused edit becomes a lost file.
-#if !defined(_WIN32)
+    // after truncating the file is how one refused edit becomes a lost file.  This
+    // belonged to `#if !defined(_WIN32)` until it was spelled through the harness,
+    // which is how a promise made for every platform came to be checked on two of
+    // them.  The Windows half is not a vacuous extra: `_access(path, 2)` reports
+    // EACCES for a read-only file there and an open for writing fails with
+    // EACCES/ERROR_ACCESS_DENIED (measured), so if the refusal were missing the
+    // assertion would fail rather than shrug.
     writeFile( file, "alpha\nbeta\n" );
-    if( ::chmod( file.c_str(), 0444 ) == 0 )
-    {
-        const std::string ro = tool.execute( args );
-        if( ro.find( "not writable" ) == std::string::npos ) return -6;
-        if( slurp( file ) != "alpha\nbeta\n" ) return -7;
-        ::chmod( file.c_str(), 0644 );
-    }
-#endif
+    if( !set_read_only( file, true ) )
+        return skip_test( "this filesystem has no read-only idea" );
+    const std::string ro = tool.execute( args );
+    // Restored before the result is judged, so a failure cannot leave the file locked
+    // for the teardown and every test after this one.
+    set_read_only( file, false );
+    if( ro.find( "not writable" ) == std::string::npos ) return -6;
+    if( slurp( file ) != "alpha\nbeta\n" ) return -7;
 
     // With the journal off, an edit is still an edit - and records nothing.
     atui::core::journal::enabled() = false;
