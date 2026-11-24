@@ -6901,3 +6901,104 @@ does, not what a server parsing atui's fixed request would do. The model also re
 `"capabilities":["completion"]`. So: the box answers, atui reports exactly what it said,
 and a green live run needs the endpoint configured with a reasoning parser and a
 tool-capable model. Recorded rather than worked around, and no source changed for it.
+
+**That paragraph is wrong, and the entry below is the correction.** Kept, because the
+wrongness is the instructive part: one untested inference ("the column moves, so the server
+must be parsing the model's own output") and a control experiment -- the `curl` that
+"proved" the server tolerant -- that differed from the failing request in exactly the field
+that mattered. Nothing in it was measured far enough to be written down.
+
+## The request was the bug: one brace, and an accusation sent to the wrong machine (W7)
+
+The question was "why is the model not usable? it has been used in all testing
+previously", and the honest answer took one capture. A server reporting
+`parse error at line 1, column 2217` is describing a document, so the thing to do was get
+the document: `tools/dump_request.py` answers every POST with a valid SSE stream and writes
+the bytes it was given to a file. Pointed at with `ATUI_LIVE_BASE_URL`, checked with
+Python's `json.load`:
+
+    001.json (3119 bytes): INVALID: Expecting property name enclosed in double quotes: line 1 column 2195
+    002.json (3172 bytes): INVALID: ... line 1 column 2248
+    003.json (3377 bytes): INVALID: ... line 1 column 2231
+
+atui was sending invalid JSON, and the same three positions the server had reported. Two
+things in that output should have rearranged my whole picture, and one of them did:
+
+- A request that varies between tests and between hosts has a defect position that moves,
+  because the system prompt names the host and its paths. **A column that moves is a column
+  in the request.** I had written the opposite, as evidence.
+- `live: chat stream` **passed** against that dump server, which never parses the body. A
+  test that passes against a server which does not read the request is not testing what its
+  name says.
+
+**The defect**, from `run_command`'s hand-written schema literals:
+
+    "properties":{"command":{"type":"string","description":"...POSIX sh syntax)"},"required":["command"]}
+
+`properties` is never closed. `required` becomes a member of it; the three `}` that follow
+close `properties`, `parameters` and the `function` object, and the **tool object stays
+open** -- so the next `,` in the `tools` array arrives where a key belongs, which is exactly
+"expecting property name ... unexpected `{`". Every request that offered a tool was
+malformed, and every strict server said 500. Which is what a server does with a malformed
+request.
+
+**Since when.** Extracting the literals from every revision of the file and parsing them:
+valid from `ab8fbe8` (the tool's first commit) through `275abb4`, invalid from `ca4503e`
+("The host brief: a system message tells the model what OS it is driving") forward. That
+commit split one description into `#if __OS2__ / _WIN32 / #else` arms so each could name
+its own shell, and the tail went from `...syntax)"}` + `},"required"...` to
+`...syntax)"` + `},"required"...`. One brace, lost on every platform at once -- a change
+made for OS/2 and Windows that broke the requests macOS sends. The live tests passed
+before it and failed after it, and that is the entire history of "the model stopped
+working".
+
+**The A/B on the endpoint itself.** atui's captured body with the model id substituted,
+and the same text with that single brace removed again:
+
+    with the brace  -> HTTP 200, chunks streaming, reasoning deltas, an answer
+    without it      -> HTTP 500 {"message":"[json.exception.parse_error.101] parse error at
+                        line 1, column 2211: syntax error while parsing object key ..."}
+    the same bytes through a local parser -> column 2211
+
+Server and validator agreeing on the column, with nothing else about the request changed,
+is as close to a proof as this endpoint will give. The model lists, streams, reasons and
+calls tools. It always did.
+
+**Then the tests, shown to fail before they are believed.** Two, and they fail at
+different altitudes on purpose:
+
+| test | what it holds | pre-fix |
+|---|---|---|
+| `tool: every argument schema is JSON` | each registered tool's `parametersSchema()`, plus the rendered array | FAIL rc=-12, note naming `run_command` |
+| `chat: the body parses as JSON` | the bytes on the wire, with the real catalogue and a message containing quotes, braces, a newline, a backslash, non-ASCII and a control character | FAIL rc=-5, note giving byte 2090 and the text around it |
+| `chat: a tool round trip body parses` | assistant `tool_calls` whose `arguments` is JSON inside a string, then a `role:"tool"` result with arbitrary text | pass, correctly -- its schema is a literal in the test, which is what makes the other two the ones that matter |
+
+Both fixes verified: same tree, brace restored, and the notes go away. The A/B also caught
+a mistake in the new test itself -- I had put `{"properties":{"command":{}},"required":
+["command"]}` in the *invalid* list, where it is perfectly good JSON. Mis-nesting is not a
+syntax error, so the validator cannot and should not see it; the schema test now checks the
+nesting as well as the grammar, and says so in the note.
+
+**Green, all four configurations:**
+
+    macOS   live  216 passed, 0 failed, 0 skipped
+            offline (net off) 154 passed, 0 failed, 0 skipped
+    Windows live  212 passed, 0 failed, 1 skipped   (atui.exe built 11/23 22:20, so the
+            offline 208 passed, 0 failed, 1 skipped   numbers are the new binary, which is
+                                                       the trap this document keeps setting)
+
+**What the harness grew.** `note()` moved out of `live_test.cpp`, where it was a local
+helper, into the harness: a test's only channel is a negative number, and `FAIL tool: every
+argument schema is JSON (rc=-3)` sends the reader to the source instead of telling them
+which tool. `jsonIsValid` comes with `jsonFailurePos` and `jsonFailureContext` for the same
+reason -- the server gave a column, so the test should too. The validator is deliberately
+not the product's decoder: the product decodes JSON *strings* leniently, by contract, and a
+checker that inherited that leniency could not catch a document a server refuses. It gets
+tested in both directions (`json: the validator is strict`), because a validator that always
+answers yes would have passed every request in the world, including this one.
+
+**The rule**, now the sixth in `WINDOWS_PORT.md`: text put behind a `#if` is text every
+platform sends, and a document atui builds is a document atui parses. Searching a request
+for `"required"` proves the bytes contain `required`; it was the request's *shape* that was
+wrong, and only a parser can be said to have looked.
+

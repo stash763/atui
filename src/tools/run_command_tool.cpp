@@ -641,7 +641,7 @@ const char *RunCommandTool::parametersSchema() const
 #else
            "command to execute (POSIX sh syntax)\""
 #endif
-           "},\"required\":[\"command\"]}";
+           "}},\"required\":[\"command\"]}";
 }
 
 bool takeTerminalTouched()

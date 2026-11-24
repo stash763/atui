@@ -61,6 +61,14 @@ int removeDir( const std::string &path );
 // assertion was made, which a caller reports as a skip rather than a pass.
 bool set_read_only( const std::string &path, bool readOnly );
 
+// Say what a failure actually was. A test's whole channel to the reader is the
+// summary line and a negative number, and `FAIL edit: refuses read-only (rc=-5)`
+// makes the reader go and re-read the source to find out which of five checks fired.
+// Notes go to stderr as the test runs, so the number and the reason arrive together.
+// A test that has a thing to say about its own failure should say it rather than
+// encoding it in a code nobody can read off.
+void note( const std::string &what );
+
 // A test returns 0 when it passes and anything else when it fails.  Some assertions
 // need a capability the machine may not have -- creating a symbolic link is the one
 // that forced this to exist, needing a privilege or developer mode -- and neither

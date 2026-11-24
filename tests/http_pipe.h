@@ -164,6 +164,21 @@ public:
         return lastRequest_;
     }
 
+    // The body of the last request, which is the part that is JSON.  `lastRequest` is
+    // what arrived -- request line, headers, the blank line, the body -- and every test
+    // that has used it has looked for a substring, so the difference never mattered
+    // until something needed to parse what came after the headers.  Splitting it here
+    // keeps the one place that knows how this server frames a request the one place
+    // that does it.  Empty when there was no blank line: no headers, no body to read.
+    std::string lastBody() const
+    {
+        std::lock_guard<std::mutex> g( mutex_ );
+        const std::size_t at = lastRequest_.find( "\r\n\r\n" );
+        if( at == std::string::npos )
+            return std::string();
+        return lastRequest_.substr( at + 4 );
+    }
+
 private:
     void run()
     {

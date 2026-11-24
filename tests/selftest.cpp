@@ -1,4 +1,5 @@
 #include "harness.h"
+#include "json_valid.h"         // jsonIsValid, for the schema and request tests
 #include "core/string.h"
 #include "tui/theme.h"
 #include "net/provider.h"
@@ -1156,6 +1157,135 @@ int test_tool_registry()
         return -1;
     if( json[0] != '[' || json[json.size() - 1] != ']' )
         return -1;
+    return 0;
+}
+
+// Is `"required"` a member of `properties` rather than a sibling of it? Brace-walk from
+// the `properties` value to its match, skipping quoted strings -- a `{` inside a
+// description is not an open brace -- and see whether the key turns up on the way.
+//
+// The grammar check below cannot catch this: `{"properties":{"a":{}},"required":["a"]}`
+// is perfectly good JSON, and mis-nesting it is exactly what the missing brace produced.
+// A server reading that document reports a tool that takes no arguments. Deliberately
+// shallow, for the flat schemas atui writes by hand; it only has to catch the mistake it
+// caught once.
+bool requiredIsInsideProperties( const std::string &s )
+{
+    const std::string key = "\"properties\":";
+    std::size_t at = s.find( key );
+    if( at == std::string::npos )
+        return false;
+    std::size_t i = at + key.size();
+    if( i >= s.size() || s[i] != '{' )
+        return false;
+
+    int depth = 0;
+    for( ; i < s.size(); ++i )
+    {
+        const char c = s[i];
+        if( c == '"' )
+        {
+            for( ++i; i < s.size(); ++i )
+            {
+                if( s[i] == '\\' )
+                    ++i;
+                else if( s[i] == '"' )
+                    break;
+            }
+            continue;
+        }
+        if( c == '{' )
+            ++depth;
+        else if( c == '}' && --depth == 0 )
+            return false;
+        else if( depth > 0 && s.compare( i, 10, "\"required\"" ) == 0 )
+            return true;
+    }
+    return false;                       // unbalanced: the grammar check has said so already
+}
+
+// Every argument schema, and the rendered `tools` array, have to be JSON a strict parser
+// will take. `run_command`'s was not: a `}` was missing around `properties`, which moved
+// `required` inside it and left that tool's object one level open, so every tool after it
+// in the array sat where a key belongs. It went in with `ca4503e`, which split the tool's
+// description into per-platform strings and lost the brace doing it, so every build on
+// every platform sent an invalid request for as long as that commit stood. The checks
+// above look for substrings, and a substring of a broken document is still a substring --
+// it took a real server answering 500 to make anyone look, and then the looking went to
+// the wrong machine first (TESTING.md, and rule 6 in WINDOWS_PORT.md).
+int test_tool_schemas_are_json()
+{
+    atui::tools::registerDefaults();
+    const std::vector<atui::tools::Tool *> &all =
+        atui::tools::ToolRegistry::instance().all();
+    if( all.empty() )
+        return -1;
+
+    for( size_t i = 0; i < all.size(); ++i )
+    {
+        if( all[i] == 0 )
+            return -2;
+        const std::string schema( all[i]->parametersSchema() );
+        if( !atui_test::jsonIsValid( schema ) )
+        {
+            note( "argument schema is not valid JSON: " + std::string( all[i]->name() ) );
+            return -10 - (int) i;         // the number says which, the note says its name
+        }
+        if( requiredIsInsideProperties( schema ) )
+        {
+            note( "`required` ended up inside `properties`, so this tool reads as taking "
+                  "no arguments: " + std::string( all[i]->name() ) );
+            return -40 - (int) i;
+        }
+    }
+
+    const std::string rendered = atui::tools::ToolRegistry::instance().renderToolsJson();
+    if( rendered.empty() )
+        return -4;
+    if( !atui_test::jsonIsValid( rendered ) )
+    {
+        note( "the rendered tools array is not valid JSON" );
+        return -5;
+    }
+    return 0;
+}
+
+// The validator gets tested too. One that always answered yes would pass every request
+// ever built, including the one this was written for, and then the new test would be
+// decoration.
+int test_json_validator_is_strict()
+{
+    const char *good[] = {
+        "{}", "[]", "[1,2,3]", "{\"a\":1}", "{\"a\":{\"b\":[null,true,false]}}",
+        "\"caf\\u00e9\"", "{\"a\":\"}\"}", "{\"a\":\"\\\"quoted\\\"\"}",
+        "3.5e-7", "0", "-0.0", "[[[[1]]]]", "{\"a\":\"\\/\"}", "\"tab\\there\"",
+        // Looks like the bug and isn't: `required` living inside `properties` is a
+        // semantic mistake, not a syntax one. This document parses. Only the missing
+        // brace is what made the request unreadable, which is why the schema test
+        // below checks the nesting as well as the grammar.
+        "{\"properties\":{\"command\":{}},\"required\":[\"command\"]}"
+    };
+    for( size_t i = 0; i < sizeof good / sizeof good[0]; ++i )
+        if( !atui_test::jsonIsValid( good[i] ) )
+        {
+            note( "a valid document was rejected: " + std::string( good[i] ) );
+            return -1;
+        }
+
+    const char *bad[] = {
+        "", "   ", "{", "}", "[", "]", "{\"a\":1,}", "[1,]", "{\"a\"}", "{\"a\":}",
+        "{a:1}", "{'a':1}", "[1 2]", "{\"a\":1}{\"b\":2}", "\"unterminated",
+        "{\"a\":01}", "{\"a\":1.}", "{\"a\":NaN", "[[[1]]", "{\"a\":\"a\nb\"}",
+        // the shape of the bug this exists for: one `}` short around a nested object,
+        // so the document ends with something still open
+        "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},\"required\":[\"command\"]}"
+    };
+    for( size_t i = 0; i < sizeof bad / sizeof bad[0]; ++i )
+        if( atui_test::jsonIsValid( bad[i] ) )
+        {
+            note( "an invalid document was accepted: " + std::string( bad[i] ) );
+            return -2 - (int) i;
+        }
     return 0;
 }
 
@@ -3413,6 +3543,8 @@ void init()
                    &test_provider_env_values_arrive_trimmed );
     register_test( "tool: get_time", &test_time_tool );
     register_test( "tool: registry render", &test_tool_registry );
+    register_test( "tool: every argument schema is JSON", &test_tool_schemas_are_json );
+    register_test( "json: the validator is strict", &test_json_validator_is_strict );
     register_test( "json: string decoder", &test_json_string_decoder );
     register_test( "tool: json args strings", &test_json_args_strings );
     register_test( "tool: json args bool/nested", &test_json_args_bool_and_nested );

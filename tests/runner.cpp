@@ -259,6 +259,12 @@ bool set_read_only( const std::string &path, bool readOnly )
 #endif
 }
 
+void note( const std::string &what )
+{
+    std::fprintf( stderr, "self-test NOTE %s\n", what.c_str() );
+    std::fflush( stderr );
+}
+
 std::string make_file_command( const std::string &path )
 {
 #if defined( _WIN32 )

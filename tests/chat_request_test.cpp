@@ -10,9 +10,11 @@
 
 #include "http_pipe.h"
 #include "sse_script.h"
+#include "json_valid.h"       // jsonIsValid, for the two tests that read the request back
 
 #include "net/chat_request.h"
 #include "net/sse.h"
+#include "tools/tool_registry.h"
 
 #include <chrono>
 #include <thread>
@@ -36,7 +38,9 @@ std::string sseBody( const std::string &answer )
 using atui::net::ChatRequest;
 using atui::net::OaiMessage;
 using atui::net::OaiRequest;
+using atui::net::OaiToolCall;
 using atui::net::SseStream;
+using atui::net::buildBody;
 
 // --- the SSE framing ------------------------------------------------------------
 
@@ -667,6 +671,103 @@ int test_chat_the_tool_catalogue_goes_on_the_wire()
     return 0;
 }
 
+// The body a server is about to parse, parsed here.
+//
+// Every check in this file that looks at the request looks for a substring, and a
+// substring of a broken document is still a substring. When `run_command`'s argument
+// schema was short a brace, moving `required` inside `properties` and leaving the tool
+// object open, `"tools":[` and `"required":["command"]` were both still in the bytes and
+// every one of those checks passed. The first thing to read the request as a document
+// was a real server, which said 500.
+//
+// So: put the real catalogue on the wire, take back what the client actually sent, and
+// ask whether it is JSON. The message text is awkward on purpose -- quotes, braces, a
+// newline, a backslash and non-ASCII are where an escaper that counts characters instead
+// of emitting them goes wrong, and the escaping is half of what makes the document valid.
+int test_chat_the_body_parses_as_json()
+{
+    atui_test::ScriptedHttp server;
+    if( !server.start() )
+        return -1;
+    server.enqueueResponse( sseResponse( sseBody( "x" ) ) );
+
+    atui::tools::registerDefaults();
+    const std::string tools = atui::tools::ToolRegistry::instance().renderToolsJson();
+    if( tools.empty() )
+        return -2;
+
+    Recorder sink;
+    ChatRequest request;
+    if( !start( request, server, sink, "m",
+                "caf\u00e9 \"quoted\" {not json} [nor this]\n"
+                "tab\\backslash and a \b control character", tools ) )
+        return -3;
+    if( !Recorder::drive( request ) )
+        return -4;
+
+    const std::string sent = server.lastBody();
+    const std::size_t bad = atui_test::jsonFailurePos( sent );
+    if( bad != std::string::npos )
+    {
+        note( "the request body is not valid JSON (" + std::to_string( sent.size() ) +
+              " bytes), the parser gives up at " + std::to_string( bad ) + ": ..." +
+              atui_test::jsonFailureContext( sent, bad ) + "..." );
+        return -5;
+    }
+    if( sent.empty() )
+        return -6;                                // nothing on the wire to check
+    return 0;
+}
+
+// A conversation that has already used a tool, because that is the shape with the most
+// ways to go wrong: an assistant turn carrying `tool_calls` whose `arguments` is itself
+// JSON inside a string, then a `role:"tool"` result whose output is arbitrary text. Both
+// have to be escaped, and both are built by appending to a string.
+int test_chat_a_tool_round_trip_body_parses()
+{
+    atui_test::ScriptedHttp server;
+    if( !server.start() )
+        return -1;
+    server.enqueueResponse( sseResponse( sseBody( "x" ) ) );
+
+    OaiRequest req;
+    req.model = "m";
+    req.stream = true;
+    req.toolsJson =
+        "[{\"type\":\"function\",\"function\":{\"name\":\"run_command\","
+        "\"description\":\"Run a shell command\",\"parameters\":{\"type\":\"object\","
+        "\"properties\":{\"command\":{\"type\":\"string\"}},"
+        "\"required\":[\"command\"]}}}]";
+    req.messages.push_back( OaiMessage( "user", "run ls | head -3" ) );
+
+    OaiMessage assistant( "assistant", "" );
+    OaiToolCall call;
+    call.id = "call_1";
+    call.name = "run_command";
+    call.arguments = "{\"command\":\"ls | head -3\"}";
+    assistant.toolCalls.push_back( call );
+    req.messages.push_back( assistant );
+
+    OaiMessage result( "tool", "file one\nfile \"two\"\r\ncafé ☕ {done}" );
+    result.toolCallId = "call_1";
+    result.name = "run_command";
+    req.messages.push_back( result );
+
+    const std::string body = buildBody( req );
+    const std::size_t bad = atui_test::jsonFailurePos( body );
+    if( bad != std::string::npos )
+    {
+        note( "a tool round trip does not build valid JSON, at " + std::to_string( bad ) +
+              ": ..." + atui_test::jsonFailureContext( body, bad ) + "..." );
+        return -6;
+    }
+    // And the point of escaping is that the text survives being read back, so a name
+    // with a quote in it must still be findable in the body in its escaped form.
+    if( body.find( "\\\"two\\\"" ) == std::string::npos )
+        return -7;
+    return 0;
+}
+
 } // anonymous namespace
 
 void init_chat_request_tests()
@@ -703,6 +804,9 @@ void init_chat_request_tests()
                    &test_chat_bad_url_is_refused_before_connecting );
     register_test( "chat: the tool catalogue goes on the wire",
                    &test_chat_the_tool_catalogue_goes_on_the_wire );
+    register_test( "chat: the body parses as JSON", &test_chat_the_body_parses_as_json );
+    register_test( "chat: a tool round trip body parses",
+                   &test_chat_a_tool_round_trip_body_parses );
 }
 
 } // namespace atui_test

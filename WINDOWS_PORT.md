@@ -7,11 +7,13 @@ code has to keep, and `TESTING.md` is where the measurements go.
 Scope, in order: **VS2017 / Win32 / Windows 10 first**, then the older Windows
 targets. Nothing here changes what the OS/2, DOS, Linux or FreeBSD builds do.
 
-Status: P0-P3 done on the target, and the cross-platform work (W1-W6) is finished.
-atui.exe builds and links for Win32, with the network compiled in, and **passes 204 of
-its self-tests with one skipped** -- the first non-POSIX host to run the suite, and it
-is green, transport included, against a peer on another machine. The measurements are
-in `TESTING.md`. What that does *not* yet cover is the phase that cannot be measured
+Status: P0-P3 done on the target, and the cross-platform work (W1-W7) is finished.
+atui.exe builds and links for Win32, with the network compiled in, and **passes 208 of
+its self-tests with one skipped** -- the first non-POSIX host to run the suite, and it is
+green, transport included, against a peer on another machine. With the live model
+configured it is green too, 212 passed and 0 failed, which is what caught the bug W7
+records: the requests atui was sending, not the server receiving them. The measurements
+are in `TESTING.md`. What that does *not* yet cover is the phase that cannot be measured
 headless at all: the TUI has never been seen on a Windows screen (P4). And the one skip
 is itself the finding it says it is -- on Windows there is no way to ask atui to stop.
 
@@ -35,6 +37,15 @@ These are the constraints that make the rest of the plan safe.
    capability query that answers honestly, and link failure as the loudest answer.
    `PORTING.md` states this; a Windows port that scatters `#ifdef _WIN32` through
    shared code has failed even if it compiles.
+6. **Text put behind a `#if` is text every platform sends.** The host-brief commit split
+   one tool description into three arms so each could name its own shell, lost a closing
+   brace in the process, and from that commit forward every build on every platform sent
+   an invalid chat request -- which no test caught, because every test that looked at the
+   request searched it and none parsed it. Two things follow, and both are now enforced.
+   **A document atui builds is a document atui parses**: the schema and the request body
+   go through a strict parser that shares no code with the thing under test (`W7`). And a
+   change made for one platform is measured on the others, since the `#if` is what makes
+   an edit local and a string literal is what makes it global.
 
 ## The machine (measured)
 
@@ -264,6 +275,7 @@ which is why none of this was found there.
 | W4 | Export the canonicaliser; tools decide and open the same path | **done** -- `tools::canonicalPath()`, `edit_file` opens that, and the test that makes cwd differ from the root was checked to fail without it |
 | W5 | `GetFinalPathNameByHandle` resolution, plus skip-aware harness | **done** -- reparse points resolved on Windows, Windows suite green at 148/0, and a host that cannot make a link now reports a counted skip instead of a silent `#ifdef` |
 | W6 | `PERMISSIONS.md`: shells, quoting, JSON escapes, and what Windows cannot promise | **done** -- and one sentence in it had to be reversed after measuring (`/s` is not what keeps a quoted command whole; the quotes are) |
+| W7 | Requests are documents: build one, then parse it | **done** -- the fault the port found in atui rather than in Windows. A `#if` added for the run_command description cost a brace, and since then every request offering a tool was invalid JSON on every platform. Found by a server's 500, misdiagnosed as the server's fault, then caught by asking the bytes. Now: `tests/json_valid.h` (a strict validator sharing nothing with the product), the schemas and the wire body checked by it, and `note()` in the harness so a failure says what it was |
 
 What this deliberately does **not** include: per-file `#ifdef _WIN32` sprays
 (the seams already exist and are used correctly), making POSIX do something worse
@@ -432,16 +444,19 @@ OS one.
 *Exit: the TUI renders, keys land, a session is usable on screen, and the four characters
 above are accounted for.*
 
-**The live test model, as it stands (measured).** `10.196.88.170:10001` answers
-`/v1/models` and streams, and both hosts now fail the *same three* live tests with the
-server's own `500` and a `nlohmann::json` parse error. That is the endpoint, not the
-port: `curl` with `stream:true` and a `tools` array works, plain chat works and returns
-`reasoning_content`, and the parse error's column moves by tens between runs, which is
-what a server doing JSON grammar work over the *model's own output* produces when the
-model's output varies. The model also advertises `"capabilities":["completion"]` only.
-So a full green live run needs the endpoint configured as before -- a reasoning parser
-and a tool-capable model. Until then the three failures are expected on every host, and
-they are recorded rather than worked around.
+**The live test model (corrected -- the earlier version of this paragraph was wrong).**
+`10.196.88.170:10001` lists, streams, reasons and calls tools, and both hosts are green
+against it: macOS 216 passed / 0 failed, Windows 212 passed / 0 failed / 1 skipped. What
+this paragraph said before was that the three live failures were the endpoint's doing, and
+every part of that reasoning failed: the `curl` that "worked" was not sending atui's
+`tools` array, so it differed from the failing request in exactly the one way that
+mattered; and the parse error's column moving between runs is what a server reporting a
+position in the **request** does when the request varies -- between tests, and between
+hosts whose system prompts name different paths. The failures were atui's own. One
+missing `}` in `run_command`'s argument schema, introduced by `ca4503e`, made every
+request that offered a tool invalid JSON, and a server that parses its input said 500
+while this document went looking for a fault in somebody else's machine. `W7` and
+`TESTING.md` have the arc and the A/B.
 
 **P5 -- Fill the Windows gaps.** Each behind its capability query, each measured
 before it is claimed. Landed so far, as W1-W4 of the cross-platform work above: the
