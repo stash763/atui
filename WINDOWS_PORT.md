@@ -130,6 +130,8 @@ Ordered by how much it matters.
 
 | What | Where | Why it matters |
 |---|---|---|
+| **A UTF-8 file name is not the same file** | `src/core/paths.cpp`, the A-family file calls | `_access`, `CreateFileA` and `FindFirstFileA` read the bytes they are handed as the **ANSI** code page, not UTF-8. Measured on the target: a file whose real name is `caf\u00e9.txt` is *not found* by atui's UTF-8 bytes; a Japanese name comes back from a listing as `p3_??.txt`, irrecoverably; and creating a file with UTF-8 bytes **succeeds** (`err=0`) by making `caf\u00c3\u00a9.txt` -- a file nobody asked for, with no complaint. So the policy decides about one name and the filesystem receives another, and a lossy mapping can also collapse two names onto one file, which is the 8.3-alias problem from `W5` through a wider door. The fix is the wide API behind the seam in `paths.cpp`, with the boundary rule from `PORTING.md`: refuse a name that cannot survive the round trip rather than accepting a near-miss. Nothing about DOS, OS/2 or the Win16/Win32s builds changes to accommodate it. |
+| **Console encoding: decided by the library, not yet seen on the box** | `tvision/source/platform/win32con.cpp` | The Win32 adapter converts UTF-8 to UTF-16 and writes with `WriteConsoleOutputW`, reads with `ReadConsoleInputW` and converts back, and sets the console's own code pages -- UTF-8, or the OEM page on a legacy console with a bitmap font, where an unsupported glyph then degrades to a similar one instead of to noise. That is why `foldTerminalText()` is correct to answer no on Windows where it answers yes on OS/2 and DOS. Read in the vendored source, not yet watched happening: P4 checks it against a model answer containing an em dash, an accented name and a CJK character, in both the modern and the legacy console. |
 | **No screen capture on Windows** | `screen_none.cpp:10` claims the slot | Needs a new `src/platform/screen_win.cpp` (`EnumWindows`/`GetWindowRect`/`GetWindowText`, GDI `BitBlt`). `screen.h:13` already anticipates hex HWNDs. CMake needs an `if(WIN32)` block setting `ATUI_HAVE_WIN_CAPTURE`; none exists -- only APPLE/UNIX branches do. |
 | **A command's stderr was lost on Windows** -- fixed, W3 | `run_command_tool.cpp` | `_popen` captured nothing when the command redirected for itself, and `type nosuchfile` came back as `rc=1` with **empty output**: a failed command told the model it failed and never said why, while the message went to the console underneath the TUI. One pipe handed to both of the child's output handles fixes it, because merging is a handle question and not a shell-syntax one -- appending `2>&1` was worse than nothing (measured both; `TESTING.md`). |
 | **`commandTimeoutIsEnforced()` was false on Windows** -- fixed, W3 | `run_command_tool.cpp` | The timeout was a message with no behaviour behind it, because `_popen` hands back nothing to hold on to. `CreateProcess` returns a handle and a job object is the process group, so the limit now stops the command *and* everything it started -- asserted by a test that was checked to fail without the job (`rc=-8`, a surviving `ping.exe`). |
@@ -419,8 +421,27 @@ rest of it in `TESTING.md`.
 
 **P4 -- Look at it.** Launch `atui.exe` in a console window on the desktop via
 windows-mcp and drive it with `Screenshot`/`Snapshot`/`Type`. This is the phase
-where UTF-8 output, the code page, and keyboard input are actually verified.
-*Exit: the TUI renders, keys land, a session is usable on screen.*
+where UTF-8 output, the code page, and keyboard input are actually verified. What
+"verified" means now that `PORTING.md` states the rule: a model answer containing an em
+dash, `caf\u00e9`, a CJK character and a box-drawing run reaches the screen unchanged in
+a modern console; the same answer in a legacy console with a bitmap font degrades
+predictably rather than into noise; typing a non-ASCII path survives `ReadConsoleInputW`
+and reaches the policy as the same bytes; and `ATUI_FOLD=1` on the same binary produces
+the ASCII transcript, which is the check that the fold is a terminal property and not an
+OS one.
+*Exit: the TUI renders, keys land, a session is usable on screen, and the four characters
+above are accounted for.*
+
+**The live test model, as it stands (measured).** `10.196.88.170:10001` answers
+`/v1/models` and streams, and both hosts now fail the *same three* live tests with the
+server's own `500` and a `nlohmann::json` parse error. That is the endpoint, not the
+port: `curl` with `stream:true` and a `tools` array works, plain chat works and returns
+`reasoning_content`, and the parse error's column moves by tens between runs, which is
+what a server doing JSON grammar work over the *model's own output* produces when the
+model's output varies. The model also advertises `"capabilities":["completion"]` only.
+So a full green live run needs the endpoint configured as before -- a reasoning parser
+and a tool-capable model. Until then the three failures are expected on every host, and
+they are recorded rather than worked around.
 
 **P5 -- Fill the Windows gaps.** Each behind its capability query, each measured
 before it is claimed. Landed so far, as W1-W4 of the cross-platform work above: the

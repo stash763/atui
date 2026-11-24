@@ -439,3 +439,81 @@ redrew itself forever"):
     the child starts repairs the screen a few milliseconds too early and still leaves the
     prompt the child wrote. Mark it when the child is done, so that every byte it wrote is
     behind the repaint (`tools/run_command_tool.cpp`, `takeTerminalTouched()`).
+## Text has one form: UTF-8, and a code page is a boundary
+
+Adding UTF-8-capable output on Windows must not cost anything to a platform that does not
+have it, which is the same shape of problem the path rules already settled and gets the
+same three answers.
+
+**One internal form.** Every string in atui is UTF-8: transcript blocks, tool arguments,
+journal records, `~/.atui` files, the decision log, what is sent to a server and what
+comes back. Nothing in the program is ever stored, passed or compared in a code page. A
+build for DOS has UTF-8 in its data structures and never anything else; what differs is
+what it can *display*, and that is a property of the view.
+
+**Convert at the boundary, in the seam that owns it.** There are three boundaries and each
+has one owner:
+
+| Boundary | Who converts | What it does |
+|---|---|---|
+| the console | tvision's platform adapter | Windows: UTF-8 → UTF-16 and `WriteConsoleOutputW`, `ReadConsoleInputW` → UTF-8; it sets the console's own code pages and, on a legacy console with a bitmap font, chooses the OEM page instead of UTF-8 so an unsupported glyph degrades to a similar one rather than to noise. OS/2 and DOS: the code page *is* the boundary (CP437/CP850), and tvision's `TText::toCodePage` answers `'\0'` for a character it cannot express. |
+| the screen's character set | `src/tui/ascii_fold.{h,cpp}` | The ASCII fold, where the terminal cannot do better than 8 bits. |
+| the filesystem | atui, `src/core/paths.cpp` | Nothing yet, on any platform. On POSIX that is correct and free. On Windows it is a real defect, measured below. |
+
+**A boundary that cannot represent something has to say so, and must not invent a
+different value.** This is the rule a decoder learns the hard way (see `core/jsonstr.h`)
+and it applies to bytes going out as much as to bytes coming in. `TText::toCodePage`
+returning `'\0'` is the good shape: the caller decides. A Windows file call that
+best-fits a name into a neighbouring name is the bad shape, and it is what happens today.
+
+**The fold is a property of the terminal in front of the program, not of the machine it
+was compiled for.** `foldTerminalText()` answers yes for OS/2, DOS and DPMI and no
+elsewhere, and `ATUI_FOLD` overrides it either way, because a CP850 window on a
+UTF-8-capable host wants folding and a UTF-8 OS/2 session does not. It is read on every
+call rather than cached so that it can be changed in front of a developer.
+
+What that means for the platforms, in their own terms:
+
+- **POSIX**: nothing changes and nothing new is required. Bytes go out as UTF-8 because
+  that is what the terminal was already told to expect.
+- **OS/2 and DOS**: unchanged, and that is the point -- no new code path runs there, the
+  fold stays on, and the fact that some other platform can now draw an em dash is not
+  visible to them at all.
+- **Windows NT-family (2000, XP, 10)**: no fold, because the console boundary is UTF-16
+  and does not care which code page the user left the window on. `SetConsoleOutputCP` is
+  tvision's business, not a requirement atui imposes on the machine.
+- **Win32s, Windows 3.1, Windows 9x** (the Borland C++ 5 targets): there is no Unicode
+  console there, so those builds want the fold. It must be asked, not assumed from the
+  OS name -- and the signal must be one that does not lie on a modern system, which rules
+  out the version-number calls that report 6.2 to an unmanifested binary.
+
+Nothing stored is affected by any of this. A folded screen is a decision about pixels: the
+transcript block, the journal and the log keep the UTF-8 they were given, so a session on
+a DOS box and a session on a Windows 10 box produce the same files, and the difference is
+only what a person could see at the time.
+
+**The gap this leaves, measured on the target.** atui uses the A-family file API on
+Windows (`_access`, `CreateFileA`, `FindFirstFileA`), and those read the bytes they are
+given as the **ANSI** code page. So a UTF-8 name is not a name Windows understands, and
+the failure is not an error, it is a different file (console code page 437, ANSI 1252):
+
+    file created as p3_caf<U+00E9>.txt with CreateFileW
+      _access with UTF-8 bytes    -> not found
+      _access with CP1252 bytes   -> found
+
+    a file named p3_<U+65E5><U+672C>.txt, seen through FindFirstFileA
+      -> 70 33 5F 3F 3F 2E 74 78 74          "p3_??.txt": the name is gone
+      -> FindFirstFileW returns 65E5 672C    and it is not gone, only lost
+
+    atui creating a file with UTF-8 bytes
+      -> succeeds, err=0, and makes p3_caf<U+00C3><U+00A9>.txt
+
+That last line is the one to be troubled by: `caf\xc3\xa9` became `cafÃ©`, a file nobody
+asked for, created without complaint. It is the same failure as a JSON decoder that drops
+a backslash, at the other end of the program, and it has the same consequence for policy:
+the name the permission layer decided about is not the name the file got, and a lossy
+mapping can also run the other way, two spellings collapsing onto one file -- which is
+the 8.3-alias problem from `W5` arriving again through a wider door. The fix is the wide
+API on NT behind the seam in `src/core/paths.cpp`, with the same rule as every other
+boundary: refuse a name that cannot survive the round trip instead of accepting a
+near-miss, and leave DOS, OS/2 and the Win16/Win32s builds exactly where they are.

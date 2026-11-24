@@ -6833,3 +6833,71 @@ the harness comment that had it wrong.
 Windows: **204 passed, 0 failed, 1 skipped**, network compiled in, transport exercised
 against both its own loopback and another machine. macOS unchanged at 208 (network on)
 and 152 (off), no failures, no skips.
+
+## Text, code pages, and the boundary atui does not own
+
+Prompted by a constraint, not by a bug report: UTF-8 on Windows may not cost anything to
+the platforms that have no UTF-8 -- older Windows, OS/2, DOS. The answer is in
+`PORTING.md` (one internal form, convert at the boundary, a boundary that cannot
+represent something says so). These are the numbers behind it.
+
+**What the library already does, read in the vendored source.** tvision's Win32 console
+adapter (`source/platform/win32con.cpp`) saves the console's code pages, sets input to
+`CP_UTF8`, sets output to `CP_UTF8` or to `GetOEMCP()` on a legacy console with a bitmap
+font ("unsupported characters may be replaced automatically with a similar one"), then
+writes with `MultiByteToWideChar(CP_UTF8, ...)` + `WriteConsoleOutputW` and reads with
+`ReadConsoleInputW`, converting the key text back to UTF-8. `TText` carries the CP437
+table for the 8-bit hosts and answers `'\0'` for a character that cannot be expressed.
+So the console boundary is owned, and atui's `foldTerminalText()` -- yes on OS/2/DOS/DPMI,
+no elsewhere, `ATUI_FOLD` overriding -- is right about Windows for the right reason
+rather than by luck. Not yet watched happening; P4 will.
+
+**The file boundary is not owned, and it is worse than not-working.** Console code page
+437, ANSI 1252, NTFS, the target box:
+
+    created p3_caf<U+00E9>.txt via CreateFileW -> ok
+      _access with UTF-8 bytes              -> not found
+      _access with CP1252 bytes (0xE9)      -> found
+
+    FindFirstFileA over a directory holding that file and p3_<U+65E5><U+672C>.txt
+      -> 70 33 5F 63 61 66 E9 2E 74 78 74         (the accented one, in CP1252)
+      -> 70 33 5F 3F 3F 2E 74 78 74               (the Japanese one: "p3_??.txt")
+    FindFirstFileW over the same directory
+      -> ... 00E9 ...  and  ... 65E5 672C ...     (nothing is lost on disk, only in the A call)
+
+    atui creating a file with UTF-8 bytes
+      CreateFileA -> created, err=0
+      what Windows made: 0063 0061 0066 00C3 00A9  (caf<C3><A9> -- "cafA©", not "café")
+
+Three findings, in increasing order of how much they matter. A file that exists cannot be
+found by its UTF-8 name. A listing destroys names the ANSI page cannot spell -- and
+destroys them *before* atui sees them, so the transcript quotes `p3_??.txt` to a model as
+though that were a file. And a create succeeds while making a different file: no error, a
+wrong artifact, and a permission decision about a name that was never used. That last one
+is the JSON-escape bug at the other end of the program -- a tolerant boundary that did not
+invent a different value, only a different file -- and the collision can also run the other
+way, two names onto one file, which is what made the 8.3 aliases in `W5` a policy problem
+rather than an annoyance.
+
+The fix is narrow and follows the rule: wide API on NT behind the seam in
+`src/core/paths.cpp`, refusing a name that cannot survive the round trip. DOS, OS/2 and
+the Win16/Win32s builds keep exactly the code they have, because the conversion is added
+in a Windows arm and not anywhere they compile.
+
+**The live model, back online, failing identically everywhere.** `10.196.88.170:10001`
+with `ATUI_LIVE_BASE_URL` set, both hosts, same binary state as P3:
+
+    macOS    209 passed, 3 failed, 0 skipped
+    Windows  205 passed, 3 failed, 1 skipped
+                 the same three: live: chat stream, live: reasoning, live: tool round trip
+
+Every one of the three is the endpoint answering `500` with a server-side
+`json.exception.parse_error.101`, or reporting no reasoning deltas. Evidence that it is
+the endpoint and not the transport: `live: model list` passes; `curl` to the same endpoint
+with `"stream": true` and a `tools` array streams normally; a non-streaming curl returns
+`content` *and* `reasoning_content`; and the parse error's column moves between runs
+(2217, 2253, 2290, 2327) -- which is what a server parsing the model's own varying output
+does, not what a server parsing atui's fixed request would do. The model also reports
+`"capabilities":["completion"]`. So: the box answers, atui reports exactly what it said,
+and a green live run needs the endpoint configured with a reasoning parser and a
+tool-capable model. Recorded rather than worked around, and no source changed for it.
