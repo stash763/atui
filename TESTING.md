@@ -7185,3 +7185,105 @@ diagnostic that would have said it directly was the process list.
 **Open from this phase:** `W8` (display cells), the legacy raster-font console (needs the
 font changed on the box, which is approved and not yet done), and `P5`'s screen capture,
 which the attach measurement just made mandatory rather than convenient.
+
+---
+
+## 2026-11-25 -- W8: the app measured rows in bytes, and nine places agreed with it
+
+`wrap.h` said it out loud:
+
+    // One byte is one display column (the app never measured cells)
+
+That was a simplification that happened to be true on an 8-bit screen, and the fold to
+ASCII on OS/2 and DOS has kept it true ever since. On a Unicode console it is false in
+proportion to how much of the text is not ASCII, and P4's width probe is what made it
+visible: gaps after every multi-byte character, and paragraphs that stopped short of the
+right edge.
+
+**Tests first, against the unfixed code.** Written to compile against what existed (the
+wrapper, the title cut, `Line::width`), so they could be run *before* the fix rather than
+being born green alongside it:
+
+    FAIL cells: wrapping never splits a character    NOTE row 0 of a wrapped ideograph run is not whole UTF-8
+    FAIL cells: ordinary text uses the width it was given   NOTE row 0 fills only 32 columns of 40
+    FAIL cells: a title is cut at a column not a byte NOTE a session title cut in the middle of an ideograph
+    FAIL cells: a laid out row measures columns      NOTE a row of 9 columns reports 13
+
+The first of those is the one that was not cosmetic. A hard break taken at a byte boundary
+puts half a UTF-8 sequence on the screen, and these rows are the same strings a transcript
+exports and a follow-up request sends back, so it was corrupt text rather than ugly text.
+
+**The fix is a list of nine, not a function.** `core/cells.h` answers the question --
+`charCells()` (columns and where the character ends), `displayWidth()`, `clipToColumns()`
+-- and the work was finding every place that had answered it differently:
+
+| site | what it was doing |
+|---|---|
+| `wrapOne` | counting bytes, so accented prose filled 32 columns of 40 |
+| markdown `addWord` / `addRaw` / `splitLong` | the same, plus the long-word split that cut characters; `splitLong` and `addRaw` turned out to be the same loop written twice, so one now calls the other |
+| markdown's inline column counter and its prefix | `cw_` advanced by bytes against a width in columns |
+| markdown table `cellWidth` | sized the column in bytes |
+| markdown `RowEmitter` padding | **and separately** measured the cell in bytes again -- fixing only `cellWidth` would have sized columns in columns and padded them in bytes, moving the drift instead of removing it |
+| `md_style.h` `Line::width()` | reported bytes to everything that pads by it |
+| `titleFromText` | cut `width - 1` bytes, which lands inside an ideograph |
+| the transcript's draw cursor | `x += spans[s].text.size()` -- the reason a span after non-ASCII was drawn too far right, which is the gap P4 measured |
+| the input line | `rewrap()` (byte break, cutting characters), its clip and padding, and `caretPos` returning a byte offset as a column |
+
+Folding is not the fix: it makes the two numbers agree by destroying the text being laid
+out, and the transcript keeps the bytes regardless. OS/2 and DOS see no change, because
+they fold first and folded text is one byte per column by construction.
+
+**Why a table and not the live console.** tvision measures character widths on Windows by
+writing to a console buffer and reading the cursor (`WinWidth`), which is the honest answer
+for that terminal -- but it is an internal header, it answers differently in a session with
+no console, and a layout needs one answer per frame and a self-test that runs headless. So
+`core/cells.h` is a table, matching what was measured on the target, and **where it could
+disagree with a terminal it charges more**: the failure mode becomes a row that wraps early,
+never text drawn over a column it does not own. Its gaps are written down rather than
+glossed -- Indic combining marks are absent, so a Devanagari transcript wraps slightly
+early, and that is a table edit rather than a design change.
+
+**A vacuous test, caught by trying to break it.** The table test asserted that every row's
+`|` lands in the same column. It passed. Putting the byte count back on the one line that
+pads table cells, it *still* passed -- which is how I found it was comparing each row
+against itself, because a leftover assignment wrote the "first row" record while computing
+each later row. Nothing about a green suite would have suggested that. Rewritten, and the
+rendering it now checks is the real one:
+
+    <name   |note >   <café  |x    >   <日本 |y    >   <plain  |z    >
+       borders at 7        at 6             at 5            at 7
+
+With the fix those are all 7, and the test fails on the mutation and passes on the fix.
+That mutation-and-restore is now the standard way to believe a test here: a test that has
+never been seen failing is an unfalsifiable claim about a rendering.
+
+**The same A/B on the actual screen.** On the Windows box, with the fix:
+
+    1 em dash: the answer — if it survives — is this one, not a hyphen.
+
+With `x += displayWidth(...)` changed back to `x += text.size()` and nothing else changed --
+same binary, same fixture, same font:
+
+    1 em dash: the answer —    if it survives —    is this one, not a hyphen.
+
+and the paragraph stops short of the right edge again. So the change is the cause of the
+fix, not the fixture or the font. The input line was checked the same way by typing `café —
+日 ok` into it: tight, caret behind the text.
+
+**One test of mine was wrong about arithmetic and I nearly agreed with myself instead.**
+The row-width test expected 8 columns for `"café"` + `" — 日"`; the harness printed `a row
+of 9 columns reports 13`, which is right -- `日` is two columns -- and the comment in the
+test was what was wrong. Checking the fixture's numbers against what the tool actually
+printed, rather than against what I had written down, is the only reason that got settled.
+
+**Numbers.** macOS suite 221 passed, 0 failed. Windows target: **216 passed, 0 failed, 2
+skipped** headless, **220 / 0 / 2** with the live model, fresh binary, zero compiler
+warnings. `gate98.py` unchanged at its 2 pre-existing diagnostics; `watcom-gaps.py` at 31
+hits -- and run against `HEAD` in a throwaway worktree it is 31 there too, so this change
+adds none (the journal's older "28" predates other commits, which is why the comparison was
+made rather than assumed).
+
+**The trap that caught me twice in one hour:** `LNK1168: cannot open atui.exe for writing`
+is a running atui holding the exe. It looks like a compile failure and stops the build
+after the compile has already succeeded, so the mutation I was testing appeared to be
+rejected by the compiler. Kill the process, rebuild, then read the result.

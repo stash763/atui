@@ -7,15 +7,17 @@ code has to keep, and `TESTING.md` is where the measurements go.
 Scope, in order: **VS2017 / Win32 / Windows 10 first**, then the older Windows
 targets. Nothing here changes what the OS/2, DOS, Linux or FreeBSD builds do.
 
-Status: P0-P3 done on the target, W1-W7 finished, and **P4 -- the TUI on a real Windows
-screen -- measured**, which found one real defect in atui rather than in Windows: `W8`,
-display cells counted as bytes. atui.exe builds and links for Win32 with the network
-compiled in, and on the current target the self-test is **207 passed, 0 failed, 2 skipped**
-headless and **211 / 0 / 2** against the live model on the LAN. Neither skip is a surprise:
-one is the missing console control handler (`P5`), the other is symbolic-link coverage
-this project declines on Windows (`P4` also showed what the console can and cannot be
-blamed for -- `PORTING` findings in the gap table). The measurements are in `TESTING.md`;
-the target machine changed on 24 Nov 2026 and the table below is its facts, re-measured.
+Status: P0-P3 done on the target, W1-W8 finished, and **P4 -- the TUI on a real Windows
+screen -- measured**. That phase found one real defect in atui rather than in Windows,
+display cells counted as bytes, and it is now fixed (`W8`): the transcript, the tables and
+the input line are measured in columns on every platform that does not fold. atui.exe
+builds and links for Win32 with the network compiled in, and on the current target the
+self-test is **216 passed, 0 failed, 2 skipped** headless and **220 / 0 / 2** against the
+live model on the LAN. Neither
+skip is a surprise: one is the missing console control handler (`P5`), the other is
+symbolic-link coverage this project declines on Windows. The measurements are in
+`TESTING.md`; the target machine changed on 24 Nov 2026 and the table below is its facts,
+re-measured.
 
 ## The rules for this work
 
@@ -176,7 +178,7 @@ Ordered by how much it matters.
 | What | Where | Why it matters |
 |---|---|---|
 | **A UTF-8 file name is not the same file** | `src/core/paths.cpp`, the A-family file calls | `_access`, `CreateFileA` and `FindFirstFileA` read the bytes they are handed as the **ANSI** code page, not UTF-8. Measured on the target: a file whose real name is `caf\u00e9.txt` is *not found* by atui's UTF-8 bytes; a Japanese name comes back from a listing as `p3_??.txt`, irrecoverably; and creating a file with UTF-8 bytes **succeeds** (`err=0`) by making `caf\u00c3\u00a9.txt` -- a file nobody asked for, with no complaint. So the policy decides about one name and the filesystem receives another, and a lossy mapping can also collapse two names onto one file, which is the 8.3-alias problem from `W5` through a wider door. The fix is the wide API behind the seam in `paths.cpp`, with the boundary rule from `PORTING.md`: refuse a name that cannot survive the round trip rather than accepting a near-miss. Nothing about DOS, OS/2 or the Win16/Win32s builds changes to accommodate it. |
-| **A string's display width is its byte count** -- `W8` | `src/tui/wrap.h:4`, `src/tui/md_style.h:85` | The wrapping rule says so out loud: *"One byte is one display column (the app never measured cells)"*, and the markdown table widths match it. On an 8-bit screen that holds, and on OS/2 the fold to ASCII hides it; on a Unicode console it does not. Measured on the target with a probe whose rows are built to line up only if widths are right: prose renders `A—B` as `A—` + two blank cells, because the em dash is 3 bytes charged as 3 columns and 1 glyph drawn -- `é` gains 1 cell, every arrow and curly quote gains 2, and a CJK ideograph is charged 3 while the console draws it 2 wide, so any line containing one drifts. Only the padded and wrapped paths show it: a short fenced line is never measured, which is why the same character looks right inside a code block. Every pad, align, wrap and caret position that uses byte length is wrong in proportion to how much of the text is not ASCII -- a transcript of a Japanese conversation wraps early and leaves ragged rows, and a markdown table with an accented name misaligns its borders. The fix is one `displayWidth()` (decode UTF-8, then Wide/Fullwidth = 2, combining = 0, else 1) used by `wrapOne`, `md_style`'s width, the status bar's truncation and the input line's cursor, with the wrap break counted in cells. Nothing about OS/2 or DOS gets worse: folding leaves them in the case where byte equals cell anyway. |
+| **A string's display width was its byte count** -- fixed, `W8` | `src/core/cells.{h,cpp}`, nine call sites | The wrapping rule said so out loud: *"One byte is one display column (the app never measured cells)"*. That holds on an 8-bit screen, and OS/2's fold to ASCII hides it anyway; on a Unicode console it does not. Measured on the target with a probe whose rows line up only if widths are charged right: prose drew `A—B` with two blank cells after the dash, `é` gained one, arrows and curly quotes two, and an ideograph was charged three columns against the two the console draws it in -- while the very same characters looked right inside a fence, because a short fenced line is never padded and so is never measured. Fixing the wrapper would have moved the drift rather than removing it: nine places measured a row their own way, and two were worse than ragged -- markdown's long-word split and the input line's `rewrap()` both cut a character in half at a byte boundary, so half a character reached the screen and anything exported from the transcript, and the transcript's draw cursor advanced by bytes, which drew every span after non-ASCII too far right. Now one measure, `core/cells.h`, answers for the whole app: table-driven, so a headless self-test can check it, and erring towards more columns so the failure mode is a row that wraps early rather than text drawn over the column it does not own. Nothing about OS/2 or DOS changes, because folding leaves them where byte equals cell anyway. Nine tests, each seen failing first -- and one of them was vacuous the first time (it compared each table row against itself), so it was only believed after the byte count was put back and it failed again. |
 | **Console encoding: measured on the box, and the console is not the suspect** | `tvision/source/platform/win32con.cpp` | The Win32 adapter converts UTF-8 to UTF-16 and writes with `WriteConsoleOutputW`, reads with `ReadConsoleInputW`, and sets the console's code pages. Watched happening on Windows 10 19045 with conhost: an em dash, Latin-1 (`café naïve über Señor São`), box drawing (`╭─╮ ┌─┬─┐ ├─┤ ╰──╯ ─│─`), shades (`░▒▓█`), arrows and curly quotes all render as themselves, and typed non-ASCII reaches the request body byte-exactly (`U+00E9`, `U+2014`, `U+65E5` in the captured JSON). **CJK draws as empty boxes, and that is the font, not atui**: the same code points written by PowerShell into the same console produced the same empty boxes and the same cursor advance, which is the control experiment that makes the accusation unnecessary. The console's own arithmetic was measured too -- `x日本y` advances **6 cells**, `x—y` advances **3**, `xcéf y` advances **5** -- which is what `W8` has to match. Legacy raster-font console is still unmeasured. |
 | **The TUI's screen cannot be read by another process** | `tvision/source/platform/conctl.cpp:251` | atui draws on a screen buffer it created and made active. Measured across eight console operations (`tools/win/attach_probe.c`): a program that calls `SetConsoleActiveScreenBuffer` cannot have its console read by any other process -- `AttachConsole` fails with `ERROR_SHARING_VIOLATION`, and **the buffer's share mode makes no difference**, which is worth recording because the first fix tried was changing that share mode, on a plausible story, and measured no difference at all. So no external tool, and no screen reader, can read what atui drew. It makes `P5`'s capture slot load-bearing rather than nice: on Windows, measuring the TUI means asking atui itself. |
 | **No screen capture on Windows** | `screen_none.cpp:10` claims the slot | Needs a new `src/platform/screen_win.cpp` (`EnumWindows`/`GetWindowRect`/`GetWindowText`, GDI `BitBlt`). `screen.h:13` already anticipates hex HWNDs. CMake needs an `if(WIN32)` block setting `ATUI_HAVE_WIN_CAPTURE`; none exists -- only APPLE/UNIX branches do. |
@@ -312,7 +314,7 @@ which is why none of this was found there.
 | W5 | `GetFinalPathNameByHandle` resolution, plus skip-aware harness | **done** -- reparse points resolved on Windows, Windows suite green at 148/0, and a host that cannot make a link now reports a counted skip instead of a silent `#ifdef` |
 | W6 | `PERMISSIONS.md`: shells, quoting, JSON escapes, and what Windows cannot promise | **done** -- and one sentence in it had to be reversed after measuring (`/s` is not what keeps a quoted command whole; the quotes are) |
 | W7 | Requests are documents: build one, then parse it | **done** -- the fault the port found in atui rather than in Windows. A `#if` added for the run_command description cost a brace, and since then every request offering a tool was invalid JSON on every platform. Found by a server's 500, misdiagnosed as the server's fault, then caught by asking the bytes. Now: `tests/json_valid.h` (a strict validator sharing nothing with the product), the schemas and the wire body checked by it, and `note()` in the harness so a failure says what it was |
-| W8 | A string's display width is not its byte count | **found by `P4`, open** -- `wrap.h:4` and `md_style.h:85` count bytes, and the app has never measured cells. Cost: every padded, wrapped or cursor-positioned string containing non-ASCII is wrong on a Unicode console; measured on the target with an alignment probe whose rows line up only if the widths are right. One `displayWidth()` fixes it, and it is a cross-platform fix, not a Windows one -- OS/2 just hides it by folding first |
+| W8 | A string's display width is not its byte count | **done** -- found by `P4`, and it was not a Windows bug: `wrap.h:4` said the app never measured cells, and nine places measured a row their own way. One measure in `core/cells.h` now answers for all of them (wrapper, markdown's word split and inline column counter, table cell widths *and* their padding, `Line::width`, the title cut, the draw cursor, the input line's wrap/clip/padding/caret). Verified on the screen both ways: with the fix the transcript is tight and fills its width; with the byte count put back on one line the drift returns exactly where it was. Nine tests, and the table test had to be rewritten after it was caught comparing each row against itself |
 
 What this deliberately does **not** include: per-file `#ifdef _WIN32` sprays
 (the seams already exist and are used correctly), making POSIX do something worse
@@ -499,12 +501,12 @@ endpoints on the Mac:
 |---|---|---|
 | renders | menu (`File Sessions Switch model About`), header, transcript, input line, status bar showing provider and model read from `ATUI_CONFIG` | **yes**, first time on this box |
 | keys land, session usable | `--ask` prompt sent, answer streamed and laid out, input line accepted typed text, `Alt-X` quit | **yes**; exit returned `EXITCODE=0` with the console's own palette and buffer restored |
-| em dash | prose and fenced | **reaches the screen**; charged 1 cell in a fence, 3 in prose -- `W8` |
+| em dash | prose and fenced | **reaches the screen**; at the time it was charged 1 cell in a fence and 3 in prose, which is what led to `W8` (now fixed -- prose is tight and the paragraph fills its width) |
 | `café` | Latin-1 in prose, and typed | **renders as accented letters**; typed form verified in the request body |
 | CJK | written by atui, and by PowerShell as a control | **the font, not atui**: both drew empty boxes, both advanced 2 cells per ideograph |
 | box drawing, shades, arrows, curly quotes | `╭─╮ ┌─┬─┐ ├─┤ ╰──╯ ░▒▓█ → ← “ ” …` | **all render** as themselves |
 | typing non-ASCII | `Type` sent `café — 日 ok` into the input line; request captured by `tools/dump_request.py` | **byte-exact** in the JSON body: `U+00E9 U+2014 U+65E5` |
-| `ATUI_FOLD=1` | same binary, same fixture | **the ASCII transcript**: `-`, `cafe`, `->`, `+--+`, `????` for CJK, and no `W8` gaps because nothing is multi-byte any more |
+| `ATUI_FOLD=1` | same binary, same fixture | **the ASCII transcript**: `-`, `cafe`, `->`, `+--+`, `????` for CJK -- and no gaps, folded or not, because folding leaves nothing multi-byte to measure |
 | resize | window dragged to ~520x260 while streaming | **reflowed**: text rewrapped, menu intact, status bar dropped its hint text instead of garbling it |
 
 Two things this phase needed that did not exist and now do. `tools/win/console_buffer.ps1`
@@ -524,8 +526,8 @@ page from 437 to 65001, and the next reading reported 65001 as though that had b
 discovery.
 
 Still unmeasured here: the legacy console with a raster font (needs a console font change
-on the box), and the wrap-boundary case for wide characters specifically -- though that is
-`W8` and belongs with it, not with this phase.
+on the box). The wrap boundary for wide characters is no longer one of the gaps -- it is
+what `W8`'s tests cover, and the fix was watched on this screen in both directions.
 
 **The live test model (corrected -- the earlier version of this paragraph was wrong).**
 `10.196.88.170:10001` lists, streams, reasons and calls tools, and both hosts are green

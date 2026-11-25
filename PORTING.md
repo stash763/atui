@@ -524,8 +524,8 @@ is two bytes, an em dash or an arrow three, an ideograph three. A layout that ad
 column per byte is therefore wrong by one column per continuation byte -- invisible until
 something is padded, wrapped or aligned, and then visible in proportion to how much of the
 text is not ASCII. This is not a Windows defect and not a tvision one. atui's own wrapping
-rule states it plainly, in a comment that was written as a simplification and is now a
-measured defect (`W8`):
+rule used to state it as policy, in a comment that was a simplification rather than a lie
+about the screen it was written for:
 
     src/tui/wrap.h:4   // One byte is one display column (the app never measured cells)
 
@@ -549,12 +549,33 @@ disagree for wide characters* -- a fact invisible to anyone reading only the buf
 the screen.
 
 So: **cell width is a property of the display boundary, asked once and used by every
-layout.** The seam that owns it is the screen, and what consumes it is `wrapOne`,
-`md_style`'s column widths, the status bar's truncation and the input line's cursor: one
-`displayWidth()` that decodes UTF-8 and returns 2 for Wide/Fullwidth, 0 for combining
-marks, 1 otherwise. Two things follow that keep the other platforms whole. Folding is not
-the fix -- folding to ASCII makes byte and cell agree again only by destroying the text
-that was laid out, which is a screen decision and the transcript keeps the bytes
-regardless. And a platform whose screen really is one byte per cell (OS/2, DOS, where the
-fold is on anyway) must see no behaviour change, so the width function belongs in the
-shared code with its answer coming from the boundary, not in a branch.
+layout.** It lives in `core/cells.h` -- `charCells()` for one character and where it ends,
+`displayWidth()` for a string, `clipToColumns()` for the prefix of a string that fits --
+and nine places ask it: the wrapper, markdown's word-fitting and inline column counter, a
+table's cell widths *and* the padding that fills them out, `Line::width`, the title cut,
+the transcript's draw cursor, and the input line's wrap, clip, padding and caret. Fixing
+the wrapper alone would not have fixed the screen, which is the practical content of "asked
+once and used by every layout": the list of consumers is the fix, not the function. Two of
+those consumers were worse than misaligned -- markdown's long-word split and the input
+line's wrap cut a character in half at a byte boundary, so half a character went to the
+screen and into anything exported -- and one was invisible in a screenshot of one span: the
+draw cursor advanced by bytes, so it only showed up as text after a non-ASCII span sitting
+too far right.
+
+Two things follow that keep the other platforms whole. Folding is not the fix -- folding to
+ASCII makes byte and cell agree again only by destroying the text that was laid out, which
+is a screen decision and the transcript keeps the bytes regardless. And a platform whose
+screen really is one byte per cell (OS/2, DOS, where the fold is on anyway) must see no
+behaviour change, so the width function belongs in the shared code rather than in a branch.
+
+Two more things followed from how it was answered. The answer is a table, not a question to
+the live console, because a layout has to be reproducible in a self-test that runs with no
+terminal and has to give every caller in one frame the same number; where the table and a
+terminal could disagree it charges *more*, so the failure is a row that wraps early rather
+than text drawn over a column it does not own. The table's gaps are stated where they are:
+Indic combining marks are absent, a Devanagari transcript therefore wraps slightly early,
+and adding the block is a table edit. And a test that measures with the table it is checking
+can only agree with itself, so `tests/cells_test.cpp` carries its own width oracle written
+again on purpose -- which is how one of its own tests was found to be vacuous, comparing
+each table row against itself, passing while the borders it claimed to check were at
+columns 7, 6, 5 and 7.
