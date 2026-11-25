@@ -7,6 +7,8 @@
 #ifndef ATUI_TUI_MD_STYLE_H
 #define ATUI_TUI_MD_STYLE_H
 
+#include "core/cells.h"
+
 #include <string>
 #include <vector>
 
@@ -82,12 +84,14 @@ struct Line
 
     Line() : spans(), bg( rNormal ) {}
 
-    // Width in display columns (byte-based, matching the wrap logic).
+    // Width in screen columns.  Not the byte count of the spans: the transcript pads rows
+    // and places the next thing by this number, and on a Unicode screen a three-byte em
+    // dash is one column.  See core/cells.h.
     int width() const
     {
         int w = 0;
         for( size_t i = 0; i < spans.size(); ++i )
-            w += (int) spans[i].text.size();
+            w += atui::core::displayWidth( spans[i].text );
         return w;
     }
 };

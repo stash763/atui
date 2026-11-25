@@ -55,6 +55,7 @@ set(ATUI_SOURCES
     # std::string::compare, no to_string, no std::ostringstream, no std::getline,
     # no const map::find.  See the headers for what each one replaces.
     "${ATUI_SRC_DIR}/core/strutil.cpp"
+    "${ATUI_SRC_DIR}/core/cells.cpp"
     # One JSON string decoder for the whole program: the tool-argument reader and
     # the network reader were separate copies of the same scanner and drifted, so
     # the copies are gone.  Always built, network or not, because tool arguments
@@ -171,6 +172,7 @@ if(ATUI_BUILD_TESTS)
         "${ATUI_TESTS_DIR}/live_test.cpp"
         "${ATUI_TESTS_DIR}/markdown_test.cpp"
         "${ATUI_TESTS_DIR}/ascii_fold_test.cpp"
+        "${ATUI_TESTS_DIR}/cells_test.cpp"
         "${ATUI_TESTS_DIR}/signals_test.cpp"
         "${ATUI_TESTS_DIR}/screen_test.cpp"
         "${ATUI_TESTS_DIR}/appman_test.cpp"

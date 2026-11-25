@@ -64,6 +64,9 @@ void init_markdown_tests();
 // Defined in tests/ascii_fold_test.cpp (always built): the fold that stands between the
 // transcript and a terminal whose character set is an 8-bit codepage.
 void init_ascii_fold_tests();
+// Defined in tests/cells_test.cpp (always built): text measured in screen columns, which
+// is what wrapping, the title cut and the row width have to agree on.
+void init_cells_tests();
 // Defined in tests/signals_test.cpp (always built): the flag a stop signal leaves
 // behind for the event loop to notice.
 void init_signals_tests();
@@ -3603,6 +3606,7 @@ void init()
     init_url_tests();
     init_markdown_tests();
     init_ascii_fold_tests();
+    init_cells_tests();
     init_signals_tests();
     init_screen_tests();
     init_appman_tests();

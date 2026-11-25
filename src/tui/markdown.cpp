@@ -384,20 +384,23 @@ public:
     void addWord( const std::string &t, unsigned char r )
     {
         if( t.empty() ) return;
-        if( (int) t.size() > avail_ )
+        // A word is measured in columns, and broken at that measure: `é` is one column in
+        // two bytes, an ideograph two columns in three.
+        const int w = atui::core::displayWidth( t );
+        if( w > avail_ )
         {
             splitLong( t, r );
             return;
         }
         int add = cw_ > 0 ? 1 : 0;
-        if( cw_ + add + (int) t.size() > avail_ )
+        if( cw_ + add + w > avail_ )
         {
             endLine();
             add = 0;
         }
         if( add ) { line_.push_back( Span( " ", rNormal ) ); cw_ += 1; }
         line_.push_back( Span( t, r ) );
-        cw_ += (int) t.size();
+        cw_ += w;
     }
 
     void addRaw( const std::string &t, unsigned char r )   // no word split
@@ -407,9 +410,23 @@ public:
         {
             int room = avail_ - cw_;
             if( room <= 0 ) { endLine(); room = avail_; }
-            int take = (int) std::min( (size_t) room, t.size() - pos );
-            line_.push_back( Span( t.substr( pos, take ), r ) );
-            cw_ += take; pos += take;
+            // Whole characters only: taking `room` bytes put half an ideograph on one row
+            // and the rest on the next, which is mojibake on the screen and corrupt text in
+            // anything exported from the transcript.
+            size_t end = pos;
+            int used = 0;
+            while( end < t.size() )
+            {
+                size_t bytes = 1;
+                const int cells = atui::core::charCells( t, end, &bytes );
+                if( end > pos && used + cells > room )
+                    break;
+                used += cells;
+                end += bytes;
+            }
+            line_.push_back( Span( t.substr( pos, end - pos ), r ) );
+            cw_ += used;
+            pos = end;
         }
     }
 
@@ -457,15 +474,9 @@ private:
 
     void splitLong( const std::string &t, unsigned char r )
     {
-        size_t pos = 0;
-        while( pos < t.size() )
-        {
-            int room = avail_ - cw_;
-            if( room <= 0 ) { endLine(); room = avail_; }
-            int take = (int) std::min( (size_t) room, t.size() - pos );
-            line_.push_back( Span( t.substr( pos, take ), r ) );
-            cw_ += take; pos += take;
-        }
+        // The same fill-the-row-then-wrap loop as addRaw -- they were written twice and
+        // the second copy is where a long word used to be cut through a character.
+        addRaw( t, r );
     }
 
     void startLine()
@@ -475,7 +486,10 @@ private:
         unsigned char pr = first_ ? fpRole_ : cpRole_;
         if( !p.empty() ) line_.push_back( Span( p, pr ) );
         cw_ = 0;
-        avail_ = ctx_.width - (int) p.size();
+        // The prefix takes columns from the row, and prefixes are generated as ASCII --
+        // measured anyway, so a prefix that ever carries text from a transcript cannot
+        // quietly claim more room than it occupies.
+        avail_ = ctx_.width - atui::core::displayWidth( p );
         if( avail_ < 1 ) avail_ = 1;
     }
 
@@ -741,12 +755,16 @@ void emitQuote( const std::vector<std::string> &lines, size_t &i, size_t to,
 // Display width of one table cell: the text its inline spans come to, with the
 // markers gone.  A function rather than a lambda -- Watcom has none -- so it
 // takes the context it reads instead of capturing it.
+//
+// Measured in columns, not bytes: this number sizes the column, and the borders of
+// every row in the table are placed by it, so an accented name or an ideograph in one
+// cell moves the `|` of every row below it.
 int cellWidth( const Ctx &ctx, const std::string &c )
 {
     std::vector<Span> sp;
     inlineRuns( c, 0, c.size(), false, false, false, false, ctx.links, sp );
     int w = 0;
-    for( size_t z = 0; z < sp.size(); ++z ) w += (int) sp[z].text.size();
+    for( size_t z = 0; z < sp.size(); ++z ) w += atui::core::displayWidth( sp[z].text );
     return w;
 }
 
@@ -781,7 +799,10 @@ struct RowEmitter
                 inlineRuns( cell, 0, cell.size(), false, false, false, false,
                             ctx.links, sp );
             int w = 0;
-            for( size_t z = 0; z < sp.size(); ++z ) w += (int) sp[z].text.size();
+            // Columns, not bytes: `colw` was measured in columns, and `pad` below is the
+            // spaces that fill the gap between them.  Measuring the cell a different way
+            // from the column it fills moves the border instead of aligning it.
+            for( size_t z = 0; z < sp.size(); ++z ) w += atui::core::displayWidth( sp[z].text );
             int pad = colw[c] - w; if( pad < 0 ) pad = 0;
             int lead = 0;
             if( align[c] == ARight ) lead = pad;

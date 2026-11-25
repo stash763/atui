@@ -2,6 +2,8 @@
 
 #include "core/strutil.h"
 
+#include "core/cells.h"
+
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -99,7 +101,11 @@ std::string titleFromText( const std::string &text, std::size_t width )
         return flat;
     if( width == 1 )
         return "~";
-    std::string cut = flat.substr( 0, width - 1 );
+    // Cut at a character boundary, measured in columns, with the last column kept for the
+    // "~" that says something was dropped.  Cutting `width - 1` bytes produced a title
+    // ending in half an ideograph, and a title is exactly the place nobody notices --
+    // it is one line in a list, compared against nothing.
+    std::string cut = clipToColumns( flat, (int) width - 1 );
     while( !cut.empty() && cut[ cut.size() - 1 ] == ' ' )
         cut.erase( cut.size() - 1 );
     return cut + "~";

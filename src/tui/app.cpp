@@ -56,6 +56,7 @@
 
 #include "app.h"
 #include "core/ai.h"
+#include "core/cells.h"          // displayWidth/clipToColumns: a row is measured in columns
 #include "tui/ascii_fold.h"
 #include "core/journal.h"
 #include "core/signals.h"
@@ -846,7 +847,7 @@ public:
                 if( !spans[s].text.empty() )
                     writeStr( (short) x, (short) row,
                               spans[s].text.c_str(), spans[s].role );
-                x += (int) spans[s].text.size();
+                x += atui::core::displayWidth( spans[s].text );
             }
         }
     }
@@ -1581,10 +1582,15 @@ public:
             const int idx = top_ + r;
             std::string line = ( idx >= 0 && idx < (int) rows_.size() )
                                  ? rows_[idx] : std::string();
-            if( (int) line.size() > size.x )
-                line.erase( size.x );         // rewrap() keeps rows within the width
-            while( (int) line.size() < size.x )
-                line += ' ';
+            // Clip and pad in columns.  The padding is what makes the write safe -- it has
+            // to cover whatever the previous frame drew here -- so a pad counted in bytes
+            // leaves the tail of the old frame showing whenever the text holds a
+            // multi-byte character, and a clip taken at a byte cuts that character in
+            // half.  rewrap() already keeps rows within the width; this is the same width.
+            line = atui::core::clipToColumns( line, size.x );
+            const int used = atui::core::displayWidth( line );
+            if( used < size.x )
+                line.append( (size_t) (size.x - used), ' ' );
             writeStr( 0, (short)(r + 1), line.c_str(), (uchar) rInput );
         }
 
@@ -1674,7 +1680,13 @@ protected:
             if( cursor_ <= end )
             {
                 row = i;
-                col = (int)(cursor_ - start);
+                // Columns, not the byte distance from the start of the row: with a byte
+                // distance the caret sits one cell too far right for every continuation
+                // byte before it, so typing an accented letter or an ideograph moves the
+                // caret away from where the next character will go.
+                col = ( cursor_ > start )
+                    ? atui::core::displayWidth( buf_.substr( start, cursor_ - start ) )
+                    : 0;
                 if( col < 0 ) col = 0;
                 return;
             }
@@ -1683,9 +1695,34 @@ protected:
         if( !rows_.empty() )
         {
             size_t start = rowStart( rows_.size() - 1 );
-            col = (int)(cursor_ - start);
+            col = ( cursor_ > start )
+                ? atui::core::displayWidth( buf_.substr( start, cursor_ - start ) )
+                : 0;
             if( col < 0 ) col = 0;
         }
+    }
+
+    // Byte offset of the position `col` columns into wrapped row `i`.  The inverse of
+    // caretPos(), needed whenever a column (kept from a previous row by an up/down move)
+    // has to become a position in the buffer again.
+    size_t offsetAtColumn( int i, int col )
+    {
+        const size_t start = rowStart( i );
+        if( i < 0 || i >= (int) rows_.size() )
+            return start;
+        const std::string &row = rows_[i];
+        size_t p = 0;
+        int used = 0;
+        while( p < row.size() )
+        {
+            size_t bytes = 1;
+            const int c = atui::core::charCells( row, p, &bytes );
+            if( used + c > col )
+                break;
+            used += c;
+            p += bytes;
+        }
+        return start + p;
     }
 
     // Move the caret up/down one visual row, keeping the column where possible.
@@ -1701,10 +1738,9 @@ protected:
             if( dir > 0 ) cursor_ = buf_.size();
             return;
         }
-        size_t start = rowStart( target );
-        size_t len = rows_[target].size();
-        if( (size_t) col > len ) col = (int) len;
-        cursor_ = start + col;
+        // `col` is a column, so it becomes a buffer position the same way the caret was
+        // measured: walking whole characters, not adding the number.
+        cursor_ = offsetAtColumn( target, col );
     }
 
     // Byte offset where wrapped row i begins. This has to come from the table
@@ -1721,8 +1757,10 @@ protected:
 
     // UTF-8 aware caret stepping: treat continuation bytes (0x80..0xBF) as part
     // of the preceding code point so Backspace/Delete and arrow keys move by a
-    // whole character. (Matches the app's "1 byte == 1 column" layout, which is
-    // exact for ASCII and degrades gracefully for wider scripts.)
+    // whole character.  The layout measures columns (core/cells.h), so an ideograph
+    // steps one character here and two columns in caretPos(): both are the same
+    // character counted once, which is what kept them in agreement only by accident
+    // while the layout was counting bytes.
     size_t prevChar( size_t p )
     {
         if( p == 0 ) return 0;
@@ -1749,29 +1787,10 @@ protected:
         rowOfs_.clear();
         if( w < 1 ) w = 1;
         if( buf_.empty() ) { rows_.push_back( std::string() ); rowOfs_.push_back( 0 ); return; }
-
-        size_t i = 0, n = buf_.size();
-        while( i < n )
-        {
-            if( (int)(n - i) <= w )
-            {
-                rows_.push_back( buf_.substr( i ) );
-                rowOfs_.push_back( i );
-                break;
-            }
-            size_t brk = i + w;               // one past the last column
-            int first = (int) i;              // earliest break is after 1 char
-            size_t sp = buf_.rfind( ' ', brk );
-            size_t rowEnd;
-            if( sp != std::string::npos && (int) sp > first && sp < brk )
-                rowEnd = sp;                    // break on the last space
-            else
-                rowEnd = brk;                   // hard wrap
-            rows_.push_back( buf_.substr( i, rowEnd - i ) );
-            rowOfs_.push_back( i );
-            i = rowEnd;
-            if( i < n && buf_[i] == ' ' ) ++i;  // skip the break space
-        }
+        // The app's wrap, in columns, with the byte offset of every row kept so the caret
+        // can be placed.  Measuring this in bytes both cut a character in half on a hard
+        // wrap and put the caret away from the text it belongs to.
+        atui::tui::wrapOneOffsets( buf_, w, rows_, rowOfs_ );
     }
 
     virtual TColorAttr mapColor( uchar index )
