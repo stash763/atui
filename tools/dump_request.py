@@ -4,6 +4,10 @@
     python3 tools/dump_request.py [--port 8811] [--dir /tmp/atui_req]
     ATUI_LIVE_BASE_URL=http://127.0.0.1:8811/v1 ./build/atui --self-test
 
+    With --listen 0.0.0.0 another machine can point at it, which is how a keystroke typed
+    on Windows ends up as bytes this side: what that machine's console decided to send is
+    a fact about it, and the only way to read that fact is the captured body.
+
 Answers every POST with a tiny valid SSE stream, writes the bytes it was given to
 `<dir>/NNN.json`, and prints whether Python's `json` can parse them.
 
@@ -74,11 +78,13 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--port", type=int, default=8811)
     p.add_argument("--dir", default="/tmp/atui_req")
+    p.add_argument("--listen", default="127.0.0.1",
+                   help="bind address; 0.0.0.0 to let another machine reach it")
     a = p.parse_args()
     os.makedirs(a.dir, exist_ok=True)
     CFG.update(dir=a.dir)
-    print("dumping requests to %s, listening on 127.0.0.1:%d" % (a.dir, a.port), flush=True)
-    ThreadingHTTPServer(("127.0.0.1", a.port), Handler).serve_forever()
+    print("dumping requests to %s, listening on %s:%d" % (a.dir, a.listen, a.port), flush=True)
+    ThreadingHTTPServer((a.listen, a.port), Handler).serve_forever()
 
 
 main()

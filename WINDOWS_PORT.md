@@ -7,15 +7,15 @@ code has to keep, and `TESTING.md` is where the measurements go.
 Scope, in order: **VS2017 / Win32 / Windows 10 first**, then the older Windows
 targets. Nothing here changes what the OS/2, DOS, Linux or FreeBSD builds do.
 
-Status: P0-P3 done on the target, and the cross-platform work (W1-W7) is finished.
-atui.exe builds and links for Win32, with the network compiled in, and **passes 208 of
-its self-tests with one skipped** -- the first non-POSIX host to run the suite, and it is
-green, transport included, against a peer on another machine. With the live model
-configured it is green too, 212 passed and 0 failed, which is what caught the bug W7
-records: the requests atui was sending, not the server receiving them. The measurements
-are in `TESTING.md`. What that does *not* yet cover is the phase that cannot be measured
-headless at all: the TUI has never been seen on a Windows screen (P4). And the one skip
-is itself the finding it says it is -- on Windows there is no way to ask atui to stop.
+Status: P0-P3 done on the target, W1-W7 finished, and **P4 -- the TUI on a real Windows
+screen -- measured**, which found one real defect in atui rather than in Windows: `W8`,
+display cells counted as bytes. atui.exe builds and links for Win32 with the network
+compiled in, and on the current target the self-test is **207 passed, 0 failed, 2 skipped**
+headless and **211 / 0 / 2** against the live model on the LAN. Neither skip is a surprise:
+one is the missing console control handler (`P5`), the other is symbolic-link coverage
+this project declines on Windows (`P4` also showed what the console can and cannot be
+blamed for -- `PORTING` findings in the gap table). The measurements are in `TESTING.md`;
+the target machine changed on 24 Nov 2026 and the table below is its facts, re-measured.
 
 ## The rules for this work
 
@@ -46,31 +46,65 @@ These are the constraints that make the rest of the plan safe.
    go through a strict parser that shares no code with the thing under test (`W7`). And a
    change made for one platform is measured on the others, since the `#if` is what makes
    an edit local and a string literal is what makes it global.
+7. **A measurement is only as honest as the instrument that made it.** P4 found four
+   defects in its own tools before it found anything about Windows, and each one was
+   capable of producing a plausible result about the subject: printing non-ASCII through a
+   console code page turns an em dash into `-` and an accented letter into `?`; setting an
+   output encoding inside a reader changes the console of the program being read; a failed
+   type cast in the reader left it reading row 0 forty-three times and printing forty-three
+   rows of "data"; and once a process gives up its console, its warnings have nowhere to
+   go, so the reason for a failure is replaced by a handle error. So: **print what was
+   read**, in a form no code page can improve on; **never mutate the subject** to make the
+   reading easier; and prefer an instrument that fails loudly to one that returns
+   something. The corollary applies to fixes as much as to tools -- a change built on a
+   likely-looking diagnosis that was never tested against an alternative gets taken back
+   out, which is what happened to the buffer share mode this month.
 
 ## The machine (measured)
 
+**The target changed on 24 Nov 2026.** The old box (`10.196.88.64`) was replaced by
+`10.196.88.95`, hostname `WIN10TEST32B`. It was not abandoned in frustration: the old
+machine vanished from the network twice, the first time ending in a *logged, planned*
+Windows-Update restart (`svchost … Service pack (Planned)`, exit `0x80020010`, no
+`Kernel-Power` 41 and no bugcheck), the second time with **no reboot, no sleep and no
+crash event at all** -- same `LastBootUpTime` before and after -- which is a hypervisor
+pausing the guest rather than Windows doing anything. Nothing in either episode involved
+atui: it was idle at its prompt, and the capture endpoint had no request in flight. The
+history of that machine is still useful context, so it is kept below the table and
+marked as such. **Everything in the table was re-measured on the new box**, and the
+Windows tree was rebuilt there from a commit rather than copied (see *The sync loop*).
+
 | | |
 |---|---|
-| Host | 10.196.88.64, Windows 10 Pro 10.0.19045 |
-| Bitness | **32-bit** (`AddressWidth=32`, no `PROCESSOR_ARCHITEW6432`) |
-| CPU / RAM | Intel i5-3470T, 2 logical CPUs, 3.5 GB |
-| Disk | 81.5 GB free of 119.9 GB |
+| Host | `10.196.88.95`, `WIN10TEST32B`, Windows 10 Pro 10.0.19045 |
+| Bitness | **32-bit** (`X86-based PC`, no `PROCESSOR_ARCHITEW6432`) |
+| CPU / RAM | 2 logical CPUs, 3.9 GB |
+| Disk | 86.6 GB free on C: |
+| Display | 1366x768 at 96 dpi, one display -- P4's window sizes follow from this |
 | Long paths | enabled (`LongPathsEnabled=1`) |
-| VS2017 | Community 15.9.37902.15, `C:\Program Files\Microsoft Visual Studio\2017\Community` |
-| MSVC | 14.16.27023 (`_MSC_VER 1916`, `_MSC_FULL_VER 191627054`) |
-| Toolsets | v141, **v141_xp** (Win32 + x64) under VS2017 `VCTargets` |
-| VS2019 | Community 16.11.37903.5, MSVC 14.29.30133 (v142), plus a v141 copy |
-| VS2015 remnants | v140 and **v140_xp** in `C:\Program Files\MSBuild\Microsoft.Cpp\v4.0\v140` |
-| SDKs | Windows Kits 10 (`10.0.10240.0`, `10.0.19041.0`) and Kits 8.1 |
-| CMake | **3.31.12** at `C:\cmake\bin\cmake.exe` (no Ninja beside it, not on `PATH` -- invoke by full path) |
-| Ninja | **1.13.2, 32-bit**, from `py -m pip install ninja` at `C:\Python\scripts\ninja.exe`. The copy VS2017 bundles is 64-bit and **cannot run on this OS** |
-| Borland | `C:\BC5` = **Borland C++ 5.2**: `BCC.EXE` (16-bit), `BCC32.EXE`, `TLINK.EXE`, `TLINK32.EXE`, `ILINK32.EXE`, `MAKE.EXE` |
-| Other | git 2.46.2, `tar.exe` (bsdtar), `py` = Python 3.14.10 (`python`/`python3` are Store stubs -- use `py`) |
+| Code pages | OEM 437, ANSI 1252; a new console starts at 437 |
+| Console | conhost (no default-terminal delegation set), TrueType face by default; `C:\Windows\Fonts\simsun.ttc` exists but is not the console face |
+| PowerShell | 5.1.19041.2673, `FullLanguage`, session 1 (the interactive one) |
+| VS2017 | Community, `C:\Program Files\Microsoft Visual Studio\2017\Community` |
+| MSVC | 14.16.27023 -- the same compiler the old box used |
+| CMake | **3.31.12** at `C:\cmake\bin\cmake.exe` |
+| Ninja | **1.13.2 win32** from `py -m pip install ninja`, landing at `C:\Python\Scripts\ninja.exe`, which is where `tools/win/env.bat` already looks. The wheel is `py3-none-win32` and runs; VS2017's bundled Ninja is 64-bit and could not |
+| Borland | `C:\BC5` exists; its contents are **not re-measured on this box** |
+| Other | git, `tar.exe` (bsdtar), `py` = Python 3.14.10 |
+| Not re-measured | `v141_xp`, VS2019, the SDK list, the BC5 tool list, `__cplusplus` defaults. These were facts about the old box; they are checked when `P6` needs them, not carried over as assumptions |
 
-The compile path was proven end to end: `vcvarsall x86` + `cl hello.cpp` produced
-an exe that ran and returned its exit code. `__cplusplus` defaults to `199711L`,
-which is the honest C++98 answer -- friendlier to the `gate98` rule than clang's
-`gnu++14`.
+The compile path was proven end to end on the old box: `vcvarsall x86` + `cl hello.cpp`
+produced an exe that ran and returned its exit code, and `__cplusplus` defaulted to
+`199711L` -- the honest C++98 answer, friendlier to the `gate98` rule than clang's
+`gnu++14`. On this box the equivalent proof is the whole tree building and its own
+self-test passing, which is a stronger test than `hello.cpp` and was done instead.
+
+One more consequence of the box showed up that is about the shell rather than the
+compiler: **Windows PowerShell 5.1 has no `[short]` type accelerator** -- `[int16]`
+works. Spelled wrong it does not fail loudly: the assignment throws, the field keeps
+what it had, and `tools/win/console_buffer.ps1` went on to read row 0 forty-three times
+and print it as forty-three rows of the measurement. A script that measures something
+has to print what it read, not just that it read.
 
 Two consequences of 32 bits worth stating early. Only `Hostx86` compilers can run,
 so **x86 is the working target**; `x86_amd64` preprocessed successfully, but no
@@ -142,7 +176,9 @@ Ordered by how much it matters.
 | What | Where | Why it matters |
 |---|---|---|
 | **A UTF-8 file name is not the same file** | `src/core/paths.cpp`, the A-family file calls | `_access`, `CreateFileA` and `FindFirstFileA` read the bytes they are handed as the **ANSI** code page, not UTF-8. Measured on the target: a file whose real name is `caf\u00e9.txt` is *not found* by atui's UTF-8 bytes; a Japanese name comes back from a listing as `p3_??.txt`, irrecoverably; and creating a file with UTF-8 bytes **succeeds** (`err=0`) by making `caf\u00c3\u00a9.txt` -- a file nobody asked for, with no complaint. So the policy decides about one name and the filesystem receives another, and a lossy mapping can also collapse two names onto one file, which is the 8.3-alias problem from `W5` through a wider door. The fix is the wide API behind the seam in `paths.cpp`, with the boundary rule from `PORTING.md`: refuse a name that cannot survive the round trip rather than accepting a near-miss. Nothing about DOS, OS/2 or the Win16/Win32s builds changes to accommodate it. |
-| **Console encoding: decided by the library, not yet seen on the box** | `tvision/source/platform/win32con.cpp` | The Win32 adapter converts UTF-8 to UTF-16 and writes with `WriteConsoleOutputW`, reads with `ReadConsoleInputW` and converts back, and sets the console's own code pages -- UTF-8, or the OEM page on a legacy console with a bitmap font, where an unsupported glyph then degrades to a similar one instead of to noise. That is why `foldTerminalText()` is correct to answer no on Windows where it answers yes on OS/2 and DOS. Read in the vendored source, not yet watched happening: P4 checks it against a model answer containing an em dash, an accented name and a CJK character, in both the modern and the legacy console. |
+| **A string's display width is its byte count** -- `W8` | `src/tui/wrap.h:4`, `src/tui/md_style.h:85` | The wrapping rule says so out loud: *"One byte is one display column (the app never measured cells)"*, and the markdown table widths match it. On an 8-bit screen that holds, and on OS/2 the fold to ASCII hides it; on a Unicode console it does not. Measured on the target with a probe whose rows are built to line up only if widths are right: prose renders `A—B` as `A—` + two blank cells, because the em dash is 3 bytes charged as 3 columns and 1 glyph drawn -- `é` gains 1 cell, every arrow and curly quote gains 2, and a CJK ideograph is charged 3 while the console draws it 2 wide, so any line containing one drifts. Only the padded and wrapped paths show it: a short fenced line is never measured, which is why the same character looks right inside a code block. Every pad, align, wrap and caret position that uses byte length is wrong in proportion to how much of the text is not ASCII -- a transcript of a Japanese conversation wraps early and leaves ragged rows, and a markdown table with an accented name misaligns its borders. The fix is one `displayWidth()` (decode UTF-8, then Wide/Fullwidth = 2, combining = 0, else 1) used by `wrapOne`, `md_style`'s width, the status bar's truncation and the input line's cursor, with the wrap break counted in cells. Nothing about OS/2 or DOS gets worse: folding leaves them in the case where byte equals cell anyway. |
+| **Console encoding: measured on the box, and the console is not the suspect** | `tvision/source/platform/win32con.cpp` | The Win32 adapter converts UTF-8 to UTF-16 and writes with `WriteConsoleOutputW`, reads with `ReadConsoleInputW`, and sets the console's code pages. Watched happening on Windows 10 19045 with conhost: an em dash, Latin-1 (`café naïve über Señor São`), box drawing (`╭─╮ ┌─┬─┐ ├─┤ ╰──╯ ─│─`), shades (`░▒▓█`), arrows and curly quotes all render as themselves, and typed non-ASCII reaches the request body byte-exactly (`U+00E9`, `U+2014`, `U+65E5` in the captured JSON). **CJK draws as empty boxes, and that is the font, not atui**: the same code points written by PowerShell into the same console produced the same empty boxes and the same cursor advance, which is the control experiment that makes the accusation unnecessary. The console's own arithmetic was measured too -- `x日本y` advances **6 cells**, `x—y` advances **3**, `xcéf y` advances **5** -- which is what `W8` has to match. Legacy raster-font console is still unmeasured. |
+| **The TUI's screen cannot be read by another process** | `tvision/source/platform/conctl.cpp:251` | atui draws on a screen buffer it created and made active. Measured across eight console operations (`tools/win/attach_probe.c`): a program that calls `SetConsoleActiveScreenBuffer` cannot have its console read by any other process -- `AttachConsole` fails with `ERROR_SHARING_VIOLATION`, and **the buffer's share mode makes no difference**, which is worth recording because the first fix tried was changing that share mode, on a plausible story, and measured no difference at all. So no external tool, and no screen reader, can read what atui drew. It makes `P5`'s capture slot load-bearing rather than nice: on Windows, measuring the TUI means asking atui itself. |
 | **No screen capture on Windows** | `screen_none.cpp:10` claims the slot | Needs a new `src/platform/screen_win.cpp` (`EnumWindows`/`GetWindowRect`/`GetWindowText`, GDI `BitBlt`). `screen.h:13` already anticipates hex HWNDs. CMake needs an `if(WIN32)` block setting `ATUI_HAVE_WIN_CAPTURE`; none exists -- only APPLE/UNIX branches do. |
 | **A command's stderr was lost on Windows** -- fixed, W3 | `run_command_tool.cpp` | `_popen` captured nothing when the command redirected for itself, and `type nosuchfile` came back as `rc=1` with **empty output**: a failed command told the model it failed and never said why, while the message went to the console underneath the TUI. One pipe handed to both of the child's output handles fixes it, because merging is a handle question and not a shell-syntax one -- appending `2>&1` was worse than nothing (measured both; `TESTING.md`). |
 | **`commandTimeoutIsEnforced()` was false on Windows** -- fixed, W3 | `run_command_tool.cpp` | The timeout was a message with no behaviour behind it, because `_popen` hands back nothing to hold on to. `CreateProcess` returns a handle and a job object is the process group, so the limit now stops the command *and* everything it started -- asserted by a test that was checked to fail without the job (`rc=-8`, a surviving `ping.exe`). |
@@ -276,6 +312,7 @@ which is why none of this was found there.
 | W5 | `GetFinalPathNameByHandle` resolution, plus skip-aware harness | **done** -- reparse points resolved on Windows, Windows suite green at 148/0, and a host that cannot make a link now reports a counted skip instead of a silent `#ifdef` |
 | W6 | `PERMISSIONS.md`: shells, quoting, JSON escapes, and what Windows cannot promise | **done** -- and one sentence in it had to be reversed after measuring (`/s` is not what keeps a quoted command whole; the quotes are) |
 | W7 | Requests are documents: build one, then parse it | **done** -- the fault the port found in atui rather than in Windows. A `#if` added for the run_command description cost a brace, and since then every request offering a tool was invalid JSON on every platform. Found by a server's 500, misdiagnosed as the server's fault, then caught by asking the bytes. Now: `tests/json_valid.h` (a strict validator sharing nothing with the product), the schemas and the wire body checked by it, and `note()` in the harness so a failure says what it was |
+| W8 | A string's display width is not its byte count | **found by `P4`, open** -- `wrap.h:4` and `md_style.h:85` count bytes, and the app has never measured cells. Cost: every padded, wrapped or cursor-positioned string containing non-ASCII is wrong on a Unicode console; measured on the target with an alignment probe whose rows line up only if the widths are right. One `displayWidth()` fixes it, and it is a cross-platform fix, not a Windows one -- OS/2 just hides it by folding first |
 
 What this deliberately does **not** include: per-file `#ifdef _WIN32` sprays
 (the seams already exist and are used correctly), making POSIX do something worse
@@ -320,22 +357,32 @@ to match Windows, or teaching the tests to prefer `\` -- the internal form stays
 **not yet on the Windows box** -- the first tree copy skipped it. The whole build
 needs it, so the copy has to include it.
 
-Until key auth is settled, sync is: build a tarball, `scp` it, extract. That is
-measured working. The `COPYFILE_DISABLE=1` prefix is not decoration -- without it
-macOS ships extended attributes that Windows `tar` materialises as 229 `._*` files
-in the tree, which is what happened on the first copy.
+Until key auth is settled, sync is: build an archive, `scp` it, extract. The recipe
+below is the one in use, and it ships **the commit** rather than the working tree:
 
 ```sh
-# Mac side: source + submodule, no build junk
+# Mac side: exactly what is committed, superproject and submodule, into atui/
 cd /Users/stash/code/atui
-COPYFILE_DISABLE=1 tar czf /tmp/atui-win.tgz \
-  --exclude='build*' --exclude='.git' --exclude='*.log' --exclude='.atui' \
-  src tests tools compat tvision CMakeLists.txt PORTING.md TESTING.md PERMISSIONS.md
+git archive --format=tar.gz --prefix=atui/ HEAD          > /tmp/atui-src.tar.gz
+git -C tvision archive --format=tar.gz --prefix=atui/tvision/ HEAD > /tmp/atui-tv.tar.gz
+# Windows side: extract both into %USERPROFILE%, which creates atui\ and atui\tvision\
 ```
 
-A tracked-only variant, which is the honest default because it can only ever ship
-what is committed, uses `git archive` twice (once per repo, since submodules are
-separate archives).
+Two rules, both bought by making the mistake. **Ship the commit, not the tree**: a
+`tar` of the working directory was 273 MB and carried `build-off/`, `build-asan/`,
+`build-nothreads/`, a dozen `build-*.log` files and a `.DS_Store`, all of them
+gitignored and none of them source -- and it also smuggled a file named `-`, which was
+gitignored *nothing* and turned out to be an artifact of a mistyped redirect that
+`git add -A` had committed. `git archive` cannot ship any of that, and as a side effect
+it proves the commit is self-sufficient: if the Windows build needs a file that is not
+committed, it fails and says so. **Archive with `--prefix=atui/`**: without a prefix the
+members are rooted at `./`, so extracting in the profile scatters the whole tree loose
+there instead of into `atui\`, which happened and had to be cleaned up file by file
+(the removal was driven off the archive's own entry list, never off a hand-typed one).
+
+`COPYFILE_DISABLE=1` still matters for any `tar` that is not `git archive`: without it
+macOS ships extended attributes that Windows `tar` materialises as `._*` files in the
+tree, which is what happened on the very first copy.
 
 The Windows side is `tools/win/`, written on the Mac and synced like any other
 source, following `tools/os2/build.cmd` in putting the machine's paths in a script
@@ -444,9 +491,45 @@ OS one.
 *Exit: the TUI renders, keys land, a session is usable on screen, and the four characters
 above are accounted for.*
 
+**Measured on the desktop, 24-25 Nov 2026 (exit met).** On `WIN10TEST32B`, 1366x768,
+conhost with its default TrueType face, driven through windows-mcp against scripted
+endpoints on the Mac:
+
+| criterion | what was watched | result |
+|---|---|---|
+| renders | menu (`File Sessions Switch model About`), header, transcript, input line, status bar showing provider and model read from `ATUI_CONFIG` | **yes**, first time on this box |
+| keys land, session usable | `--ask` prompt sent, answer streamed and laid out, input line accepted typed text, `Alt-X` quit | **yes**; exit returned `EXITCODE=0` with the console's own palette and buffer restored |
+| em dash | prose and fenced | **reaches the screen**; charged 1 cell in a fence, 3 in prose -- `W8` |
+| `café` | Latin-1 in prose, and typed | **renders as accented letters**; typed form verified in the request body |
+| CJK | written by atui, and by PowerShell as a control | **the font, not atui**: both drew empty boxes, both advanced 2 cells per ideograph |
+| box drawing, shades, arrows, curly quotes | `╭─╮ ┌─┬─┐ ├─┤ ╰──╯ ░▒▓█ → ← “ ” …` | **all render** as themselves |
+| typing non-ASCII | `Type` sent `café — 日 ok` into the input line; request captured by `tools/dump_request.py` | **byte-exact** in the JSON body: `U+00E9 U+2014 U+65E5` |
+| `ATUI_FOLD=1` | same binary, same fixture | **the ASCII transcript**: `-`, `cafe`, `->`, `+--+`, `????` for CJK, and no `W8` gaps because nothing is multi-byte any more |
+| resize | window dragged to ~520x260 while streaming | **reflowed**: text rewrapped, menu intact, status bar dropped its hint text instead of garbling it |
+
+Two things this phase needed that did not exist and now do. `tools/win/console_buffer.ps1`
+reads the screen buffer of a running console program as the UTF-16 units it holds, with
+`-CodePoints` to spell non-ASCII out so no code page can improve on it, and `-Out` to
+write bytes; it cannot read atui's screen, and says so with the reason (see the gap
+table). `tools/win/attach_probe.c` is the eight-case measurement behind that claim.
+And `tools/dump_request.py` grew `--listen`, because the capture server has to be
+reachable from the machine being measured.
+
+Two lessons from instruments rather than from atui, both recorded where they bit. A tool
+that prints through the console's code page **lies about non-ASCII**: the first version of
+the buffer reader reported an em dash as `-` and `é` as `?`, because CP437 was in the way,
+and it looked like a finding about the buffer. And a tool must not change what it measures:
+setting `[Console]::OutputEncoding` inside the reader changed the *target's* console code
+page from 437 to 65001, and the next reading reported 65001 as though that had been the
+discovery.
+
+Still unmeasured here: the legacy console with a raster font (needs a console font change
+on the box), and the wrap-boundary case for wide characters specifically -- though that is
+`W8` and belongs with it, not with this phase.
+
 **The live test model (corrected -- the earlier version of this paragraph was wrong).**
 `10.196.88.170:10001` lists, streams, reasons and calls tools, and both hosts are green
-against it: macOS 216 passed / 0 failed, Windows 212 passed / 0 failed / 1 skipped. What
+against it: macOS 216 passed / 0 failed, Windows 211 passed / 0 failed / 2 skipped. What
 this paragraph said before was that the three live failures were the endpoint's doing, and
 every part of that reasoning failed: the `curl` that "worked" was not sending atui's
 `tools` array, so it differed from the failing request in exactly the one way that

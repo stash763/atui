@@ -2296,9 +2296,10 @@ int test_permission_links()
     ScratchTree s;
     if( !s.ok ) return -1;
     if( !s.linksOk )
-        return skip_test( "this host will not create symbolic links (Windows wants "
-                          "developer mode or the privilege; atui resolves junctions "
-                          "too, but only a symbolic link reaches a file)" );
+        return skip_test( "no symbolic links here: Windows wants the privilege or developer "
+                          "mode, and this project declines to ask for either, so link "
+                          "containment is exercised by junctions only (which resolve, but "
+                          "cannot reach a file)" );
 
     // Out of the tree by file link.
     if( atui::tools::pathInsideProject( s.root + "/linkout" ) ) return -2;

@@ -517,3 +517,44 @@ the 8.3-alias problem from `W5` arriving again through a wider door. The fix is 
 API on NT behind the seam in `src/core/paths.cpp`, with the same rule as every other
 boundary: refuse a name that cannot survive the round trip instead of accepting a
 near-miss, and leave DOS, OS/2 and the Win16/Win32s builds exactly where they are.
+
+**A string's length in bytes is not its width on screen.** The internal form is UTF-8, and
+UTF-8 makes the number of bytes a function of the character rather than of the text: `é`
+is two bytes, an em dash or an arrow three, an ideograph three. A layout that advances one
+column per byte is therefore wrong by one column per continuation byte -- invisible until
+something is padded, wrapped or aligned, and then visible in proportion to how much of the
+text is not ASCII. This is not a Windows defect and not a tvision one. atui's own wrapping
+rule states it plainly, in a comment that was written as a simplification and is now a
+measured defect (`W8`):
+
+    src/tui/wrap.h:4   // One byte is one display column (the app never measured cells)
+
+Measured on the target, with a fixture whose rows line up only if widths are charged
+correctly (five em dashes in a row, so a wrong charge is five cells): in prose, `A—B`
+occupies three cells and draws one glyph; `é` gains one cell; arrows and curly quotes gain
+two; an ideograph is charged three cells against the two the console draws it in. Inside a
+fenced block the same characters look right, because a short line is neither padded nor
+wrapped and the placement comes from the terminal's own advance -- which is exactly the
+kind of half-correct that hides a bug: the transcript can show a character right and wrong
+depending on whether it arrived in a code block.
+
+The console's arithmetic, measured rather than assumed, is what a fix has to match:
+
+    x日本y advances 6 cells        two per ideograph
+    x—y   advances 3 cells         one per em dash
+    xcéf y advances 5 cells        one per accented letter
+
+and the buffer holds one code unit per cell with no spacer, so *storage and advance
+disagree for wide characters* -- a fact invisible to anyone reading only the buffer or only
+the screen.
+
+So: **cell width is a property of the display boundary, asked once and used by every
+layout.** The seam that owns it is the screen, and what consumes it is `wrapOne`,
+`md_style`'s column widths, the status bar's truncation and the input line's cursor: one
+`displayWidth()` that decodes UTF-8 and returns 2 for Wide/Fullwidth, 0 for combining
+marks, 1 otherwise. Two things follow that keep the other platforms whole. Folding is not
+the fix -- folding to ASCII makes byte and cell agree again only by destroying the text
+that was laid out, which is a screen decision and the transcript keeps the bytes
+regardless. And a platform whose screen really is one byte per cell (OS/2, DOS, where the
+fold is on anyway) must see no behaviour change, so the width function belongs in the
+shared code with its answer coming from the boundary, not in a branch.

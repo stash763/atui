@@ -7002,3 +7002,186 @@ platform sends, and a document atui builds is a document atui parses. Searching 
 for `"required"` proves the bytes contain `required`; it was the request's *shape* that was
 wrong, and only a parser can be said to have looked.
 
+
+---
+
+## 2026-11-24 / 25 -- a new machine, and the TUI finally seen: P4
+
+**The target changed.** `10.196.88.64` is gone, replaced by `10.196.88.95`
+(`WIN10TEST32B`): Windows 10 Pro 10.0.19045, X86, 2 CPUs, 3.9 GB, one 1366x768 display
+at 96 dpi, conhost with no default-terminal delegation, OEM 437 / ANSI 1252,
+`LongPathsEnabled=1`, MSVC 14.16.27023, CMake 3.31.12, `C:\BC5` present, PowerShell
+5.1.19041.2673. The old box is not being written off as flaky without evidence, so the
+evidence is here: it vanished from the network twice. The first time ended in a logged
+*planned* update restart (`svchost … Service pack (Planned)`, `0x80020010`, no
+`Kernel-Power` 41, no bugcheck). The second time there was **no reboot, no sleep and no
+crash event** -- `LastBootUpTime` identical before and after -- which is a hypervisor
+pausing a guest, not Windows. atui was idle at its prompt both times and the capture
+endpoint had no request in flight, so nothing implicates the thing under test; it also
+nothing-exonerates it, which is why the machine was replaced rather than defended.
+
+**Rebuilding the environment, and the archive that was not a source tree.** The tree
+went over as two `git archive`s (superproject, then `tvision`), 1.7 MB total, extracting
+into `atui\` via `--prefix`. That replaced my earlier habit of tarring the working
+directory, which had produced **273 MB** containing `build-off/`, `build-asan/`,
+`build-nothreads/`, twelve `build-*.log` files and a `.DS_Store` -- all gitignored, none
+source. Worse, one member of that archive was a file named `-`, and since `git archive`
+only ships tracked files, finding it there meant it was **committed**: `git add -A` in
+the brace-fix commit had swept in an untracked artifact of a mistyped redirect. Removed
+from that commit (unpushed, uncited; the amend is recorded here rather than hidden).
+Then the extraction itself: I unpacked the prefix-less tar in the profile instead of in
+`atui\`, so the repo landed loose in `C:\Users\stash`. Cleaning that up was driven off
+the **archive's own entry list**, never a hand-typed list, and only after checking the
+entries were disjoint from what the profile already held -- 34 removed, nothing refused,
+nothing of the user's touched. Rule for the plan: ship the commit, with a prefix.
+
+**ninja, re-earned.** No ninja on the new box, and VS2017's bundled copy is 64-bit on a
+32-bit OS. `py -m pip install ninja` gave `ninja-1.13.2-py3-none-win32.whl` at
+`C:\Python\Scripts\ninja.exe`, which happens to be where `env.bat` already looks -- a
+path written for the old machine that came true again by luck, not by design. `configure:
+OK`, then `build: OK` for the whole tree, exe 2296 KB.
+
+**Suite on the new target:**
+
+    headless  207 passed, 0 failed, 2 skipped
+    live      211 passed, 0 failed, 2 skipped   (10.196.88.170:10001, same model)
+
+One more skip than the old box, so the skips were listed rather than counted:
+
+    SKIP permission: links are judged by what they lead to
+    SKIP signal: being asked to stop
+
+The second is the known `P5` gap. The first is new, and its reason changed: it started
+as "this host will not let us create symbolic links" (no developer mode, no privilege)
+and became a **decision** -- this project does not ask Windows hosts for symbolic-link
+privileges, because making a machine permissive so a test can pass is a decision about
+the machine. Junctions need no privilege and atui resolves them; only a symbolic link
+can reach a *file*, so that slice of coverage is declined and the skip text now says so
+instead of blaming the host.
+
+**`%*` is not shifted by `shift`.** My scenario launcher took a config name in `%1` and
+passed the rest with `shift` + `%*`. cmd keeps `%*` whole no matter how many times you
+shift, so atui received the config name as an argument and said, correctly:
+
+    atui: 'encoding' is not an option atui takes
+
+That is a launcher bug, and the message is a good one -- legible refusal plus usage
+rather than silently starting something wrong. Extra arguments now come through an
+environment variable, where cmd's quoting cannot take them apart.
+
+## The instruments, and the four ways they were wrong
+
+Reading a rendered screen is reading pixels. What I wanted was what atui **wrote** into
+the console, so: attach to the target's console and read the screen buffer as UTF-16
+(`tools/win/console_buffer.ps1`). It worked, after four defects, each of which is a
+general trap rather than a PowerShell trivia item.
+
+1. **`[short]` does not exist as a type accelerator in PowerShell 5.1** (`[int16]`
+   does). The assignment threw, the row coordinate stayed 0, and the tool printed the
+   first row of the screen **forty-three times** as if it were forty-three rows of
+   measurement. A silent failure in the instrument is worse than a loud one in the
+   subject: the output looked like data.
+2. **A tool that prints through a code page lies.** The dump came back over the
+   console's CP437 and reported the em dash as `-` and `é` as `?` -- two characters
+   that would have ended the investigation with a false accusation against atui. Fixed
+   by `-CodePoints` (non-ASCII spelled `U+XXXX`, ASCII all the way down, nothing left to
+   replace) and `-Out` (bytes written straight to a file). The first version printed
+   `A-B` for `A—B` and did not notice.
+3. **A tool must not change what it measures.** Setting `[Console]::OutputEncoding` in
+   the reader changed the **target's** console from 437 to 65001, and the next reading
+   reported 65001 as though that had been the finding. Removed, with the reasoning in a
+   comment.
+4. **`FreeConsole()` leaves no console for a warning to reach.** Once the script detaches
+   to attach elsewhere, `Write-Warning`/`Write-Error` hit an invalid handle, so the
+   *reason* for a failure was replaced by `The Win32 internal error "The handle is
+   invalid" 0x6`. All reporting now goes to the stream that survives a console swap.
+
+**A hypothesis, tested and lost.** Against atui, `AttachConsole` failed with `32`
+(`ERROR_SHARING_VIOLATION`), and the obvious suspect was atui's own buffer creation in
+`tvision/source/platform/conctl.cpp`, share mode `0`. I changed it to `FILE_SHARE_READ`,
+wrote a paragraph justifying it by accessibility, built it -- and nothing changed. The
+A/B was valid (the static library had really been rebuilt; checked before concluding), so
+the hypothesis was wrong, the change came back out, and the question got a real answer
+instead: `tools/win/attach_probe.c` performs one suspect console operation per run, and
+eight runs measured:
+
+| mode | operation | another process reading that screen |
+|---|---|---|
+| a | nothing | readable |
+| b | own buffer, share mode 0, made active | **error 32** |
+| c | own buffer, `FILE_SHARE_READ`, made active | **error 32** |
+| d | as b, buffer size set first | **error 32** |
+| e | `SetConsoleMode(input, 0)` | readable |
+| f | `SetConsoleWindowInfo` | readable |
+| g | `FreeConsole()` | readable |
+| h | own console via `AllocConsole` | readable |
+
+`SetConsoleActiveScreenBuffer` is the operation, and the share mode is irrelevant --
+which is precisely what the abandoned fix assumed otherwise. Consequence, recorded in
+the gap table: while atui runs, **no other process can read the screen it is showing**
+(the same wall a screen reader would meet), so `P5`'s capture slot stops being a nicety
+and becomes the only way to measure the TUI on Windows.
+
+## P4, on screen
+
+Launch recipe that survived: `p4\start.bat <config>` in a real console window, config in
+`ATUI_CONFIG`, extra atui arguments in `ATUI_ARGS`, and scripted endpoints on the Mac
+(`fake_stream.py --listen 0.0.0.0`, `dump_request.py --listen`).
+
+**The CJK question, settled by not needing to accuse anyone.** atui drew CJK as empty
+boxes, as it did on the old box. The control -- PowerShell writing the same code points,
+built from `[char]0x65E5`, into the same console -- drew **the same boxes and the same
+advance**:
+
+    known text: A—B céf □□ end
+    x□□yCJK  ... advances 6 cells
+    x—yEM    ... advances 3 cells
+    xcéfyLAT ... advances 5 cells
+
+So: conhost holds the real UTF-16 (verified byte-exactly from the buffer: `U+65E5 U+672C`
+in adjacent cells, no spacers), **the boxes are the console font's glyph coverage**, and
+the console advances 2 columns per ideograph while storing 1 code unit per cell. Storage
+and advance disagree for wide characters, which no amount of screenshot-reading would
+have revealed.
+
+**atui's own width accounting, made visible instead of judged.** A fixture whose rows are
+built so they line up *only if* widths are charged correctly -- `emdash:` against
+`hyphen:`, a run of `日X` against a run of `AAX`, five of each so an error would be five
+cells. Inside a fenced block the rows line up: em dash charged 1, ideograph charged 2,
+correct. In **prose** they do not: the em dash gains two blank cells, `é` one, arrows and
+curly quotes two -- and the answer was already written in the source, in a comment:
+
+    src/tui/wrap.h:4   // One byte is one display column (the app never measured cells)
+
+That is `W8`, and it is not a Windows bug: the internal form is UTF-8 on every platform,
+the wrap counts bytes as columns everywhere, and OS/2 hides it only because it folds to
+ASCII before drawing. Measured, filed, unfixed.
+
+**Markdown re-flow, found the hard way.** My first alignment fixture used single
+newlines between rows and atui's transcript **joined them into a paragraph**, which is
+correct markdown and destroyed the experiment. Anything whose alignment matters has to be
+fenced. Worth remembering both for test fixtures and for what a model's aligned table
+looks like in this TUI.
+
+**The rest of the exit criteria, met:**
+
+| | |
+|---|---|
+| renders | menu, header, transcript, input line, status bar reading provider and model from the config |
+| keys, session, exit | `--ask` sent and answered; typed text accepted; `Alt-X` returned `EXITCODE=0` with the console's palette and buffer restored |
+| character classes | em dash, `café naïve über Señor São`, `╭─╮ ┌─┬─┐ ├─┤ ╰──╯ ░▒▓█`, `→ ← “ ” ‘ ’ … ≈ ≠` all render as themselves; CJK as font boxes, as the control did |
+| typed non-ASCII | `café — 日 ok` typed into the input line; the captured request body holds `U+00E9 U+2014 U+65E5` exactly, valid JSON |
+| `ATUI_FOLD=1` | same binary: `-`, `cafe naive uber Senor Sao`, `-> <- "quoted" 'single' ...`, `+--+ +-|`, `????` for CJK -- and no `W8` gaps, because nothing is multi-byte any more |
+| resize | window dragged small while streaming: text rewrapped, menu intact, status bar dropped its hint text rather than garbling it |
+
+**One wrong inference about the machine, caught.** Screenshots began failing with
+`screen grab failed` while `ControlStatus` said `ready`. `LogonUI` was running, so I
+wrote "the desktop is locked" -- and the real story was the desktop session being
+cycled: no reboot (`LastBootUpTime` unchanged), no new logon, my scenario processes gone,
+and the MCP console showing it had been reinstalled and restarted. `LogonUI` runs during
+a reconnect as well as behind a lock screen; a process name is not a state. The
+diagnostic that would have said it directly was the process list.
+
+**Open from this phase:** `W8` (display cells), the legacy raster-font console (needs the
+font changed on the box, which is approved and not yet done), and `P5`'s screen capture,
+which the attach measurement just made mandatory rather than convenient.

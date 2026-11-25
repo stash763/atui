@@ -85,7 +85,10 @@ int skip_test( const char *why );
 // link records which kind it is when it is made.  Both symbolic links and junctions
 // are reparse points, and atui's policy is about the class, so either serves the
 // test -- but only a symbolic link can point at a file, which is what the deny-list
-// case needs.
+// case needs.  On Windows hosts of this project symbolic links are declined rather than
+// enabled: the privilege and developer mode both change the machine to let a test pass,
+// which is a thing to decide about a machine, not a thing a test should quietly arrange.
+// So on Windows this coverage comes from junctions, and the file-link case reports a skip.
 bool make_link( const std::string &target, const std::string &link, bool directory );
 
 // A command that takes roughly `seconds` to finish, in the syntax of the shell
