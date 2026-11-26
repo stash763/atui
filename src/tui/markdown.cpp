@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>             // strchr
 #include <map>
 #include <string>
 #include <vector>

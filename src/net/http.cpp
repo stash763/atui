@@ -6,7 +6,7 @@
 
 #include <stdio.h>             // fprintf, for the request dump below
 #include <stdlib.h>            // strtol
-#include <string.h>            // strlen
+#include <cstring>             // strncmp
 
 namespace atui {
 namespace net {
