@@ -2249,6 +2249,13 @@ static int panelTop_( int desktopTop )
 
 TDeskTop *initDeskTop_( TRect r )
 {
+    // What the screen can show decides which colors the dark theme answers with,
+    // so it is settled before anything is drawn. It cannot be settled any earlier
+    // than this: tvision's hardware layer comes into being with the application
+    // object (TAppInit creates it), and this is the first of the three init
+    // handlers that object's construction calls.
+    setDisplayColorMode( THardwareInfo::getScreenMode() );
+
     TDeskTop *d = new TDeskTop( r );
 
     int x1 = r.a.x;

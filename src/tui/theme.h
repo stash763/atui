@@ -40,6 +40,19 @@ TPalette& themePalette();
 // from mapColor(); it is the only place a role turns into a color.
 TColorAttr roleAttr( Role role );
 
+// Tell the theme what the screen can show, once, before the interface is built.
+// `screenMode` is what THardwareInfo::getScreenMode() reports.
+//
+// The dark theme is designed in RGB colors and kept, for the screens that
+// cannot show them, in the sixteen colors every console has. Which of the two
+// is right is a property of the screen rather than of the compiler: a C++11
+// compiler will happily build the RGB table for a console that has to quantize
+// every one of its colors down to sixteen -- which is what a Windows console
+// does until it is given ANSI color processing, and what an "ansi" terminal
+// does everywhere. A theme that is never told keeps the RGB colors, as it did
+// before the question was asked.
+void setDisplayColorMode( unsigned short screenMode );
+
 } // namespace atui::tui
 } // namespace atui
 

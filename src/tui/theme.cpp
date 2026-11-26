@@ -2,6 +2,7 @@
 
 #define Uses_TPalette
 #define Uses_TProgram
+#define Uses_TScreen        // only for TDisplay's screen-mode bits, below
 #include <tvision/tv.h>
 
 #include <cstddef>
@@ -16,6 +17,13 @@ namespace {
 
 Theme g_theme_ = ThemeDark;
 bool g_themeInit_ = false;
+
+// Whether the dark theme has to answer in sixteen colors because that is all
+// the screen shows. Only the modern color model reads it -- the legacy one has
+// nothing else -- and it is set from the display, once, by
+// setDisplayColorMode(). Left false, which is what a build that never asks
+// leaves it, the dark theme keeps the colors it was designed in.
+bool g_dark16_ = false;
 
 // Case-insensitive "classic" match for the ATUI_THEME value. Dark is the
 // default; set ATUI_THEME=classic to opt into the stock Turbo Vision palette.
@@ -98,13 +106,14 @@ const uchar kRoleClassic[rRoleCount] =
     /* rInputSep */    biosAttr( biosBlack,        biosLightGray )
 };
 
-/* The two color models part company here. Below this line, everything that
-   mentions TColor, TColorRGB or a sl* style bit belongs to the modern model
-   only, because none of those names exist in the legacy one. */
+/* The dark theme in sixteen colors, kept as plain bytes so that both models can
+   use it: the legacy one because that is all it has, and the modern one because
+   the screen it is asked to draw on can be one that has nothing else either
+   (see setDisplayColorMode()). It is data rather than a second implementation
+   of the theme, the same bytes OS/2 shows, so the sixteen-color answer is one
+   theme and not two that have to be kept in step.
 
-#if defined( TVISION_LEGACY_COLORS )
-
-/* The dark theme in sixteen colors. Backgrounds collapse onto black -- the
+   Backgrounds collapse onto black -- the
    light gray one becomes dark gray so that dialogs, menus and window bodies
    still stand off the desktop -- and foregrounds become the bright value of
    their own hue so that they read on either.
@@ -177,7 +186,7 @@ inline uchar biosDarkByte( uchar biosByte )
    display and on any ANSI terminal that is a slightly lighter black, exactly
    what a code panel wants. A text-mode VGA set to blink rather than intensity
    will blink a code block instead; nothing else in either theme sets that bit. */
-const uchar kRoleDark[rRoleCount] =
+const uchar kRoleDarkBios[rRoleCount] =
 {
     /* rNormal */      biosAttr( biosLightGray,    biosBlack    ),
     /* rUser */        biosAttr( biosLightGreen,   biosBlack    ),
@@ -215,9 +224,15 @@ const uchar kRoleDark[rRoleCount] =
     /* rInputSep */    biosAttr( biosDarkGray,     biosBlack    )
 };
 
+/* The two color models part company here. Below this line, everything that
+   mentions TColor, TColorRGB or a sl* style bit belongs to the modern model
+   only, because none of those names exist in the legacy one. */
+
+#if defined( TVISION_LEGACY_COLORS )
+
 TColorAttr darkRoleAttr( int role )
 {
-    return TColorAttr( kRoleDark[role] );
+    return TColorAttr( kRoleDarkBios[role] );
 }
 
 #else // the modern color model: RGB colors and style bits
@@ -269,17 +284,24 @@ const uint32_t bgDark[16] =        // classic bg -> dark-theme bg
 };
 
 // Re-color one classic palette byte (BIOS fg in the low nibble, BIOS bg
-// in the high nibble) for the dark theme.
-TColorAttr darkAttr( uchar biosByte )
+// in the high nibble) for the dark theme. A screen that has only the sixteen
+// console colors gets the byte the sixteen-color table already defines: a BIOS
+// color is one it has, so tvision sends it as it is. The mode is an argument
+// rather than a look at the flag, so that the tables built below say which
+// screen they were built for.
+TColorAttr darkAttr( uchar biosByte, bool sixteen )
 {
+    if( sixteen )
+        return TColorAttr( biosDarkByte( biosByte ) );
     uchar fg = biosByte & 0x0F;
     uchar bg = (biosByte >> 4) & 0x0F;
     return TColorAttr( TColor( int(fgDark[fg]) ),
                        TColor( int(bgDark[bg]) ) );
 }
 
-// The dark roles as RGB. Transcript text sits on one of two backgrounds: the
-// prose background, and a slightly darker one for code.
+// The dark roles as RGB, for the screens that can show them; kRoleDarkBios is
+// the same theme for the screens that cannot. Transcript text sits on one of
+// two backgrounds: the prose background, and a slightly darker one for code.
 const uint32_t kPaneBg = 0x152238;   // dark navy background
 const uint32_t kCodeBg = 0x0C1626;   // code background (slightly darker)
 
@@ -290,7 +312,7 @@ struct RgbRole
     ushort style;
 };
 
-const RgbRole kRoleDark[rRoleCount] =
+const RgbRole kRoleDarkRgb[rRoleCount] =
 {
     /* rNormal */      { 0xF2E4AC, kPaneBg, 0                    },
     /* rUser */        { 0x9BD49E, kPaneBg, 0                    },
@@ -325,7 +347,12 @@ const RgbRole kRoleDark[rRoleCount] =
 
 TColorAttr darkRoleAttr( int role )
 {
-    const RgbRole &r = kRoleDark[role];
+    if( g_dark16_ )
+        // No style bits: this table carries emphasis in the color, as its own
+        // note explains, and bold would ask the terminal for a bright variant
+        // of a foreground that is already the bright one.
+        return TColorAttr( kRoleDarkBios[role] );
+    const RgbRole &r = kRoleDarkRgb[role];
     return TColorAttr( TColor( int(r.fg) ), TColor( int(r.bg) ), r.style );
 }
 
@@ -366,19 +393,28 @@ TPalette& darkPalette()
 struct DarkEntries
 {
     TColorAttr values[ sizeof( cpAppColor ) - 1 ];
-    DarkEntries()
+    explicit DarkEntries( bool sixteen )
     {
         const char *src = cpAppColor;
         for( size_t i = 0; i < sizeof( cpAppColor ) - 1; ++i )
-            values[i] = darkAttr( uchar( src[i] ) );
+            values[i] = darkAttr( uchar( src[i] ), sixteen );
     }
 };
 
 TPalette& darkPalette()
 {
-    static const DarkEntries entries;
-    static TPalette palette( entries.values, ushort( sizeof( cpAppColor ) - 1 ) );
-    return palette;
+    // One table per kind of screen, and the call hands over the one that fits.
+    // Which of the two is right is decided by what the display reported, and a
+    // single table built on the first call would freeze whichever answer was in
+    // force at that moment -- so both are built, once, on the first call. That
+    // costs a second array of 135 attributes, which is cheaper than a rule about
+    // who has to ask the screen before anybody paints.
+    static const DarkEntries rgbEntries( false ), biosEntries( true );
+    static TPalette rgbPalette( rgbEntries.values,
+                                ushort( sizeof( cpAppColor ) - 1 ) );
+    static TPalette biosPalette( biosEntries.values,
+                                 ushort( sizeof( cpAppColor ) - 1 ) );
+    return g_dark16_ ? biosPalette : rgbPalette;
 }
 
 #endif // color model
@@ -402,6 +438,18 @@ bool setTheme( Theme theme )
     if( theme == g_theme_ ) return false;
     g_theme_ = theme;
     return true;
+}
+
+void setDisplayColorMode( unsigned short screenMode )
+{
+    // smColor256 and smColorHigh are tvision's report of what the display said
+    // when asked how many colors it has: 256 or more, and 2^24 or more. A mode
+    // with neither is the sixteen-color screen -- Windows' console on the path
+    // where it has not switched to ANSI color, and a terminal described as
+    // "ansi" or "vt100" anywhere. The legacy color model cannot show anything
+    // but those sixteen, so the flag asks nothing of it; the two tables are the
+    // same ones either way.
+    g_dark16_ = ( screenMode & ( TDisplay::smColor256 | TDisplay::smColorHigh ) ) == 0;
 }
 
 TPalette& themePalette()

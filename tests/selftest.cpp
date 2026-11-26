@@ -531,6 +531,90 @@ int test_theme_palette_contrast()
     return 0;
 }
 
+// tvision's screen-mode bits, which come from the display's own answer about
+// how many colors it has: smColor256 (0x0200) means 256 or more and smColorHigh
+// (0x0400) the twenty-four-bit kind, so a mode with neither is a screen that has
+// the sixteen console colors and nothing else. Spelled as numbers because the
+// suite reaches tvision through tui/theme.h, which asks for the palette only;
+// the check below that a screen with those bits gets RGB colors is what ties the
+// numbers to what they are called.
+static const unsigned short kScreen16  = 0x0003;                    // smCO80
+static const unsigned short kScreenRgb = 0x0003 | 0x0200 | 0x0400;  // and the colors
+
+int test_theme_display_colors()
+{
+    // Which colors the dark theme answers with is a property of the screen, not
+    // of the compiler. Windows is what proved it: a C++11 compiler built the
+    // twenty-four-bit palette for a console that has sixteen colors and snaps
+    // every color it is handed to the nearest one it owns, and the transcript
+    // arrived as one blue field. The prose background and the code background
+    // both became console blue, twelve roles became one yellow-on-blue byte, and
+    // the comment color became blue on blue. A sixteen-color screen is nothing
+    // exotic, so the fallback is a design rather than a rounding, and this test
+    // is what keeps it one.
+    atui::tui::setTheme( atui::tui::ThemeDark );
+    atui::tui::setDisplayColorMode( kScreen16 );
+
+    // Every role has to ask for a color the screen has. In a model that offers
+    // more than that, a BIOS color is the statement that nothing is left to
+    // snap: tvision sends it unchanged.
+    TColorAttr seen[ atui::tui::rRoleCount ];
+    int seenCount = 0;
+    for( int r = 0; r < atui::tui::rRoleCount; ++r )
+    {
+        TColorAttr a = atui::tui::roleAttr( atui::tui::Role( r ) );
+        if( !attrReadable( a ) ) return -( r + 1 );
+#if !defined( TVISION_LEGACY_COLORS )
+        if( !a.getForeground().isBIOS() || !a.getBackground().isBIOS() )
+            return -( 100 + r );
+#endif
+        bool counted = false;
+        for( int i = 0; i < seenCount; ++i )
+            if( seen[i] == a ) counted = true;
+        if( !counted ) seen[ seenCount++ ] = a;
+    }
+    // Fifteen attributes across twenty-nine roles. The colors the theme was
+    // designed in come down to seven on the same screen, which is the difference
+    // between a theme and a wash.
+    if( seenCount < 12 ) return -1;
+
+    // Code still reads as a panel inside the prose: the pair that the snap put on
+    // one console blue is the one the layout depends on.
+    if( sameBackground( atui::tui::roleAttr( atui::tui::rNormal ),
+                        atui::tui::roleAttr( atui::tui::rCode ) ) )
+        return -2;
+
+    // The same question about the palette, which colors the desktop, the windows
+    // and the menus. An RGB entry gets snapped on the way out exactly like a
+    // role does, and the desktop's designed navy turning into console blue is
+    // where all of this started.
+    TPalette& palette = atui::tui::themePalette();
+    for( int i = 1; i <= 135; ++i )
+    {
+        if( palette[i] == 0 ) continue;   // subpalette terminators
+        if( !attrReadable( palette[i] ) ) return -( 1000 + i );
+#if !defined( TVISION_LEGACY_COLORS )
+        if( !palette[i].getForeground().isBIOS()
+            || !palette[i].getBackground().isBIOS() )
+            return -( 2000 + i );
+#endif
+    }
+
+#if !defined( TVISION_LEGACY_COLORS )
+    // And the other half, without which the fix would be a downgrade: asked
+    // about a screen that has the colors, the theme answers with them. Left on
+    // this mode, which is what the rest of the suite runs as and the same state
+    // as never having been told.
+    atui::tui::setDisplayColorMode( kScreenRgb );
+    TColorAttr rgb = atui::tui::roleAttr( atui::tui::rNormal );
+    if( !rgb.getForeground().isRGB() || !rgb.getBackground().isRGB() )
+        return -3;
+#endif
+
+    atui::tui::setTheme( atui::tui::ThemeClassic );
+    return 0;
+}
+
 int test_provider_singleton_mutable()
 {
     // providerSettings() is one process-wide instance the Providers dialog
@@ -3503,6 +3587,7 @@ void init()
     register_test( "theme: role contrast", &test_theme_role_contrast );
     register_test( "theme: role luminance", &test_theme_role_luminance );
     register_test( "theme: palette contrast", &test_theme_palette_contrast );
+    register_test( "theme: display colors", &test_theme_display_colors );
     register_test( "provider: singleton mutable", &test_provider_singleton_mutable );
     register_test( "provider: store add/switch/delete", &test_provider_store );
     register_test( "provider: model lists", &test_provider_model_lists );
