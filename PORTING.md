@@ -466,6 +466,18 @@ and it applies to bytes going out as much as to bytes coming in. `TText::toCodeP
 returning `'\0'` is the good shape: the caller decides. A Windows file call that
 best-fits a name into a neighbouring name is the bad shape, and it is what happens today.
 
+**The display language is English.** That is a scope decision, recorded with its
+measurements in `WINDOWS_PORT.md` (*Scope: the display language is English*), and it is
+about display, not about this contract: everything in this section is about moving bytes to
+a boundary without lying about them, which an English-only product still needs, because an
+em dash is not a foreign character, `café` is a name, and a model can answer in a language
+atui will draw as boxes. What English does put out of scope is rendering CJK well, and with
+it the per-console mode that would require console behaviour atui cannot measure. A port to
+a new platform therefore inherits every rule in this section and no obligation to draw Han
+-- and it should not weaken the width or fold rules in order to avoid that, because those
+are what keeps the rest of the line in place when a character arrives that nothing on
+screen can show.
+
 **The fold is a property of the terminal in front of the program, not of the machine it
 was compiled for.** `foldTerminalText()` answers yes for OS/2, DOS and DPMI and no
 elsewhere, and `ATUI_FOLD` overrides it either way, because a CP850 window on a

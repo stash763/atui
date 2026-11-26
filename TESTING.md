@@ -7287,3 +7287,43 @@ made rather than assumed).
 is a running atui holding the exe. It looks like a compile failure and stops the build
 after the compile has already succeeded, so the mutation I was testing appeared to be
 rejected by the compiler. Kill the process, rebuild, then read the result.
+
+---
+
+## 2026-11-25 (later) -- CJK is out of scope, and the reason is three measurements
+
+The question was whether atui should stop replacing unrenderable characters with `?` and
+grow a CJK-capable output path instead. Answer after measuring: **the display language is
+English, CJK rendering is a non-goal** (`WINDOWS_PORT.md`, *Scope: the display language is
+English*). The three measurements that decide it, all on the Windows 10 box:
+
+| what was run | what happened | what it means |
+|---|---|---|
+| Han written by atui, and by PowerShell as a control, into the CP 437 console | both drew empty boxes, both advanced 2 cells | the glyph is the font's, not atui's -- no code atui writes can supply it |
+| the same Han in a console switched to code page 932 with a font that has the glyphs | **the glyphs appeared** | a CJK-capable console is a console *configuration*, so the feature was never mostly in atui |
+| CP 437 box drawing in that same 932 console | `╰──╯` arrived as `ÔùÇ` | that console cannot spell atui's line drawing: a CJK mode would have to force the ASCII fold |
+| Han advance in the 932 console | **1 cell**, not the 2 CP 437 gives | and it would need a per-console width rule as well |
+
+So the path to CJK on Windows runs through console settings and a mode whose behaviour this
+box cannot show -- choosing it here would be inventing console behaviour, which is the
+mistake pattern this port has now caught itself making three times. What the decision
+deliberately does **not** touch: UTF-8 as the internal form, `W8`'s cell measure, the fold,
+and storage. An answer in an undisplayable language still reaches the journal and the
+session file byte-exact -- every fold call site is in `src/tui/app.cpp`, building rows to
+draw, and none of them is a writer.
+
+**An instrument was destroying its subject, and it was mine.** Two atui instances died
+while I was watching them during this phase, and the journal said, unresolved, that the
+cause was an idle timeout or the console host closing a window. Both guesses were wrong.
+The cause was my own control sweep: `atui_ctl.ps1 stop` / `end` matches windows by the
+`atui-*` title pattern, which is every atui window there is, so a cleanup call ended the
+very instance under observation -- and it did it between calls, where it looked like the
+machine had. Tested the alternative explanation before discarding it: a window launched
+from a remote call *survives* into the next call, so process teardown was not the cause.
+
+Two rules follow, both about tools rather than atui: **name the pid, never the title**, when
+a control command ends a process that something else is measuring; and when an observation
+goes missing, check what cleanup ran between the observations before blaming the platform.
+This entry replaces the unresolved note rather than adding to it -- an explanation that was
+never tested should not be left in the record just because it was written honestly as
+unresolved.

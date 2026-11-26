@@ -24,7 +24,9 @@ struct Run
 // Both tables are ascending and disjoint.  Where a range could not be settled from the
 // measurement it was left out, which charges one column: for a mark that is an over-count
 // of one, and the safe direction.  Indic combining marks are the honest gap -- a
-// Devanagari transcript wraps slightly early -- and adding the block is a table edit.
+// Devanagari transcript wraps slightly early -- and adding the block is a table edit,
+// which the project's English-only display scope (WINDOWS_PORT.md) keeps as an edit nobody
+// is queued to make rather than a defect waiting to be fixed.
 
 // Charged nothing: they belong to the character before them.
 const Run kZero[] = {
