@@ -7375,5 +7375,6 @@ What is left standing: `signals.h` keeps the measurements and the reason (so the
 not installed a second time by someone reading the old gap table), the suite keeps a
 counted skip on Windows that names all three reasons, and OS/2 and DOS now register a
 skipping line of their own instead of nothing -- an absent mechanism should read as a
-limit, not as a smaller suite. Exiting on Windows is through the menu and Alt-X, which was
-already measured working.
+limit, not as a smaller suite. Exiting on Windows is through Alt-X, measured in `P4` (exit
+code 0, palette and screen buffer restored), and the menu's *Exit...* item posts the same
+`cmQuit` command rather than being a second way out.

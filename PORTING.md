@@ -126,9 +126,10 @@ Checked rather than assumed:
   free to claim even where it is an event: on Windows, OS/2 and DOS it is the **copy key**,
   and a full-screen program that quits on it has taken a clipboard shortcut away from the
   person using it. So the answer on a platform without signals is not a second handler
-  bolted to the same flag: it is that leaving is what the menu and Alt-X are for. A port
-  should say which of these is true there in a skip the suite counts, and `core/signals.h`
-  keeps the measurements so the door is not installed twice.
+  bolted to the same flag: it is that leaving is what Alt-X and the menu's Exit item are
+  for, which post one command and are measured on the target. A port should say which of
+  these is true there in a skip the suite counts, and `core/signals.h` keeps the
+  measurements so the door is not installed twice.
 
 ## What a threaded host has to guard
 

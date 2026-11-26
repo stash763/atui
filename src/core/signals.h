@@ -29,7 +29,9 @@
 //     while the ticks went on at 20 Hz.
 //   - Nor should it be an ask.  On Windows, OS/2 and DOS Ctrl+C is the copy key, and a
 //     program that leaves on it has taken a clipboard shortcut away from the person using
-//     it.  atui exits through its menu.
+//     it.  atui leaves exiting to Alt-X and the menu's Exit item, which post the same
+//     command, and Alt-X leaving with status 0 and the screen put back is measured on the
+//     target (`TESTING.md`, the `P4` table).
 //   - Close, logoff and shutdown do arrive and claiming them buys nothing: Windows ends
 //     the process when the handler returns, so the loop never gets its turn (measured: a
 //     console window closed over a traced atui died with no stop line while ticks ran).

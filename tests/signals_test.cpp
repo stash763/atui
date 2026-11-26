@@ -192,7 +192,9 @@ int test_a_stop_request_reaches_a_running_command()
 // tvision clears `ENABLE_PROCESSED_INPUT` so Ctrl+C reaches it as the key 0x03 rather
 // than as an event (measured with the tick traced: no handler call, no echo, no stop,
 // ticks still at 20 Hz); Ctrl+C must not be taken as a stop request in any case, because
-// on this platform it is the copy key, and atui exits through its menu; and the events
+// on this platform it is the copy key, and leaving is what Alt-X and the menu's Exit item
+// are for -- one command, and Alt-X leaving with status 0 is measured on this console;
+// and the events
 // that do arrive -- close, logoff, shutdown -- end the process when the handler returns,
 // so the loop never reads the flag (measured: a closed console window killed a traced
 // atui with no stop line).  Ctrl+Break would work and is not implemented because nothing
@@ -207,7 +209,7 @@ int test_being_asked_to_stop()
 #if defined( _WIN32 )
     return skip_test( "Windows: Ctrl+C is the copy key and arrives as a key, not an event, "
                       "and the console events that do arrive end the process before the "
-                      "loop can read a flag -- exit is through the menu" );
+                      "loop can read a flag -- exiting is Alt-X or the menu's Exit item" );
 #else
     return skip_test( "no way to ask: this platform has neither SIGTERM nor console "
                       "control events" );
