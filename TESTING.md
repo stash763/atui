@@ -7327,3 +7327,53 @@ goes missing, check what cleanup ran between the observations before blaming the
 This entry replaces the unresolved note rather than adding to it -- an explanation that was
 never tested should not be left in the record just because it was written honestly as
 unresolved.
+
+---
+
+## 2026-11-25 (later still) -- a handler for Ctrl+C, installed and taken back out
+
+`W9` was meant to close the last easy gap in the port: `signals.cpp` excluded `_WIN32`, so
+nothing asked atui to stop on a Windows console and Ctrl+C would kill it mid-turn. A
+`SetConsoleCtrlHandler` went in, four tests with it, and the skipping line came off the
+suite. Then it was measured against the screen it was written for, and all of it came back
+out: **on this platform there is nothing for the handler to catch, and Ctrl+C is the copy
+key, so it must not be taken as a quit even where it does arrive** (`PORTING.md`,
+`core/signals.h`).
+
+**The instrument was already in the program.** `ATUI_TURN_DEBUG=1` with stderr redirected
+(`atui.exe 2>tick.log`) traces every tick and every pump at millisecond resolution, and the
+stop path logs a `stop` line. So the question "did the handler run, and did the loop see
+it?" becomes "is there a `stop` line, and did the ticks stop?" -- with the ticks measured
+running at 20 Hz throughout, which rules out the "the loop was parked" explanation before
+it can be offered. Redirecting stderr works while atui owns the screen.
+
+| what was tried | what happened | what it settles |
+|---|---|---|
+| Ctrl+C into atui's window, twice, handler installed | no `^C` echo, no `stop` line, ticks went on at 20 Hz, process alive | Ctrl+C did not reach the handler, and did not become a stop |
+| tvision's source | `hardwrvr.cpp:164`, `win32con.cpp:72` clear `ENABLE_PROCESSED_INPUT` -- and the comment there reads "Report CTRL+C and SHIFT+Arrow events", which is the opposite of what clearing it does: Ctrl+C is reported as *key input* | the mechanism, from the code, agreeing with the measurement |
+| Ctrl+Pause (Break) through the keyboard injection | nothing logged at all | the injection cannot synthesise Break, so the one event that *would* work cannot be produced from here |
+| another process: `FreeConsole` / `AttachConsole(pid)` / `GenerateConsoleCtrlEvent` | `AttachConsole: failed, err 32` | atui's console refuses external attachers, at any share mode -- the same wall that keeps external readers out, so control has to be in-process too |
+| closing the console window (the Close button) | atui died, and the log has **no `stop` line** while ticks were running until then | claiming `CTRL_CLOSE_EVENT` buys nothing: Windows ends the process when the handler returns, so the loop never reads the flag |
+
+**Four green tests told me nothing, and that was the point to notice.** On the target the
+suite had gone 220/0/2 to 224/0/1, and the four new lines were passing while the feature
+could not fire. They asserted a switch statement I had written -- first event claimed,
+second refused, unknown code not claimed. A test that cannot fail for any reason outside
+your own file is not evidence about the platform, and the honest measurement was the one
+that pressed the key.
+
+**Two instrument failures worth remembering.** PowerShell on this box is 2.0: `Add-Type`
+has no `-TypeName`, so the marshalled P/Invoke never existed -- and the script went on to
+log `attached ok; generating` anyway, because a failed type lookup is a non-terminating
+error. An instrument that reports success it did not achieve is worse than one that fails,
+so the helper was rewritten in C (`ctrl_send.c`) with `GetLastError()` printed for every
+call. Second: the earlier finding that atui's console cannot be attached to turned this
+from "one command away" into "not measurable from here", which is a result about the box
+rather than about the code and is recorded as such.
+
+What is left standing: `signals.h` keeps the measurements and the reason (so the door is
+not installed a second time by someone reading the old gap table), the suite keeps a
+counted skip on Windows that names all three reasons, and OS/2 and DOS now register a
+skipping line of their own instead of nothing -- an absent mechanism should read as a
+limit, not as a smaller suite. Exiting on Windows is through the menu and Alt-X, which was
+already measured working.

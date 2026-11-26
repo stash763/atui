@@ -117,6 +117,18 @@ Checked rather than assumed:
   a socket read -- and those waits read the same flag to know they should stop early. A
   tick that forgave the request on its way out left a `sleep 40` to run to completion,
   with the check in place and nothing to see.
+- **Being asked to stop is a POSIX affordance, and a new platform should not assume it has
+  one.** Windows was tried on 25 Nov 2026 and taken back out the same day: it has console
+  control events rather than signals, and installing a handler for them changes nothing a
+  user can see. Ctrl+C arrives as the key `0x03` and not as an event, because tvision
+  clears `ENABLE_PROCESSED_INPUT`; the events that do arrive -- close, logoff, shutdown --
+  end the process when the handler returns, before the loop can read a flag. Nor is Ctrl+C
+  free to claim even where it is an event: on Windows, OS/2 and DOS it is the **copy key**,
+  and a full-screen program that quits on it has taken a clipboard shortcut away from the
+  person using it. So the answer on a platform without signals is not a second handler
+  bolted to the same flag: it is that leaving is what the menu and Alt-X are for. A port
+  should say which of these is true there in a skip the suite counts, and `core/signals.h`
+  keeps the measurements so the door is not installed twice.
 
 ## What a threaded host has to guard
 

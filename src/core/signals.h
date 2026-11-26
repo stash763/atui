@@ -19,29 +19,29 @@
 // quits the way the menu does.  That path is the only one that knows how to cancel a
 // turn, wait for the worker to finish with it, and put the screen back.
 //
-// Two doors, one flag.  POSIX has signals.  A Windows console has console control
-// events, which are not signals and do not arrive through `signal()`: Ctrl+C, Ctrl+Break,
-// the window closing, logoff, shutdown.  `installShutdownHandlers()` registers whichever
-// the platform has, and both produce the same flag, so everything downstream -- the tick,
-// the loops that wait on a tool's child, the quit path -- is shared code that does not
-// know which door the ask came through.  OS/2 has neither SIGTERM nor SIGHUP in its C
-// runtime and no console to deliver a break through, so there these functions do nothing
-// and nothing changes.
+// POSIX, and only POSIX -- which is a measured answer rather than an omission.  A Windows
+// console has console control events instead of signals, and this project tried that door
+// (installed 25 Nov 2026, withdrawn the same day) and found nothing behind it:
 //
-// A Windows console handler has to answer a question a POSIX handler never asks: whether
-// it claimed the event.  Claiming the first ask (returning TRUE) is what stops Windows
-// from terminating the process on the spot, which is the whole point -- the loop then
-// leaves the way the menu item does, cancelling the turn and putting the terminal back.
-// Refusing a second ask while the first is still unanswered is deliberate: a loop parked
-// in a tool's blocking read may not notice the flag for seconds, and a Ctrl+C that
-// silently did nothing twice would be worse than the default action.  So asking once
-// means "leave properly" and asking again means "now", which is what users already
-// expect from the key.
+//   - Ctrl+C does not arrive.  tvision clears `ENABLE_PROCESSED_INPUT` so that Ctrl+C
+//     comes through as the key 0x03 rather than as an event, and with a handler installed
+//     and the tick traced, pressing Ctrl+C produced no handler call, no echo and no stop
+//     while the ticks went on at 20 Hz.
+//   - Nor should it be an ask.  On Windows, OS/2 and DOS Ctrl+C is the copy key, and a
+//     program that leaves on it has taken a clipboard shortcut away from the person using
+//     it.  atui exits through its menu.
+//   - Close, logoff and shutdown do arrive and claiming them buys nothing: Windows ends
+//     the process when the handler returns, so the loop never gets its turn (measured: a
+//     console window closed over a traced atui died with no stop line while ticks ran).
 //
-// What claiming does not buy, on any console: for close, logoff and shutdown Windows ends
-// the process when the handler returns, so whether the loop gets its turn is a race.  The
-// handler does not wait to win that race.  Blocking in a handler is how a program becomes
-// unhung-able, and this program has measured exactly that failure on POSIX (see above).
+// Ctrl+Break is the one event that would work.  It is not installed because it cannot be
+// measured from here: the keyboard injection this project has cannot synthesise Break, and
+// no other process can attach to atui's console to generate the event (error 32, at any
+// share mode).  Code for a case that cannot be shown is not worth its cost.
+//
+// OS/2 has neither SIGTERM nor SIGHUP in its C runtime and no console to deliver a break
+// through; MS-DOS has neither mechanism at all.  There these functions do nothing and
+// nothing changes.
 #ifndef ATUI_CORE_SIGNALS_H
 #define ATUI_CORE_SIGNALS_H
 
@@ -60,19 +60,6 @@ bool shutdownRequested();
 
 // Forgets the request, so one signal cannot end the program twice.
 void clearShutdownRequest();
-
-#if defined( _WIN32 )
-// The body of the console control handler: reports whether `eventCode` -- a Windows
-// `CTRL_*_EVENT` -- is an ask atui recognises, and claims it.  Returns true for the first
-// recognised ask, false for one that is not an ask and for a second ask whose first is
-// still unanswered.
-//
-// It is a function rather than inline in the `BOOL WINAPI` shim for one reason: the shim
-// can only be reached by sending a control event to every process attached to this
-// console, which would end the test run with it.  Called by Windows, and by the tests, on
-// exactly the argument Windows would pass.
-bool noteConsoleCtrlEvent( unsigned long eventCode );
-#endif
 
 } // namespace core
 } // namespace atui
