@@ -1,4 +1,4 @@
-// Tests for the shutdown-signal flag.
+// Tests for the shutdown-request flag.
 //
 // The interesting property is not that a flag gets set -- it is that nothing else
 // happens. A handler that tries to be helpful (print, lock, flush, exit) is a handler
@@ -8,6 +8,14 @@
 // tests assert the flag, and assert that the process is still here to notice it --
 // which is the same assertion made the only way it can be made, by reaching the next
 // line.
+//
+// The ask arrives through one of two doors -- a POSIX signal, or a Windows console
+// control event -- and the file is organised around that: the tests that are about a
+// door are written for that door, and the tests that are about what the flag does are
+// written once, behind `ask_for_stop()`.  Every platform that can be asked to stop
+// registers the same four properties.  The two that cannot (OS/2, MS-DOS) register a
+// skip that says why, rather than registering nothing and leaving the suite quietly
+// smaller than another platform's.
 #include "harness.h"
 #include "core/signals.h"
 #include "core/thread.h"
@@ -16,14 +24,28 @@
 #if !defined( __OS2__ ) && !defined( __DOS__ ) && !defined( _WIN32 )
 #  define ATUI_TEST_SIGNALS 1
 #endif
+#if defined( _WIN32 )
+#  define ATUI_TEST_CONSOLE_CTRL 1
+#endif
 
-#if defined( ATUI_TEST_SIGNALS )
+#if defined( ATUI_TEST_SIGNALS ) || defined( ATUI_TEST_CONSOLE_CTRL )
 // `waited` is measured on the wall clock: std::clock() counts CPU, and while a child
 // process sleeps the program uses none, so it would report a fast exit either way.
 #  include <chrono>
-#  include <csignal>
 #  include <string>
+#endif
+
+#if defined( ATUI_TEST_SIGNALS )
+#  include <csignal>
 #  include <unistd.h>          // usleep, for the one wait below
+#endif
+
+#if defined( ATUI_TEST_CONSOLE_CTRL )
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>         // the CTRL_*_EVENT constants, so the tests pass exactly
+                               // the argument Windows would pass
 #endif
 
 namespace atui_test {
@@ -112,6 +134,116 @@ int test_the_default_action_is_replaced()
     return wasOurs ? 0 : -1;
 }
 
+#endif // ATUI_TEST_SIGNALS
+
+#if defined( ATUI_TEST_CONSOLE_CTRL )
+
+// A Windows console control handler is added to a list rather than installed over what
+// was there, so there is no previous disposition to restore and this test fixture is
+// honestly empty.  It exists under the same name so the tests that are about the flag
+// read the same on both platforms.
+struct SavedHandlers {};
+
+// Ctrl+C asks, it does not take.
+//
+// What these tests cannot do is send a real Ctrl+C: a console control event goes to every
+// process attached to the console, the test runner among them, so the ask is made through
+// the function the handler's shim calls, on the argument Windows would pass it.  That the
+// event arrives, and that claiming it keeps the process alive long enough to leave
+// properly, is measured on the desktop and recorded in TESTING.md.
+int test_being_asked_to_stop()
+{
+    SavedHandlers saved;
+    atui::core::installShutdownHandlers();
+    atui::core::clearShutdownRequest();
+
+    if( atui::core::shutdownRequested() )
+        return -1;                       // a request left over from something else
+    if( !atui::core::noteConsoleCtrlEvent( CTRL_C_EVENT ) )
+        return -2;                       // refused: Ctrl+C would do nothing at all
+    if( !atui::core::shutdownRequested() )
+        return -3;                       // claimed, and the flag it exists for is down
+    atui::core::clearShutdownRequest();
+    if( atui::core::shutdownRequested() )
+        return -4;                       // and it can be forgotten, so it fires once
+    return 0;
+}
+
+// Break, close, logoff and shutdown are the other ways a console ends, same answer.  And
+// an event code atui has not read is not claimed, because a handler that claims an event
+// it has not looked at is telling the operating system what the process intends to do
+// without having read the request.
+int test_the_other_console_events_ask_too()
+{
+    SavedHandlers saved;
+    atui::core::installShutdownHandlers();
+
+    const unsigned long asks[] = {
+        CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT
+    };
+    for( size_t i = 0; i < sizeof( asks ) / sizeof( asks[0] ); ++i )
+    {
+        atui::core::clearShutdownRequest();
+        if( !atui::core::noteConsoleCtrlEvent( asks[i] ) )
+            return (int) ( -10 - (int) i );      // this console event asks nothing
+        if( !atui::core::shutdownRequested() )
+            return (int) ( -20 - (int) i );      // claimed without setting the flag
+    }
+
+    atui::core::clearShutdownRequest();
+    if( atui::core::noteConsoleCtrlEvent( 0x12345UL ) )
+        return -31;                      // claimed an event it cannot know
+    if( atui::core::shutdownRequested() )
+        return -32;                      // and pulled the flag with it
+    return 0;
+}
+
+// On this platform the default action is what Windows does when no handler claims the
+// event, so "the default action is replaced" means: the first ask is claimed, and the
+// process decides when to leave.  The other half is asserted too -- a second ask while
+// the first is unanswered is refused, so a loop that cannot notice the flag is not made
+// unreachable by the thing that was supposed to stop it politely.
+int test_the_default_action_is_replaced()
+{
+    SavedHandlers saved;
+    atui::core::installShutdownHandlers();
+    atui::core::clearShutdownRequest();
+
+    if( !atui::core::noteConsoleCtrlEvent( CTRL_C_EVENT ) )
+        return -1;                       // first ask not claimed: Windows ends the process
+    if( atui::core::noteConsoleCtrlEvent( CTRL_C_EVENT ) )
+        return -2;                       // second ask claimed: nothing left to escalate to
+    atui::core::clearShutdownRequest();
+    if( !atui::core::noteConsoleCtrlEvent( CTRL_C_EVENT ) )
+        return -3;                       // a forgotten ask is claimable again
+    atui::core::clearShutdownRequest();
+    return 0;
+}
+
+#endif // ATUI_TEST_CONSOLE_CTRL
+
+#if defined( ATUI_TEST_SIGNALS ) || defined( ATUI_TEST_CONSOLE_CTRL )
+
+// The door, in one line per platform.
+bool ask_for_stop()
+{
+#if defined( ATUI_TEST_SIGNALS )
+    return std::raise( SIGTERM ) == 0;
+#else
+    return atui::core::noteConsoleCtrlEvent( CTRL_C_EVENT );
+#endif
+}
+
+// And the pause, likewise.
+void nap_ms( unsigned ms )
+{
+#if defined( ATUI_TEST_SIGNALS )
+    usleep( ms * 1000 );
+#else
+    Sleep( ms );
+#endif
+}
+
 // The flag exists so that code a long way from the handler can read it.  The distance
 // that matters is a tool's child process: waiting for one is the longest thing atui does
 // on the user's behalf, and a stop request has to reach the loop holding the pipe open
@@ -124,7 +256,8 @@ class LongCommand : public atui::core::Task
 public:
     virtual void run()
     {
-        result_ = atui::tools::g_runCommandTool.execute( "{\"command\":\"sleep 5\"}" );
+        result_ = atui::tools::g_runCommandTool.execute(
+            "{\"command\":\"" + wait_command( 5 ) + "\"}" );
     }
 
     const std::string &result() const { return result_; }
@@ -154,11 +287,11 @@ int test_a_stop_request_reaches_a_running_command()
     // the tool owns the only evidence that it has. It is also not load-bearing: with
     // the flag already set the loop stops on its first pass, and with it set later it
     // stops on the next, so either timing has to produce what is checked below.
-    usleep( 300 * 1000 );
+    nap_ms( 300 );
 
     const std::chrono::steady_clock::time_point asked =
         std::chrono::steady_clock::now();
-    if( std::raise( SIGTERM ) != 0 )
+    if( !ask_for_stop() )
     {
         thread.join();                      // never leave a thread running behind a
         return -2;                          // test that could not start the check
@@ -171,30 +304,25 @@ int test_a_stop_request_reaches_a_running_command()
                                             // exactly what the app's tick is not
     if( waitedMs > 3000 )
         return (int) ( -10000 - waitedMs ); // it sat out the command: the number is
-                                            // the `sleep 5` saying it was not stopped
+                                            // the wait command saying it was not stopped
     if( work.result().find( "stopped before finishing" ) == std::string::npos )
         return -3;
     return 0;
 }
 
-#endif // ATUI_TEST_SIGNALS
+#else  // this platform cannot be asked to stop
 
-#if defined( _WIN32 )
-
-// The four tests above cannot run here, and registering nothing is not the honest way to
-// say so -- it leaves the Windows suite four assertions smaller than every other
-// platform's without that showing anywhere in its own line.  What is missing is one
-// thing, and it is the product's, not the host's: `Ctrl+C` is a console control event,
-// atui installs no handler for it, so nothing ever asks the process to stop and
-// `shutdownRequested()` is false for all of its life.  When `SetConsoleCtrlHandler`
-// lands -- `WINDOWS_PORT.md` carries the gap -- this function goes away and the four
-// take its place.
+// OS/2 has neither SIGTERM nor SIGHUP in its C runtime and no console that delivers a
+// break as an event, and MS-DOS has neither mechanism at all, so there is nothing here to
+// assert -- but the absence belongs on the suite's own line rather than in a count nobody
+// compares.
 int test_being_asked_to_stop()
 {
-    return skip_test( "no console control handler: nothing asks atui to stop" );
+    return skip_test( "no way to ask: this platform has neither SIGTERM nor console "
+                      "control events" );
 }
 
-#endif // _WIN32
+#endif // a platform that can be asked
 
 } // anonymous namespace
 
@@ -207,7 +335,17 @@ void init_signals_tests()
     register_test( "signal: the default action is replaced", &test_the_default_action_is_replaced );
     register_test( "signal: a stop request reaches a running command",
                    &test_a_stop_request_reaches_a_running_command );
-#elif defined( _WIN32 )
+#elif defined( ATUI_TEST_CONSOLE_CTRL )
+    // The same four properties as every other platform, two of them named the same and
+    // two of them named for the door: what a stop is asked with differs here, what it
+    // causes does not.
+    register_test( "signal: a stop request asks and survives", &test_being_asked_to_stop );
+    register_test( "signal: the other console events ask too",
+                   &test_the_other_console_events_ask_too );
+    register_test( "signal: the default action is replaced", &test_the_default_action_is_replaced );
+    register_test( "signal: a stop request reaches a running command",
+                   &test_a_stop_request_reaches_a_running_command );
+#else
     register_test( "signal: being asked to stop", &test_being_asked_to_stop );
 #endif
 }

@@ -19,8 +19,29 @@
 // quits the way the menu does.  That path is the only one that knows how to cancel a
 // turn, wait for the worker to finish with it, and put the screen back.
 //
-// POSIX only.  OS/2 has no signals in this sense and Windows consoles tell the story
-// differently; there these functions do nothing and nothing changes.
+// Two doors, one flag.  POSIX has signals.  A Windows console has console control
+// events, which are not signals and do not arrive through `signal()`: Ctrl+C, Ctrl+Break,
+// the window closing, logoff, shutdown.  `installShutdownHandlers()` registers whichever
+// the platform has, and both produce the same flag, so everything downstream -- the tick,
+// the loops that wait on a tool's child, the quit path -- is shared code that does not
+// know which door the ask came through.  OS/2 has neither SIGTERM nor SIGHUP in its C
+// runtime and no console to deliver a break through, so there these functions do nothing
+// and nothing changes.
+//
+// A Windows console handler has to answer a question a POSIX handler never asks: whether
+// it claimed the event.  Claiming the first ask (returning TRUE) is what stops Windows
+// from terminating the process on the spot, which is the whole point -- the loop then
+// leaves the way the menu item does, cancelling the turn and putting the terminal back.
+// Refusing a second ask while the first is still unanswered is deliberate: a loop parked
+// in a tool's blocking read may not notice the flag for seconds, and a Ctrl+C that
+// silently did nothing twice would be worse than the default action.  So asking once
+// means "leave properly" and asking again means "now", which is what users already
+// expect from the key.
+//
+// What claiming does not buy, on any console: for close, logoff and shutdown Windows ends
+// the process when the handler returns, so whether the loop gets its turn is a race.  The
+// handler does not wait to win that race.  Blocking in a handler is how a program becomes
+// unhung-able, and this program has measured exactly that failure on POSIX (see above).
 #ifndef ATUI_CORE_SIGNALS_H
 #define ATUI_CORE_SIGNALS_H
 
@@ -39,6 +60,19 @@ bool shutdownRequested();
 
 // Forgets the request, so one signal cannot end the program twice.
 void clearShutdownRequest();
+
+#if defined( _WIN32 )
+// The body of the console control handler: reports whether `eventCode` -- a Windows
+// `CTRL_*_EVENT` -- is an ask atui recognises, and claims it.  Returns true for the first
+// recognised ask, false for one that is not an ask and for a second ask whose first is
+// still unanswered.
+//
+// It is a function rather than inline in the `BOOL WINAPI` shim for one reason: the shim
+// can only be reached by sending a control event to every process attached to this
+// console, which would end the test run with it.  Called by Windows, and by the tests, on
+// exactly the argument Windows would pass.
+bool noteConsoleCtrlEvent( unsigned long eventCode );
+#endif
 
 } // namespace core
 } // namespace atui
