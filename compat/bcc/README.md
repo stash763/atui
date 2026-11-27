@@ -164,6 +164,70 @@ systems and the API gaps are the truth rather than a configuration mistake.
   `_putenv`, `_isatty`, `commit` and `_commit` are each "Call to undefined
   function". `mkdir` and `_mkdir` are both there. There is no `unistd.h` at all.
 
+## The linked image, and the one import that would not have started
+
+Compiling 246 files is not the end of the target: the link asked two more
+questions and each has an answer now.
+
+* Two unresolved externals, `THardwareInfo::windowed()` and
+  `THardwareInfo::redrawScreen()`: the era front never defined them because
+  nothing in tvision calls them on this path, and atui does. Both are in
+  `hardwrvr.cpp`, with why each answer is what it is.
+* One import that is Windows 2000: `GetNumberOfConsoleMouseButtons` appeared in
+  the image's KERNEL32 imports, from an inline in `hardware.h`, and Borland's own
+  1997 import library carries a stub for it -- so it compiles, it links, and the
+  loader stops the program before `main()` on Windows 98 and NT 4 with an
+  entry-point-not-found message. It is resolved at run time now. That is the class
+  of bug this section exists for, and the reason the import table is read rather
+  than trusted: `tdump atui_era.exe` is the measurement, and the names after it are
+  KERNEL32 (108), WS2_32 (14) and USER32 (2).
+
+Anything else in that list that looked late was checked against the compiler's own
+runtime: a program of one `main` that prints a line needs 43 KERNEL32 names, and
+`GetStringTypeW`, `DeleteFileW` and the rest are in that baseline -- Borland's CRT
+imports them for ordinary file I/O, which is the strongest evidence available here
+that the era's `kernel32` exports them. `ws2_32.dll` ships with Windows 98 and, on
+NT 4, with the Winsock 2 update: a deployment fact about a network program, not a
+bug in one.
+
+## snprintf, measured against the formatter it stands in for
+
+`tools/bcc/snprintf_matrix.cpp` is one program built by g++ and by bcc32 -- 64
+cases of flags, widths, precisions, `*` fields, 64-bit integers, truncations and
+buffer sizes down to zero -- and each case reports the buffer, the return value,
+and whether a canary around the buffer still says the formatter stayed inside the
+size it was given. 58 agree character for character. The six that do not are the
+three known deviations, named rather than summarised:
+
+* the clamp: `%.2000s` gives 1024 characters under bcc32 and 2000 under glibc, and
+  so do `%2000d` and `%1500.4f`;
+* a `*` width above 4096 is refused, where glibc prints it;
+* Borland's own arithmetic: `-0.0` prints as `0.000000` where glibc prints
+  `-0.000000`, which is the CRT's 1997 idea of a sign and not something a wrapper
+  can add back.
+
+Writing it found three defects, all in `cstdio.h`, all worth listing because the
+first was a buffer overflow in the code whose whole purpose is to prevent them:
+
+* A `*` width or precision was clamped to `kMaxField` when sizing the temporary
+  and then copied verbatim into the rewritten format, so the CRT used the
+  caller's real value -- `%.*s` of 3000 writes 3000, measured -- into a buffer
+  sized for 1024. The era binary came back with a page fault at `0x7878787C`:
+  four `x` bytes, the string it had been formatting.
+* A `*` was read from a `va_list` passed **by value** into the function that reads
+  it, so the walk never moved past one; a second conversion in the same format was
+  sized from the first conversion's argument. Measured separately: on this
+  compiler `va_list walk = args` does copy, and `va_arg` does advance the copy.
+* A `n == 0` call returned -1 where both CRTs return the length that would have
+  been written -- a caller's `if (snprintf(...) < 0)` reading a good print as a
+  failed one.
+
+Two more things the matrix is only able to say because the host build is the
+comparison: the 1997 `printf` has no `z` modifier and prints the rest of the
+format string literally when it meets one, so `%zu` is safe through this header
+and nowhere else; and a negative `*` precision means "as if absent", which for
+`%s` means the whole string, so the room comes from the string.
+
 ## Checking changes here
 
 `tools/bcc/bcc-run.sh` drives the compiler under wine against this tree, compiles
