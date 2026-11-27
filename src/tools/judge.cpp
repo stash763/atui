@@ -1,7 +1,10 @@
 // Implementation of the permission agent interface and its verdict cache.
 // See judge.h.
 #include "judge.h"
+#include "core/strutil.h"      // clearAll, eraseFrom, eraseAt: Borland has no clear()
 
+#include <cstddef>
+#include <functional>    // std::less: the era compilers do not default it
 #include <map>
 #include <mutex>
 
@@ -24,7 +27,7 @@ std::mutex &cacheMutex()
 // Insertion order, so the cap can drop the oldest entries rather than a random
 // half of the map.
 struct Cache {
-    std::map< std::string, EffectPlan > plans;
+    std::map< std::string, EffectPlan, std::less<std::string> > plans;
     std::vector< std::string > order;
 };
 
@@ -75,10 +78,10 @@ std::string planCacheKey( const std::string &toolName,
 bool cachedPlan( const std::string &key, EffectPlan &out )
 {
     std::lock_guard< std::mutex > lock( cacheMutex() );
-    std::map< std::string, EffectPlan >::const_iterator it =
+    std::map< std::string, EffectPlan, std::less<std::string> >::const_iterator it =
         cache().plans.find( key );
     if( it == cache().plans.end() ) return false;
-    out = it->second;
+    out = (*it).second;
     return true;
 }
 
@@ -104,8 +107,8 @@ void rememberPlan( const std::string &key, const EffectPlan &plan )
 void clearPlanCache()
 {
     std::lock_guard< std::mutex > lock( cacheMutex() );
-    cache().plans.clear();
-    cache().order.clear();
+    core::clearAll( cache().plans );
+    core::clearAll( cache().order );
 }
 
 } // namespace atui::tools

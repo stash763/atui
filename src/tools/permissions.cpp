@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -113,7 +114,7 @@ bool dependsOnAVariable( const std::string &path )
 // unambiguous. A root of "/" keeps its slash - rootTooBroad() is what handles it.
 std::string stripTrailingSlash( std::string p )
 {
-    while( p.size() > 1 && isSeparator( p[p.size() - 1] ) ) p.erase( p.size() - 1 );
+    while( p.size() > 1 && isSeparator( p[p.size() - 1] ) ) core::eraseFrom( p, p.size() - 1 );
     return p;
 }
 
@@ -193,6 +194,20 @@ std::string fromFinalPathForm( const std::string &native )
 // user may not read.
 bool finalPathOf( const std::string &path, std::string &out )
 {
+#if defined( __BORLANDC__ )
+    // GetFinalPathNameByHandle is Windows Vista, and the era build runs on the
+    // systems before it -- so this is not a header the era build is missing a
+    // declaration in, it is an operating system that does not have the call.
+    // (BC5's headers do not name it either: "Call to undefined function
+    // 'GetFinalPathNameByHandleA'".)  Returning false is the answer the callers
+    // are built for: `resolveReparsePoints` gives up and `resolvePath` falls back
+    // to the normalised path, which is what happens on every Windows that cannot
+    // answer, and the limit it implies -- a junction on the way to the project is
+    // not seen through -- is the pre-Vista reality, not a hole in this file.
+    (void) path;
+    (void) out;
+    return false;
+#else
     const DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
     HANDLE h = ::CreateFileA( path.c_str(), 0, share, 0, OPEN_EXISTING, 0, 0 );
     if( h == INVALID_HANDLE_VALUE )
@@ -210,6 +225,7 @@ bool finalPathOf( const std::string &path, std::string &out )
     if( n == 0 || n >= sizeof buf ) return false;
     out = fromFinalPathForm( std::string( buf, n ) );
     return !out.empty();
+#endif
 }
 
 // `path` with every reparse point followed for as much of it as exists and the rest
@@ -244,7 +260,7 @@ bool resolveReparsePoints( const std::string &path, std::string &out )
         if( sep == std::string::npos ) return false;
         const std::string part = head.substr( sep + 1 );
         if( !part.empty() ) rest = rest.empty() ? part : part + "/" + rest;
-        head.erase( sep );
+        core::eraseFrom( head, sep );
         if( head.empty() ) return false;
     }
 }
@@ -334,6 +350,11 @@ std::string cwdPath()
 {
     char buf[ 4096 ];
 #if !defined(_WIN32)
+    if( ::getcwd( buf, sizeof buf ) ) return std::string( buf );
+#elif defined(__BORLANDC__)
+    // Borland's <direct.h> declares getcwd and no _getcwd (measured: "Call to
+    // undefined function '_getcwd'"), which is the POSIX name MSVC reserves for
+    // its own headers.
     if( ::getcwd( buf, sizeof buf ) ) return std::string( buf );
 #else
     if( ::_getcwd( buf, sizeof buf ) ) return std::string( buf );
@@ -648,13 +669,21 @@ int parsePermissionCase( const std::string &line, std::string &expect,
     expect  = head;
     command = line.substr( start );
     const std::size_t end = command.find_last_not_of( " \t\r\n" );
-    if( end != std::string::npos ) command.erase( end + 1 );
+    if( end != std::string::npos ) core::eraseFrom( command, end + 1 );
     return kPermissionCaseOk;
 }
 
 // --- configuration -------------------------------------------------------------
 
-namespace {
+// Named rather than anonymous, and reopened for lookup on the line after
+// the one that closes it, which is all an anonymous namespace says:
+// these names belong to this file and are visible to the rest of it
+// from here on.  The spelling has to be written out because Borland
+// 5.02 refuses a second anonymous namespace inside a named one
+// ("Multiple declaration for 'atui::tools::<unnamedNS>'", measured, in any
+// named namespace, while two at global scope are accepted) and this
+// file has more than one section.
+namespace permissions_local {
 
 const char *envOrNone( const char *name )
 {
@@ -665,7 +694,7 @@ const char *envOrNone( const char *name )
 // Environment seeding for the accessors below: env vars come first, then the
 // config file overrides them (settings::loadAll), exactly as the provider and
 // theme singletons work.
-template <typename T>
+template< class T >
 T envEnum( const char *name, T current, bool (*parse)( const std::string &, T & ) )
 {
     const char *v = envOrNone( name );
@@ -693,7 +722,8 @@ bool envBool( const char *name, bool current )
     return current;
 }
 
-} // anonymous namespace
+} // namespace permissions_local
+using namespace permissions_local;
 
 bool agentModeAvailable()
 {
@@ -733,10 +763,16 @@ PermissionMode &permissionMode()
     //
     // ATUI_PERMISSIONS=ask_all is the one-command way back, and Settings keeps
     // the same three choices -- two of them without a transport.
+    // No `<PermissionMode>` on the call, though spelling the argument type out is
+    // what the other two accessors and every modern reader would do: Borland
+    // 5.02 takes the explicit template arguments of a function template only
+    // once per template -- the second instantiation with a different type is
+    // "Improper use of typedef 'NetworkPolicy'", measured, and qualifying the
+    // name does not help.  The argument types say what T is either way.
     static PermissionMode mode =
-        envEnum<PermissionMode>( "ATUI_PERMISSIONS",
-                                 shippedDefaultPermissionMode(),
-                                 permissionModeFromName );
+        envEnum( "ATUI_PERMISSIONS",
+                 shippedDefaultPermissionMode(),
+                 permissionModeFromName );
     return mode;
 }
 
@@ -745,9 +781,9 @@ NetworkPolicy &networkPolicy()
     // "Let the agent weigh it" is not a policy a build without a transport has;
     // it defaults to asking, which is the direction every fallback here goes.
     static NetworkPolicy policy =
-        envEnum<NetworkPolicy>( "ATUI_PERMISSION_NETWORK",
-                                shippedDefaultNetworkPolicy(),
-                                networkPolicyFromName );
+        envEnum( "ATUI_PERMISSION_NETWORK",
+                 shippedDefaultNetworkPolicy(),
+                 networkPolicyFromName );
     return policy;
 }
 
@@ -932,7 +968,7 @@ void pathsMentioned( const std::string &text,
         // that means "read this file" to the shell means "read this file" here.
         std::string candidate = token;
         if( !candidate.empty() && candidate[0] == '@' )
-            candidate.erase( 0, 1 );
+            core::eraseAt( candidate, 0, 1 );
 
         if( candidate.size() < 2 ) continue;
         const bool pathLike =
@@ -1106,7 +1142,8 @@ bool denyListed( const std::string &path, std::string &why )
 
 // --- the decision --------------------------------------------------------------
 
-namespace {
+// The same file-local section as the one above; see the note where it opens.
+namespace permissions_local {
 
 std::mutex &allowMutex()
 {
@@ -1132,7 +1169,8 @@ std::string allowKey( const std::string &toolName, const std::string &argumentsJ
 // problem, only a slightly surprising re-ask.
 const std::size_t kMaxAllowed = 1024;
 
-} // anonymous namespace
+} // namespace permissions_local
+using namespace permissions_local;
 
 void rememberAllowed( const std::string &toolName,
                       const std::string &argumentsJson )
@@ -1156,7 +1194,7 @@ bool isAllowed( const std::string &toolName, const std::string &argumentsJson )
 void clearAllowed()
 {
     std::lock_guard< std::mutex > lock( allowMutex() );
-    allowed().clear();
+    core::clearAll( allowed() );
 }
 
 Permission decide( const PermissionSubject &subject, const EffectPlan *plan )
@@ -1481,7 +1519,8 @@ std::string decisionNote( const Permission &p )
 
 // --- the decision log ----------------------------------------------------------
 
-namespace {
+// The same file-local section as the one above; see the note where it opens.
+namespace permissions_local {
 
 std::mutex &logMutex()
 {
@@ -1532,8 +1571,10 @@ void rotateIfNeeded( const std::string &path )
     // not occur on Windows, where permissions.log grew without limit and nothing
     // reported it.  It was not a Windows limitation being worked around; nobody
     // had ever compiled it there.  The only platform difference left is the one
-    // core/paths.cpp already records: MSVC spells the call _stat.
-#if defined(_WIN32)
+    // core/paths.cpp records: MSVC spells the type and the call _stat, Borland
+    // 5.02 hides those names behind __MSC and gives struct stat (measured), and
+    // everything else has the POSIX spelling.
+#if defined(_WIN32) && !defined(__BORLANDC__)
     struct _stat st;
     if( ::_stat( path.c_str(), &st ) != 0 ) return;
 #else
@@ -1552,7 +1593,8 @@ void rotateIfNeeded( const std::string &path )
     std::rename( path.c_str(), bak.c_str() );
 }
 
-} // anonymous namespace
+} // namespace permissions_local
+using namespace permissions_local;
 
 void logDecision( const std::string &toolName, const Permission &p,
                   const std::string &agent, long agentMs,
@@ -1575,7 +1617,7 @@ void logDecision( const std::string &toolName, const Permission &p,
     }
     line += " mode=";
     line += permissionModeName( permissionMode() );
-    line += " agent=";   line += logEscape( agent.empty() ? "-" : agent, 60 );
+    line += " agent=";   line += logEscape( agent.empty() ? "-" : agent.c_str(), 60 );
     {
         char ms[ 24 ];
         std::snprintf( ms, sizeof ms, " latency=%ldms", agentMs );

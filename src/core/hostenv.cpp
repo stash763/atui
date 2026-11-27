@@ -8,6 +8,8 @@
 // points the other way.
 #include "core/hostenv.h"
 
+#include <cstddef>
+
 namespace atui {
 namespace core {
 

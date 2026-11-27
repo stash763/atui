@@ -16,12 +16,29 @@
 // `WSAStartup()` has been called, which is reference counted -- so it is asked for
 // again on every connection and never released, because a process that exits releases
 // the stack anyway.
+/* The sockets headers are read before sock.h, which is not where a file's own
+   header usually goes and is where it cannot go here: on Borland 5.02 <string>
+   is the Rogue Wave string, the standard-library chain behind it reaches
+   <windows.h> and therefore <winsock.h>, and winsock2.h then re-declares fd_set,
+   timeval, hostent, netent, servent, protoent, in_addr, sockaddr_in and WSAData
+   over it (all nine measured, "Multiple declaration for 'fd_set'" first).  What
+   keeps windows.h off winsock.h is the _WINSOCKAPI_ macro winsock2.h defines for
+   exactly that purpose, so winsock2.h has to be read first, and BC5's windows.h
+   has never heard of the later WIN32_LEAN_AND_MEAN (measured: the name appears
+   nowhere in that header).  Read in this order the rest of the chain is fine:
+   <windows.h>, <string> and <ws2tcpip.h> all follow <winsock2.h> without a
+   complaint. */
+#if defined( _WIN32 )
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#endif
+
 #include "sock.h"
 
 #ifdef _WIN32
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "core/strutil.h"  // core::eraseFrom: Borland's string erases by iterator
+#include <cstddef>         // std::size_t, for the handle cast below
 #include <stdio.h>    // the fallback message when FormatMessage has none
 #include <string.h>
 
@@ -30,7 +47,13 @@ namespace net {
 
 namespace {
 
-const SockHandle kInvalidAsHandle = (SockHandle) (UINT_PTR) INVALID_SOCKET;
+// size_t for the intermediate cast rather than UINT_PTR: that typedef and its
+// relatives (_UINT_PTR, DWORD_PTR) are later than this SDK -- BC5's windef.h does
+// not contain the name at all (measured: "Undefined symbol 'UINT_PTR') -- and
+// what the cast is for is a pointer-wide integer, which is the one thing size_t
+// is guaranteed to be.  The value is INVALID_SOCKET either way: ~0 of a 32-bit
+// unsigned, widened without sign extension.
+const SockHandle kInvalidAsHandle = (SockHandle) (std::size_t) INVALID_SOCKET;
 
 std::string why( const std::string &what, int code )
 {
@@ -48,13 +71,13 @@ std::string why( const std::string &what, int code )
     LocalFree( text );
     while( !message.empty() && ( message[ message.size() - 1 ] == '\n' ||
                                  message[ message.size() - 1 ] == '\r' ) )
-        message.erase( message.size() - 1 );
+        core::eraseFrom( message, message.size() - 1 );
     return what + ": " + message;
 }
 
 SOCKET asSocket( SockHandle handle )
 {
-    return (SOCKET) (UINT_PTR) handle;
+    return (SOCKET) (std::size_t) handle;
 }
 
 } // anonymous namespace
@@ -136,7 +159,7 @@ SockHandle sockConnectStart( const std::string &host, int port, std::string *rea
             return kNoSocket;
         }
     }
-    return (SockHandle) (UINT_PTR) s;
+    return (SockHandle) (std::size_t) s;
 }
 
 SockWhy sockWait( SockHandle handle, bool forRead, int ms, std::string *reason )

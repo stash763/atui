@@ -22,6 +22,7 @@
 //     process; every call below still checks its own result.
 #include "platform/screen.h"
 #include "platform/bmpout.h"
+#include "core/strutil.h"      // clearAll, eraseFrom, eraseAt: Borland has no clear()
 
 #if defined( ATUI_HAVE_X11 )
 
@@ -92,7 +93,7 @@ bool textProperty( Display *dpy, Window w, Atom type, std::string &out )
         // NUL-free run.
         size_t nul = out.find( '\0' );
         if( nul != std::string::npos )
-            out.erase( nul );
+            core::eraseFrom( out, nul );
         found = !out.empty();
     }
     if( data != 0 )
@@ -208,7 +209,7 @@ void windowTitle( Display *dpy, Window w, std::string &out )
         out.assign( (const char *)data, (size_t)nItems );
         size_t nul = out.find( '\0' );
         if( nul != std::string::npos )
-            out.erase( nul );
+            core::eraseFrom( out, nul );
     }
     if( data != 0 )
         XFree( data );
@@ -491,7 +492,7 @@ CaptureResult captureWindow( const std::string &handle,
 
 bool listWindows( std::vector<WindowInfo> &out, bool children )
 {
-    out.clear();
+    core::clearAll( out );
     std::string err;
     Display *dpy = openDisplay( err );
     if( dpy == 0 )

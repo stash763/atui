@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <cstdlib>
 
 namespace atui {
@@ -74,7 +75,8 @@ Store& store()
 std::string envOr( const char *name, const char *fallback )
 {
     const char *v = std::getenv( name );
-    return trim( ( v && v[0] ) ? std::string( v ) : std::string( fallback ) );
+    const std::string value = ( v && v[0] ) ? std::string( v ) : std::string( fallback );
+    return trim( value );
 }
 
 ProviderSettings defaultProviderSettings()
@@ -158,7 +160,7 @@ std::size_t addProvider( const std::string &name )
     Store &s = store();
     ProviderSettings p = defaultProviderSettings();
     p.name = uniqueProviderName( name );
-    p.models.clear();
+    core::clearAll( p.models );
     if( !p.model.empty() ) p.models.push_back( p.model );
     s.list.push_back( p );
     return s.list.size() - 1;
@@ -256,7 +258,15 @@ void replaceProviders( const std::vector<ProviderSettings> &list,
     }
 }
 
-namespace {
+// Named rather than anonymous, and reopened for lookup on the line after
+// the one that closes it, which is all an anonymous namespace says:
+// these names belong to this file and are visible to the rest of it
+// from here on.  The spelling has to be written out because Borland
+// 5.02 refuses a second anonymous namespace inside a named one
+// ("Multiple declaration for 'atui::net::<unnamedNS>'", measured, in any
+// named namespace, while two at global scope are accepted) and this
+// file has more than one section.
+namespace provider_local {
 
 // A whole-number environment variable, or `fallback` when it is unset, empty
 // or not a number.
@@ -270,7 +280,8 @@ int envMinutes( const char *name, int fallback )
     return (int) n;
 }
 
-} // anonymous namespace
+} // namespace provider_local
+using namespace provider_local;
 
 int &requestMinutes()
 {

@@ -32,10 +32,10 @@ bool ChatRequest::begin( const std::string &baseUrl,
     sink_ = sink;
     reported_ = false;
     ok_ = false;
-    error_.clear();   // a request that is starting again has not failed yet
+    core::clearAll( error_ );   // a request that is starting again has not failed yet
     status_ = 0;
     out_ = OaiResponse();
-    errorBody_.clear();
+    core::clearAll( errorBody_ );
     sse_ = SseStream();
 
     HttpEndpoint endpoint;
@@ -174,7 +174,7 @@ std::string ChatRequest::briefBody( const std::string &body )
             break;
     }
     while( !out.empty() && out[out.size() - 1] == ' ' )
-        out.erase( out.size() - 1 );
+        core::eraseFrom( out, out.size() - 1 );
     if( out.size() >= kQuotedError && body.size() > kQuotedError )
         out += "...";
     return out;

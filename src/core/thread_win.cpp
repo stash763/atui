@@ -20,6 +20,8 @@
 
 #include <process.h>
 
+#include <cstddef>    // std::size_t, for the thread handle below
+
 namespace atui {
 namespace core {
 
@@ -39,7 +41,14 @@ unsigned __stdcall entry( void *self )
 bool threadPlatformStart( Thread &self, void **handle, std::string *reason )
 {
     unsigned tid = 0;
-    const uintptr_t h = _beginthreadex( 0, 0, &entry, &self, 0, &tid );
+    // std::size_t rather than uintptr_t, which is what this value is: an integer
+    // wide enough to hold a handle on its way back into a void*.  uintptr_t needs
+    // <cstdint> or <stdint.h> and Borland 5.02 has neither name in any header it
+    // owns (measured: the line comes back "Constant variable 'uintptr_t' must be
+    // initialized", the compiler reading the type as a variable with none).
+    // size_t is the width the library itself promises for exactly this, and
+    // reinterpret_cast below is what it is for.
+    const std::size_t h = _beginthreadex( 0, 0, &entry, &self, 0, &tid );
     if( h == 0 )
     {
         if( reason )

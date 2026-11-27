@@ -11,6 +11,7 @@
 // anything else can resolve a path, because every containment check compares
 // against it. `--root` overrides it, which is mostly useful with --judge-check:
 // the same command is a different question in a different tree.
+#include <cstddef>
 #include <cstring>
 #include <cstdio>
 #include <fstream>
@@ -327,7 +328,11 @@ int usageError( const char *problem )
 // usable from a script; the chat is not one of those modes.
 bool terminalHere()
 {
-#if defined( _WIN32 )
+#if defined( __BORLANDC__ )
+    // Borland's CRT has isatty (in <io.h>) and no _isatty (measured); _fileno is
+    // one of the underscore names it does have.
+    return isatty( _fileno( stdin ) ) != 0 && isatty( _fileno( stdout ) ) != 0;
+#elif defined( _WIN32 )
     return _isatty( _fileno( stdin ) ) != 0 && _isatty( _fileno( stdout ) ) != 0;
 #else
     return isatty( fileno( stdin ) ) != 0 && isatty( fileno( stdout ) ) != 0;

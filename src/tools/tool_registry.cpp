@@ -11,6 +11,7 @@
 #include "platform/screen.h"
 #include "platform/appman.h"
 
+#include <cstddef>
 #include <mutex>
 
 namespace atui {
@@ -94,7 +95,15 @@ std::string ToolRegistry::renderToolsJson() const
     return s;
 }
 
-namespace {
+// Named rather than anonymous, and reopened for lookup on the line after
+// the one that closes it, which is all an anonymous namespace says:
+// these names belong to this file and are visible to the rest of it
+// from here on.  The spelling has to be written out because Borland
+// 5.02 refuses a second anonymous namespace inside a named one
+// ("Multiple declaration for 'atui::tools::<unnamedNS>'", measured, in any
+// named namespace, while two at global scope are accepted) and this
+// file has more than one section.
+namespace tool_registry_local {
 
 // A mutex at file scope rather than std::call_once, which Watcom does not have:
 // an object of static storage duration is built before anything can call this
@@ -102,7 +111,8 @@ namespace {
 std::mutex g_registerMx;
 bool g_registered = false;
 
-} // anonymous namespace
+} // namespace tool_registry_local
+using namespace tool_registry_local;
 
 void registerDefaults()
 {

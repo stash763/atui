@@ -7,6 +7,8 @@
 #ifndef ATUI_TOOLS_PREVIEW_H
 #define ATUI_TOOLS_PREVIEW_H
 
+#include "core/strutil.h"    // eraseFrom: Borland's string has no clear() and no erase( pos )
+
 #include <cstddef>
 #include <string>
 
@@ -51,7 +53,7 @@ inline std::string previewClip( const std::string &s, std::size_t max )
     if( s.size() > max ) out += "...";
     while( !out.empty() && ( out[out.size() - 1] == ' '
            || out[out.size() - 1] == '\n' ) )
-        out.erase( out.size() - 1 );
+        core::eraseFrom( out, out.size() - 1 );
     return out;
 }
 

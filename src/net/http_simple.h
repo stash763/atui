@@ -29,7 +29,7 @@ namespace net {
 // The step is a quarter of a tick: long enough that a machine waiting on a socket
 // costs nothing measurable, short enough that a machine with bytes ready is not
 // held up by the timer.
-template <typename Machine>
+template< class Machine >
 bool pumpUntilDone( Machine &machine, int totalSeconds )
 {
     const int kStepMs = 25;

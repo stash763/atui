@@ -5,6 +5,7 @@
 #include "core/cells.h"
 
 #include <cctype>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 
@@ -95,7 +96,7 @@ std::string titleFromText( const std::string &text, std::size_t width )
             flat += c;
     }
     while( !flat.empty() && flat[ flat.size() - 1 ] == ' ' )
-        flat.erase( flat.size() - 1 );
+        eraseFrom( flat, flat.size() - 1 );
 
     if( flat.size() <= width )
         return flat;
@@ -107,7 +108,7 @@ std::string titleFromText( const std::string &text, std::size_t width )
     // it is one line in a list, compared against nothing.
     std::string cut = clipToColumns( flat, (int) width - 1 );
     while( !cut.empty() && cut[ cut.size() - 1 ] == ' ' )
-        cut.erase( cut.size() - 1 );
+        eraseFrom( cut, cut.size() - 1 );
     return cut + "~";
 }
 
@@ -225,7 +226,7 @@ Fmt &Fmt::operator<<( unsigned long value )
     return *this;
 }
 
-Fmt &Fmt::operator<<( long long value )
+Fmt &Fmt::operator<<( Int64 value )
 {
     char buf[32];
     std::snprintf( buf, sizeof buf, "%lld", value );
@@ -233,7 +234,7 @@ Fmt &Fmt::operator<<( long long value )
     return *this;
 }
 
-Fmt &Fmt::operator<<( unsigned long long value )
+Fmt &Fmt::operator<<( UInt64 value )
 {
     char buf[32];
     std::snprintf( buf, sizeof buf, "%llu", value );
@@ -257,7 +258,28 @@ Fmt &Fmt::precision( int digits )
 
 void Fmt::clear()
 {
-    s_.clear();
+    clearAll( s_ );
+}
+
+// ----------------------------------------------------------------------------
+// Emptied and shortened containers -- see the note in strutil.h for why these
+// exist and why they are the shapes they are.
+// ----------------------------------------------------------------------------
+
+void eraseFrom( std::string &s, std::size_t from )
+{
+    // The iterators rather than the position: Borland's erase takes an iterator
+    // pair and nothing else, and this is what a position form means.
+    s.erase( s.begin() + from, s.end() );
+}
+
+void eraseAt( std::string &s, std::size_t pos, std::size_t len )
+{
+    if( pos >= s.size() )
+        return;
+    if( len > s.size() - pos )
+        len = s.size() - pos;
+    s.erase( s.begin() + pos, s.begin() + pos + len );
 }
 
 } // namespace atui::core

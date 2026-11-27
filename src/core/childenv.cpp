@@ -1,7 +1,9 @@
 // Implementation of the child-environment helpers. See childenv.h.
 #include "childenv.h"
+#include "core/strutil.h"      // clearAll, eraseFrom, eraseAt: Borland has no clear()
 
 #include <cctype>
+#include <cstddef>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -23,8 +25,17 @@ extern "C" { extern char **_environ; }
 #define ATUI_ENV_BLOCK  _environ
 // Windows and DOS copy the string handed to _putenv, so a temporary std::string is
 // safe; removing a variable is the same call with an empty value.
+#if defined(__BORLANDC__)
+// Borland's CRT has putenv and no _putenv (measured: "Call to undefined function
+// '_putenv'" with <stdlib.h> and <process.h> both included, and the same call to
+// putenv compiles); what it does, and what the comment above is about, is the
+// same -- it copies, and an empty value unsets.
+#define ATUI_ENV_SET( n, v )  putenv( ( ( n ) + "=" + ( v ) ).c_str() )
+#define ATUI_ENV_UNSET( n )   putenv( ( ( n ) + "=" ).c_str() )
+#else
 #define ATUI_ENV_SET( n, v )  _putenv( ( ( n ) + "=" + ( v ) ).c_str() )
 #define ATUI_ENV_UNSET( n )   _putenv( ( ( n ) + "=" ).c_str() )
+#endif
 #elif defined(__OS2__)
 #include <process.h>
 #include <stdlib.h>
@@ -112,8 +123,8 @@ ChildEnvironment::ChildEnvironment( const std::string &passList )
 
 void ChildEnvironment::rebuild( const std::string &passList )
 {
-    entries_.clear();
-    pointers_.clear();
+    clearAll( entries_ );
+    clearAll( pointers_ );
 
     for( char **e = ATUI_ENV_BLOCK; e && *e; ++e )
     {
@@ -134,7 +145,7 @@ void ChildEnvironment::rebuild( const std::string &passList )
     // And the CreateProcess block, from the same entries, in the same pass worth
     // of order.  Built here rather than on demand because the caller hands the
     // pointer straight to the API and cannot be handed a temporary.
-    block_.clear();
+    clearAll( block_ );
     for( std::size_t i = 0; i < entries_.size(); ++i )
     {
         block_ += entries_[i];

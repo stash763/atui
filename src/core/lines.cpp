@@ -1,13 +1,14 @@
 // See lines.h for why this exists.
 
 #include "core/lines.h"
+#include "core/strutil.h"      // clearAll, eraseFrom, eraseAt: Borland has no clear()
 
 namespace atui {
 namespace core {
 
 bool readLine( std::istream &in, std::string &out )
 {
-    out.clear();
+    clearAll( out );
 
     // failbit, not eofbit, decides: get() sets both when there is nothing left,
     // and asking for eof separately would say "there is still a line" about the
@@ -26,7 +27,7 @@ bool readLine( std::istream &in, std::string &out )
     }
 
     if( !out.empty() && '\r' == out[out.size() - 1] )
-        out.erase( out.size() - 1, 1 );
+        eraseAt( out, out.size() - 1, 1 );
 
     return sawAnything;
 }

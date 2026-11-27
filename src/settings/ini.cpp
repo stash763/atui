@@ -1,5 +1,7 @@
 // Implementation of the IniFile helper. See ini.h.
 #include "ini.h"
+#include <cstddef>
+#include <functional>    // std::less: spelled out in the iterator types below
 
 #include "core/lines.h"
 #include "core/lookup.h"
@@ -87,7 +89,7 @@ bool IniFile::load()
     std::ifstream in( path_.c_str(), std::ios::in );
     if( !in ) return false;
 
-    data_.clear();
+    core::clearAll( data_ );
     std::string line, section = "general";
     while( core::readLine( in, line ) )
     {
@@ -123,17 +125,17 @@ bool IniFile::save() const
     std::ofstream out( path_.c_str(), std::ios::out | std::ios::trunc );
     if( !out ) return false;
 
-    for( std::map<std::string, Section>::const_iterator si = data_.begin();
+    for( std::map<std::string, Section, std::less<std::string> >::const_iterator si = data_.begin();
          si != data_.end(); ++si )
     {
         // `.c_str()` on every std::string: Watcom's streams have no operator<<
         // for std::string at all (measured: "left expression must be integral"),
         // and a char pointer works on every compiler atui builds with.
-        out << "[" << si->first.c_str() << "]\n";
-        for( Section::const_iterator ki = si->second.begin();
-             ki != si->second.end(); ++ki )
+        out << "[" << (*si).first.c_str() << "]\n";
+        for( Section::const_iterator ki = (*si).second.begin();
+             ki != (*si).second.end(); ++ki )
         {
-            out << ki->first.c_str() << " = " << ki->second.c_str() << "\n";
+            out << (*ki).first.c_str() << " = " << (*ki).second.c_str() << "\n";
         }
         out << "\n";
     }
@@ -152,7 +154,10 @@ bool IniFile::save() const
 
 bool IniFile::has( const char *section, const char *key ) const
 {
-    const Section *s = core::findEntry( data_, lower( section ? section : "" ) );
+    // The null pointer argument names the mapped type; see core/lookup.h for why
+    // this compiler needs it spelled out.
+    const Section *s = core::findEntry( data_, lower( section ? section : "" ),
+                                        (const Section *) 0 );
     if( 0 == s ) return false;
     return core::hasEntry( *s, lower( key ? key : "" ) );
 }
@@ -161,11 +166,11 @@ std::vector<std::string> IniFile::sectionsWith( const std::string &prefix ) cons
 {
     std::vector<std::string> out;
     const std::string p = lower( prefix );
-    for( std::map<std::string, Section>::const_iterator it = data_.begin();
+    for( std::map<std::string, Section, std::less<std::string> >::const_iterator it = data_.begin();
          it != data_.end(); ++it )
     {
-        if( core::startsWith( it->first, p.c_str() ) && it->first.size() > p.size() )
-            out.push_back( it->first.substr( p.size() ) );
+        if( core::startsWith( (*it).first, p.c_str() ) && (*it).first.size() > p.size() )
+            out.push_back( (*it).first.substr( p.size() ) );
     }
     return out;
 }
@@ -179,12 +184,12 @@ std::size_t IniFile::eraseSectionsWith( const std::string &prefix )
 {
     const std::string p = lower( prefix );
     std::size_t n = 0;
-    for( std::map<std::string, Section>::iterator it = data_.begin();
+    for( std::map<std::string, Section, std::less<std::string> >::iterator it = data_.begin();
          it != data_.end(); )
     {
-        if( core::startsWith( it->first, p.c_str() ) )
+        if( core::startsWith( (*it).first, p.c_str() ) )
         {
-            std::map<std::string, Section>::iterator gone = it++;
+            std::map<std::string, Section, std::less<std::string> >::iterator gone = it++;
             data_.erase( gone );
             ++n;
         }
@@ -196,9 +201,11 @@ std::size_t IniFile::eraseSectionsWith( const std::string &prefix )
 std::string IniFile::getString( const char *section, const char *key,
                                 const std::string &def ) const
 {
-    const Section *s = core::findEntry( data_, lower( section ? section : "" ) );
+    const Section *s = core::findEntry( data_, lower( section ? section : "" ),
+                                        (const Section *) 0 );
     if( 0 == s ) return def;
-    const std::string *v = core::findEntry( *s, lower( key ? key : "" ) );
+    const std::string *v = core::findEntry( *s, lower( key ? key : "" ),
+                                            (const std::string *) 0 );
     if( 0 == v ) return def;
     return *v;
 }

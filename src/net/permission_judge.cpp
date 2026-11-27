@@ -5,9 +5,11 @@
 #include "http_simple.h"      // pumpUntilDone
 #include "oai_body.h"
 #include "provider.h"
+#include "core/strutil.h"       // eraseFrom: Borland's string erases by iterator
 #include "tools/permissions.h"
 
 #include <cctype>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -84,7 +86,7 @@ std::string cleanPath( std::string s )
     while( !s.empty() && ( s[s.size() - 1] == ',' || s[s.size() - 1] == ';' ||
                            s[s.size() - 1] == '.' || s[s.size() - 1] == ':' ||
                            s[s.size() - 1] == ')' ) )
-        s.erase( s.size() - 1 );
+        core::eraseFrom( s, s.size() - 1 );
     if( s.size() > 1 && ( ( s[0] == '"' && s[s.size() - 1] == '"' ) ||
                           ( s[0] == '\'' && s[s.size() - 1] == '\'' ) ) )
         s = s.substr( 1, s.size() - 2 );
@@ -164,8 +166,11 @@ void parseEffectPlan( const std::string &reply, atui::tools::EffectPlan &plan )
 
         // "NET: yes", "NET yes" and "net\tyes" all mean the same thing.
         const std::size_t sep = line.find_first_of( " :\t" );
-        const std::string key =
-            upperKey( sep == std::string::npos ? line : line.substr( 0, sep ) );
+        // Named rather than inside the call: Borland will not bind upperKey's
+        // const reference to the result of a conditional expression.
+        const std::string head =
+            ( sep == std::string::npos ) ? line : line.substr( 0, sep );
+        const std::string key = upperKey( head );
         const std::string value =
             ( sep == std::string::npos ) ? std::string()
                                          : trimmed( line.substr( sep + 1 ) );
@@ -316,7 +321,7 @@ void OaiPermissionJudge::plan( const std::string &toolName,
     if( !request.ok() )
     {
         judgeDebug( toolName, resp.content,
-                    request.error().empty() ? "the request failed" : request.error() );
+                    request.error().empty() ? "the request failed" : request.error().c_str() );
         return;
     }
 

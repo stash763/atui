@@ -66,7 +66,7 @@ bool ChatTurn::start( const std::string &userMessage, Sink *sink,
     msgs_ = conv_;
     msgs_.push_back( OaiMessage( "user", userMessage ) );
     toolsJson_ = atui::tools::ToolRegistry::instance().renderToolsJson();
-    pendingTools_.clear();
+    core::clearAll( pendingTools_ );
     toolIndex_ = 0;
     round_ = 1;
     return sendRound();
@@ -106,10 +106,10 @@ void ChatTurn::step( int waitMs )
         // output arrives -- and before a command that takes a minute has begun.
         if( !pendingNote_.empty() && sink_ )
             sink_->onToolNote( pendingNote_ );
-        pendingNote_.clear();
+        core::clearAll( pendingNote_ );
 
         std::string result = pendingResult_;
-        pendingResult_.clear();
+        core::clearAll( pendingResult_ );
         if( !skipRun_ )
         {
             atui::tools::Tool *tool =
@@ -238,8 +238,8 @@ void ChatTurn::afterAnswer( bool ok, const std::string &error )
 void ChatTurn::decideCurrentCall()
 {
     skipRun_ = false;
-    pendingResult_.clear();
-    pendingNote_.clear();
+    core::clearAll( pendingResult_ );
+    core::clearAll( pendingNote_ );
     answered_ = false;
 
     if( toolIndex_ >= pendingTools_.size() )
@@ -380,10 +380,15 @@ void ChatTurn::afterJudge( bool ok )
     if( plan.parsed )
         atui::tools::rememberPlan( judgeKey_, plan );
 
-    const atui::tools::Permission p = atui::tools::decideWithPlan(
+    // Named: Borland 5.02 will not bind the const reference decideWithPlan
+    // takes to the result of a conditional expression ("Reference initialized
+    // with 'atui::tools::PermissionSubject', needs lvalue of type the same"),
+    // which is the same limitation the strings hit for the same reason.
+    const atui::tools::PermissionSubject subject =
         tool ? tool->permissionSubject( callArgs_ )
-             : atui::tools::PermissionSubject(),
-        plan.parsed ? &plan : 0, false );
+             : atui::tools::PermissionSubject();
+    const atui::tools::Permission p = atui::tools::decideWithPlan(
+        subject, plan.parsed ? &plan : 0, false );
     pendingNote_ = atui::tools::decisionNote( p );
     atui::tools::logDecision( callName_, p, permissionAgentModel(), 0,
                               tool ? tool->callPreview( callArgs_ ) : callName_ );

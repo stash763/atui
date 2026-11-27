@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>             // strchr
+#include <functional>    // std::less: the era compilers do not default it
 #include <map>
 #include <string>
 #include <vector>
@@ -57,7 +58,7 @@ std::string lower( const std::string &s )
 // --- link reference definitions --------------------------------------------
 
 struct Link { std::string url, title; };
-typedef std::map<std::string, Link> LinkMap;
+typedef std::map<std::string, Link, std::less<std::string> > LinkMap;
 
 // --- inline span emission ---------------------------------------------------
 
@@ -125,6 +126,34 @@ size_t findEmphCloser( const std::string &s, size_t after, size_t to,
     return std::string::npos;
 }
 
+// The text gathered so far, appended when a styled span interrupts it.  A
+// function object rather than a lambda: Watcom has no lambdas, and calling an
+// object with operator() keeps every `flush()` below exactly as it was.
+//
+// At namespace scope rather than inside inlineRuns, which is the natural place
+// and the one Borland 5.02 will not take: the body of a class defined inside a
+// function cannot look at the namespace around it (measured in this file's shape
+// -- "Call to undefined function 'Span'" for the constructor call and "Qualifier
+// 'core' is not a class or namespace name" for the sibling namespace).  Writing
+// every name in full does compile, so this is a choice rather than the only way:
+// one name at namespace scope reads better inside twelve `flush()` calls than a
+// body of qualifications does, and it is the same shape Watcom compiles.  Nothing
+// else is paid for the move: every member is a reference the caller supplies, and
+// the constructor that fills them is the era rule about reference members, which
+// applies at namespace scope too (see src/tui/syntax.cpp).
+struct Flush
+{
+    std::string &buf;
+    std::vector<Span> &out;
+    const unsigned char role;
+    Flush( std::string &b, std::vector<Span> &o, unsigned char r )
+        : buf( b ), out( o ), role( r ) {}
+    void operator()( void )
+    {
+        if( !buf.empty() ) { out.push_back( Span( buf, role ) ); core::clearAll( buf ); }
+    }
+};
+
 // Parse inline markdown, appending styled spans to `out`.
 void inlineRuns( const std::string &s, size_t from, size_t to,
                  bool heading, bool bold, bool italic, bool strike,
@@ -133,21 +162,6 @@ void inlineRuns( const std::string &s, size_t from, size_t to,
     std::string buf;
     const unsigned char baseRole = combineRole( heading, bold, italic, strike );
 
-    // The text gathered so far, appended when a styled span interrupts it.  A
-    // function object rather than a lambda: Watcom has no lambdas, and calling
-    // an object with operator() keeps every `flush()` below exactly as it was.
-    struct Flush
-    {
-        std::string &buf;
-        std::vector<Span> &out;
-        const unsigned char role;
-        Flush( std::string &b, std::vector<Span> &o, unsigned char r )
-            : buf( b ), out( o ), role( r ) {}
-        void operator()( void )
-        {
-            if( !buf.empty() ) { out.push_back( Span( buf, role ) ); buf.clear(); }
-        }
-    };
     Flush flush( buf, out, baseRole );
 
     for( size_t i = from; i < to; )
@@ -455,7 +469,7 @@ public:
         if( cw_ > 0 || line_.size() > ( line_.empty() ? 0 : 0 ) )
             if( !line_.empty() )
                 emit();
-        line_.clear();
+        core::clearAll( line_ );
     }
 
 private:
@@ -482,7 +496,7 @@ private:
 
     void startLine()
     {
-        line_.clear();
+        core::clearAll( line_ );
         const std::string &p = first_ ? fp_ : cp_;
         unsigned char pr = first_ ? fpRole_ : cpRole_;
         if( !p.empty() ) line_.push_back( Span( p, pr ) );
@@ -519,7 +533,15 @@ private:
 
 // --- block level ------------------------------------------------------------
 
-namespace {
+// Named rather than anonymous, and reopened for lookup on the line after
+// the one that closes it, which is all an anonymous namespace says:
+// these names belong to this file and are visible to the rest of it
+// from here on.  The spelling has to be written out because Borland
+// 5.02 refuses a second anonymous namespace inside a named one
+// ("Multiple declaration for 'atui::tui::<unnamedNS>'", measured, in any
+// named namespace, while two at global scope are accepted) and this
+// file has more than one section.
+namespace markdown_local {
 
 bool isBlank( const std::string &s )
 {
@@ -664,7 +686,7 @@ std::vector<std::string> splitRow( const std::string &line )
     {
         if( s[i] == '\\' && i + 1 < s.size() )
         { cur += s[i]; cur += s[i + 1]; ++i; continue; }
-        if( s[i] == '|' ) { cells.push_back( trim( cur ) ); cur.clear(); }
+        if( s[i] == '|' ) { cells.push_back( trim( cur ) ); core::clearAll( cur ); }
         else cur += s[i];
     }
     cells.push_back( trim( cur ) );
@@ -878,7 +900,10 @@ void emitTable( const std::vector<std::string> &lines, size_t &i, size_t to,
 bool startsNewBlock( const std::string &ln )
 {
     int ind = leadSpaces( ln );
-    std::string body = ln.substr( std::min<size_t>( ind, ln.size() ) );
+    // (size_t) on the count rather than std::min<size_t>( ... ): explicit
+    // template arguments on a qualified name are a syntax error on Borland
+    // 5.02, and operands that agree need no argument (compat/bcc/README.md).
+    std::string body = ln.substr( std::min( (size_t) ind, ln.size() ) );
     if( body.empty() ) return false;
     if( body[0] == '>' ) return true;
     char fc; int fl; std::string info;
@@ -990,6 +1015,40 @@ void emitList( const std::vector<std::string> &lines, size_t &i, size_t to,
 
 // --- the block dispatcher ---------------------------------------------------
 
+// The paragraph gathered so far, rendered when something else begins.  A function
+// object rather than a lambda -- Watcom has none -- holding references to the
+// same values, which it clears in place.
+//
+// At namespace scope, for the reason the note over `Flush` at the inline pass
+// gives: Borland 5.02 cannot compile the body of a class defined inside a
+// function against the namespace around it (measured here: "Undefined symbol
+// 'rQuote'" for a constant one namespace out, and the same for `core::`).
+struct ParaFlush
+{
+    std::vector<Span> &para;
+    bool &hasPara;
+    bool &atHard;
+    const Ctx &ctx;
+    const std::string &prefix;
+    std::vector<Line> &out;
+    ParaFlush( std::vector<Span> &p, bool &h, bool &ah,
+               const Ctx &c, const std::string &pf, std::vector<Line> &o )
+        : para( p ), hasPara( h ), atHard( ah ), ctx( c ), prefix( pf ), out( o )
+    {
+    }
+    void operator()( void )
+    {
+        if( !hasPara ) return;
+        Layout lay( ctx, prefix, prefix,
+                    ( !prefix.empty() ? rQuote : rNormal ), rNormal, out );
+        lay.spans( para );
+        lay.finish();
+        core::clearAll( para );
+        hasPara = false;
+        atHard = false;
+    }
+};
+
 void renderBlocks( const std::vector<std::string> &lines, size_t from, size_t to,
                    const Ctx &ctx, const std::string &prefix,
                    std::vector<Line> &out )
@@ -998,34 +1057,6 @@ void renderBlocks( const std::vector<std::string> &lines, size_t from, size_t to
     bool hasPara = false;
     bool atHard = false;
 
-    // The paragraph gathered so far, rendered when something else begins.  A
-    // function object rather than a lambda -- Watcom has none -- holding
-    // references to the same values, which it clears in place.
-    struct ParaFlush
-    {
-        std::vector<Span> &para;
-        bool &hasPara;
-        bool &atHard;
-        const Ctx &ctx;
-        const std::string &prefix;
-        std::vector<Line> &out;
-        ParaFlush( std::vector<Span> &p, bool &h, bool &ah,
-                   const Ctx &c, const std::string &pf, std::vector<Line> &o )
-            : para( p ), hasPara( h ), atHard( ah ), ctx( c ), prefix( pf ), out( o )
-        {
-        }
-        void operator()( void )
-        {
-            if( !hasPara ) return;
-            Layout lay( ctx, prefix, prefix,
-                        ( !prefix.empty() ? rQuote : rNormal ), rNormal, out );
-            lay.spans( para );
-            lay.finish();
-            para.clear();
-            hasPara = false;
-            atHard = false;
-        }
-    };
     ParaFlush flushPara( para, hasPara, atHard, ctx, prefix, out );
 
     size_t i = from;
@@ -1036,7 +1067,7 @@ void renderBlocks( const std::vector<std::string> &lines, size_t from, size_t to
         if( isBlank( L ) ) { flushPara(); ++i; continue; }
 
         int ind = leadSpaces( L );
-        std::string body = L.substr( std::min<size_t>( ind, L.size() ) );
+        std::string body = L.substr( std::min( (size_t) ind, L.size() ) );  // see startsNewBlock
         bool atTop = ( ind <= 3 );
 
         // fenced code
@@ -1175,7 +1206,8 @@ void extractLinkDefs( std::vector<std::string> &lines, LinkMap &links )
     lines.swap( keep );
 }
 
-} // anonymous namespace
+} // namespace markdown_local
+using namespace markdown_local;
 
 // --- public -----------------------------------------------------------------
 
@@ -1203,7 +1235,7 @@ std::vector<Line> render( const std::string &md, int width )
     std::string cur;
     for( size_t i = 0; i < s.size(); ++i )
     {
-        if( s[i] == '\n' ) { lines.push_back( cur ); cur.clear(); }
+        if( s[i] == '\n' ) { lines.push_back( cur ); core::clearAll( cur ); }
         else cur += s[i];
     }
     lines.push_back( cur );

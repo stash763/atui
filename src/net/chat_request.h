@@ -33,6 +33,7 @@
 #include "oai_body.h"      // DeltaSink, OaiRequest, OaiResponse
 #include "sse.h"
 
+#include <cstddef>
 #include <string>
 
 namespace atui {

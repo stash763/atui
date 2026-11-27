@@ -15,9 +15,11 @@
 #include <mutex>
 #include <string>
 
-#if defined( __WATCOMC__ )
-// Watcom's <memory> has std::auto_ptr and no shared_ptr; core/ref.h says why this
-// place needs shared ownership anyway and what the stand-in costs.
+#if defined( __WATCOMC__ ) || defined( __BORLANDC__ )
+// Watcom's <memory> has std::auto_ptr and no shared_ptr, and neither has
+// Borland's (measured for both: the name appears in no header of either standard
+// library); core/ref.h says why this place needs shared ownership anyway and
+// what the stand-in costs.
 #  include "core/ref.h"
 #else
 #  include <memory>
@@ -79,7 +81,7 @@ private:
     bool allowSession_;
 };
 
-#if defined( __WATCOMC__ )
+#if defined( __WATCOMC__ ) || defined( __BORLANDC__ )
 typedef atui::core::Ref< Approval > ApprovalRef;
 #else
 typedef std::shared_ptr< Approval > ApprovalRef;

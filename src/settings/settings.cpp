@@ -12,6 +12,7 @@
 #include "tools/run_command_tool.h"
 #include "tui/theme.h"
 
+#include <cstddef>
 #include <cstdlib>
 #include <string>
 

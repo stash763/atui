@@ -17,6 +17,8 @@
 #ifndef ATUI_SETTINGS_INI_H
 #define ATUI_SETTINGS_INI_H
 
+#include <cstddef>
+#include <functional>    // std::less: the era compilers do not default it
 #include <map>
 #include <string>
 #include <vector>
@@ -72,8 +74,13 @@ public:
 
 private:
     // section -> (key -> value)
-    typedef std::map<std::string, std::string> Section;
-    std::map<std::string, Section> data_;
+    /* The comparator is spelled out rather than left to its default because
+       Borland 5.02's standard library refuses to default it: Rogue Wave turns off
+       default template arguments for this compiler (stdcomp.h, `__TURBOC__ <=
+       0x520`), so `std::map<K, V>` is "Too few arguments in template class name"
+       there.  Spellings are portable; the two-argument form is not. */
+    typedef std::map<std::string, std::string, std::less<std::string> > Section;
+    std::map<std::string, Section, std::less<std::string> > data_;
     std::string path_;
     bool loaded_;
 };

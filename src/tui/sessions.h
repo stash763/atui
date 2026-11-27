@@ -22,6 +22,7 @@
 #ifndef ATUI_TUI_SESSIONS_H
 #define ATUI_TUI_SESSIONS_H
 
+#include <cstddef>
 #include <string>
 #include <vector>
 

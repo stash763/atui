@@ -41,7 +41,9 @@
 #include "oai_body.h"
 
 #include "tools/approval.h"
+#include "core/strutil.h"      // clearAll, eraseFrom, eraseAt: Borland has no clear()
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -102,7 +104,7 @@ public:
     // The conversation as the model has seen it: only complete turns are in it.
     const std::vector< OaiMessage > &conversation() const { return conv_; }
     std::size_t messageCount() const { return conv_.size(); }
-    void clearConversation() { conv_.clear(); }
+    void clearConversation() { core::clearAll( conv_ ); }
 
 private:
     enum State

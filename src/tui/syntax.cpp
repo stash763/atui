@@ -181,6 +181,28 @@ bool hasBlockComment( Lang lang )
     return lang == LangC || lang == LangJS || lang == LangGo || lang == LangRust;
 }
 
+// The default-role run gathered between coloured spans, emitted as one Span so a
+// run of ordinary code is one attribute and not one per word.  A function object
+// rather than a lambda -- Watcom has none -- and at namespace scope rather than
+// inside highlightLine, where it would otherwise sit: Borland 5.02 cannot compile
+// the body of a class defined inside a function against the namespace around it
+// (measured: "Call to undefined function 'Span'" for the constructor call and
+// "Qualifier 'core' is not a class or namespace name" for the helper), and it
+// refuses reference members with no constructor to initialising them ("Reference
+// member 'Flush::o' in class without constructors"), which is what the aggregate
+// initialiser here used to be.
+struct RunFlush
+{
+    std::vector<Span> &out;
+    std::string &def;
+    RunFlush( std::vector<Span> &o, std::string &d ) : out( o ), def( d ) {}
+    void operator()( unsigned char role )
+    {
+        if( !def.empty() ) { out.push_back( Span( def, role ) ); core::clearAll( def ); }
+    }
+    void code() { operator()( rCode ); }
+};
+
 } // anonymous namespace
 
 // --- public -----------------------------------------------------------------
@@ -215,7 +237,7 @@ Lang detectLang( const std::string &info )
 void highlightLine( Lang lang, const std::string &code,
                     SynState &st, std::vector<Span> &out )
 {
-    out.clear();
+    core::clearAll( out );
     if( code.empty() )
     {
         out.push_back( Span( std::string(), rCode ) );
@@ -230,11 +252,9 @@ void highlightLine( Lang lang, const std::string &code,
     const size_t n = code.size();
     size_t i = 0;
     std::string def;
-    // accumulate a default (rCode) run and flush it before a coloured span.
-    struct Flush { std::vector<Span>& o; std::string& d;
-        void operator()( unsigned char r ){ if( !d.empty() ){ o.push_back( Span( d, r ) ); d.clear(); } }
-        void code(){ operator()( rCode ); }
-    } flush = { out, def };
+    // accumulate a default (rCode) run and flush it before a coloured span;
+    // RunFlush is above, at namespace scope, for the era compilers.
+    RunFlush flush( out, def );
 
     // Resume an open multi-line construct.
     if( st.mode == 1 )            // block comment
@@ -247,7 +267,7 @@ void highlightLine( Lang lang, const std::string &code,
         }
         out.push_back( Span( code.substr( i, e - i + st.term.size() ), rComment ) );
         i = e + st.term.size();
-        st.mode = 0; st.term.clear();
+        st.mode = 0; core::clearAll( st.term );
     }
     else if( st.mode == 2 )       // multi-line string
     {
@@ -259,7 +279,7 @@ void highlightLine( Lang lang, const std::string &code,
         }
         out.push_back( Span( code.substr( i, e - i + st.term.size() ), rString ) );
         i = e + st.term.size();
-        st.mode = 0; st.term.clear();
+        st.mode = 0; core::clearAll( st.term );
     }
 
     // C/C++ preprocessor line (#include ...), only if '#' is the first token.

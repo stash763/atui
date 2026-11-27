@@ -4,6 +4,7 @@
 #include "core/jsonstr.h"     // decodeJsonString: the one string decoder
 
 #include <cctype>
+#include <cstddef>
 
 namespace atui {
 namespace tools {

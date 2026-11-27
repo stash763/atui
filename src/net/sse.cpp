@@ -19,9 +19,9 @@ void SseStream::feed( const char *data, std::size_t len, Sink &sink )
         if ( nl == std::string::npos )
             break;                       // no complete line yet: wait for more
         std::string line = buf_.substr( 0, nl );
-        buf_.erase( 0, nl + 1 );
+        core::eraseAt( buf_, 0, nl + 1 );
         if ( !line.empty() && line[line.size() - 1] == '\r' )
-            line.erase( line.size() - 1 );       // CRLF, and no back() on Watcom
+            core::eraseFrom( line, line.size() - 1 );       // CRLF, and no back() on Watcom
         emit( line, sink );
         if ( done_ )
             return;
@@ -29,7 +29,7 @@ void SseStream::feed( const char *data, std::size_t len, Sink &sink )
 
     if ( buf_.size() > kMaxLine )
     {
-        buf_.clear();
+        core::clearAll( buf_ );
         overflow_ = true;
     }
 }

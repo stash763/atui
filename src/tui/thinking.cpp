@@ -2,6 +2,7 @@
 #include "tui/thinking.h"
 #include "tui/markdown.h"
 #include "tui/wrap.h"
+#include "core/strutil.h"      // clearAll, eraseFrom, eraseAt: Borland has no clear()
 
 #include <cstddef>
 
@@ -154,7 +155,7 @@ std::vector<Line> renderThinkingBody( const std::string &text, int width )
             std::string body = segs[s].text;
             if( s + 1 < segs.size() && !body.empty()
                 && body[body.size() - 1] == '\n' )
-                body.erase( body.size() - 1 );
+                core::eraseFrom( body, body.size() - 1 );
 
             std::vector<std::string> rows = wrapText( body, width - 3 );
             for( size_t i = 0; i < rows.size(); ++i )

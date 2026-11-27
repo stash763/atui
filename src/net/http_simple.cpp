@@ -103,7 +103,7 @@ std::string briefForMessage( const std::string &text )
             break;
     }
     while( !out.empty() && out[out.size() - 1] == ' ' )
-        out.erase( out.size() - 1 );
+        core::eraseFrom( out, out.size() - 1 );
     if( out.size() >= kQuotedError && text.size() > kQuotedError )
         out += "...";
     return out;
@@ -116,8 +116,8 @@ bool httpGet( const std::string &baseUrl,
               std::string &body,
               std::string &error )
 {
-    body.clear();
-    error.clear();
+    core::clearAll( body );
+    core::clearAll( error );
 
     HttpEndpoint endpoint;
     if( !parseHttpUrl( baseUrl, endpoint, error ) )
@@ -125,10 +125,13 @@ bool httpGet( const std::string &baseUrl,
 
     HttpStream stream;
     GetCollector sink;
+    // named rather than a conditional in the argument list: Borland will not bind
+    // the const reference the parameter takes to the result of one.
+    const std::string auth = apiKey.empty() ? std::string() : "Bearer " + apiKey;
     if( !stream.start( "GET", endpoint.host, endpoint.port,
                        joinPath( endpoint.path, path ),
                        std::string(), std::string(), std::string(),
-                       apiKey.empty() ? std::string() : "Bearer " + apiKey,
+                       auth,
                        10, seconds > 0 ? seconds : 20, &sink, &error ) )
     {
         return false;

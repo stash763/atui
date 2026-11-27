@@ -27,7 +27,7 @@ std::string describe( const std::string &target, const std::string &window,
             out += "'" + window + "'";
     }
     out += " -> ";
-    out += path.empty() ? "the next atui_shot_N.bmp" : path;
+    out += path.empty() ? "the next atui_shot_N.bmp" : path.c_str();
     return out;
 }
 

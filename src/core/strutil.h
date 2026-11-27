@@ -1,4 +1,4 @@
-// String helpers for a standard library that stops short.
+// Helpers for a standard library that stops short.
 //
 // The rule for this file is the rule for compat/: something belongs here when
 // the library the newer targets have is simply not in Watcom 1.9's.  Measured
@@ -8,10 +8,18 @@
 // so std::ostringstream does not exist at all.  Each helper below says which of
 // those gaps it fills.
 //
+// The one helper that is not about strings, clearAll, lives here for the same
+// reason: it fills a library gap, and this is where the library gaps go.  Note
+// that the two era libraries are not missing the same things -- Watcom's
+// containers have clear() and Borland's do not -- so what each helper stands in
+// for is written with the helper rather than assumed from the file's name.
+//
 // Everything here is C++98 and exception-free, like the rest of core/.
 
 #ifndef ATUI_CORE_STRUTIL_H
 #define ATUI_CORE_STRUTIL_H
+
+#include "core/int64.h"    // Int64 and UInt64: Borland 5.02 has no `long long`
 
 #include <cstddef>
 #include <string>
@@ -92,8 +100,8 @@ public:
     Fmt &operator<<( unsigned int value );
     Fmt &operator<<( long value );
     Fmt &operator<<( unsigned long value );
-    Fmt &operator<<( long long value );
-    Fmt &operator<<( unsigned long long value );
+    Fmt &operator<<( Int64 value );
+    Fmt &operator<<( UInt64 value );
     Fmt &operator<<( double value );
 
     // std::ostream's meaning: significant digits in the general form.  Six, the
@@ -107,6 +115,35 @@ private:
     std::string s_;
     int digits_;
 };
+
+// ----------------------------------------------------------------------------
+// Emptied and shortened containers.
+//
+// Borland C++ 5.02 ships Rogue Wave's 1995 standard library, which predates
+// clear(): no string, no vector, no map (measured: "'clear' is not a member of
+// 'std::basic_string<...>'", and the word clear does not appear in the library's
+// vector.h, string.h, map.h or set.h at all).  Watcom has them, so this is a gap
+// in one era library and not the other.  [container.requirements] defines clear()
+// as erase( begin(), end() ) and every library here has that, so one spelling
+// serves the whole tree -- strings, vectors, maps, whatever it is emptied of.
+//
+// The same library has erase() but only in its iterator form: erase( pos ) and
+// erase( pos, len ) are "Could not find a match for ...::erase(unsigned int)"
+// there.  eraseFrom and eraseAt are those two by position, which is how every
+// call site in this program reads, and they are the standard's meaning: from a
+// position to the end, and a position and a count.
+// ----------------------------------------------------------------------------
+
+template< class C >
+inline void clearAll( C &c )
+{
+    c.erase( c.begin(), c.end() );
+}
+
+void eraseFrom( std::string &s, std::size_t from );
+
+// `len` is a count, not std::string::npos: say eraseFrom when the end is meant.
+void eraseAt( std::string &s, std::size_t pos, std::size_t len );
 
 } // namespace atui::core
 } // namespace atui

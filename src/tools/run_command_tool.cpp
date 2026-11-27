@@ -5,11 +5,13 @@
 #include "tools/preview.h"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
 
 #include "core/strutil.h"
+#include "core/int64.h"      // Int64: what a duration's count() answers with
 
 // Three spawn implementations, chosen here and nowhere else:
 //
@@ -235,7 +237,7 @@ ChildResult runCaptured( const std::string &shellCmd,
         int waitMs = kStopCheckMs;
         if( timeoutSeconds > 0 )
         {
-            const long long remaining =
+            const core::Int64 remaining =
                 std::chrono::duration_cast< std::chrono::milliseconds >(
                     deadline - std::chrono::steady_clock::now() ).count();
             if( remaining <= 0 ) { r.timedOut = true; break; }
@@ -408,6 +410,21 @@ ChildResult runCaptured( const std::string &shellCmd,
     // nesting.  Then the kill reaches the command alone, which is worse and is not
     // a reason to refuse to run it; the tests report it as a failure rather than a
     // pass, so the difference cannot hide.
+#if defined( __BORLANDC__ )
+    // No job object on this build, and the reason is the operating system rather
+    // than the compiler: the job API arrived with Windows 2000 and BC5's headers
+    // do not contain it (measured: "Call to undefined function
+    // 'CreateJobObjectA'", with <windows.h> included and without), which matches
+    // the systems this build is for -- Windows 98 and NT 4 have no job objects at
+    // all.  So the command is the only thing the kill below reaches: a `start /b`
+    // grandchild can outlive it, and the tree can outlive atui.  `inJob` is the
+    // question the rest of this function already asks -- assignment can fail on a
+    // box where atui itself is in a job that forbids nesting -- so the era build
+    // takes the fallback path that was written for that, and says so here rather
+    // than in a test that would only be able to report it as a failure.
+    const HANDLE job = 0;
+    const bool inJob = false;
+#else
     HANDLE job = ::CreateJobObjectA( 0, 0 );
     bool inJob = false;
     if( job )
@@ -419,6 +436,7 @@ ChildResult runCaptured( const std::string &shellCmd,
                                            &limits, sizeof( limits ) ) &&
                 ::AssignProcessToJobObject( job, pi.hProcess );
     }
+#endif
     ::ResumeThread( pi.hThread );
 
     const std::chrono::steady_clock::time_point deadline =
@@ -474,8 +492,12 @@ ChildResult runCaptured( const std::string &shellCmd,
 
     if( r.timedOut || r.stopRequested )
     {
+#if defined( __BORLANDC__ )
+        ::TerminateProcess( pi.hProcess, 1 );      // no job object: see above
+#else
         if( inJob ) ::TerminateJobObject( job, 1 );
         else        ::TerminateProcess( pi.hProcess, 1 );
+#endif
 
         // What it printed before it was stopped is usually the answer to why.
         // Bounded, and bounded by data rather than by the clock: the tree is dead,
@@ -723,7 +745,7 @@ std::string RunCommandTool::execute( const std::string &argumentsJson )
     {
         // Trim a single trailing newline for readability.
         std::string out = result.output;
-        if( out[out.size() - 1] == '\n' ) out.erase( out.size() - 1 );
+        if( out[out.size() - 1] == '\n' ) core::eraseFrom( out, out.size() - 1 );
         r << "\n\n" << out;
         if( result.truncated )
             r << "\n\n[output truncated at " << kMaxOutput << " bytes]";

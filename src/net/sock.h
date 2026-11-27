@@ -67,6 +67,7 @@
 #ifndef ATUI_NET_SOCK_H
 #define ATUI_NET_SOCK_H
 
+#include "core/int64.h"    // core::UInt64: the handle below, on Borland
 #include <string>
 #include <stddef.h>   // size_t
 
@@ -87,9 +88,12 @@ enum SockWhy
 };
 
 // A socket handle.  `int` where sockets are descriptors, and wide enough for
-// Windows' `SOCKET`, which is a pointer-sized integer.
+// Windows' `SOCKET`, which is a pointer-sized integer.  UInt64 rather than
+// `unsigned long long` because Borland 5.02 -- a 32-bit-only compiler, which is
+// the reason a 64-bit handle is spelled at all here -- does not have the phrase;
+// core/int64.h has the measurement.
 #ifdef _WIN32
-typedef unsigned long long SockHandle;
+typedef atui::core::UInt64 SockHandle;
 const SockHandle kNoSocket = (SockHandle) -1;   // all ones, as INVALID_SOCKET is
 #else
 typedef int SockHandle;

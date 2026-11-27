@@ -18,6 +18,7 @@
 #ifndef ATUI_CORE_CHILDENV_H
 #define ATUI_CORE_CHILDENV_H
 
+#include <cstddef>
 #include <string>
 #include <vector>
 

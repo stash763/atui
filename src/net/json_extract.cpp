@@ -3,6 +3,8 @@
 
 #include "core/jsonstr.h"     // decodeJsonString: the one string decoder
 
+#include <cstddef>
+#include <cstdlib>            // std::strtol
 #include <cstring>
 
 namespace atui {
@@ -86,7 +88,7 @@ size_t valuePosForKey( const std::string &s, size_t i, size_t end,
             if( j < end && s[j] == '"' )
             {
                 if( (size_t)( j - start ) == klen &&
-                    std::strncmp( &s[start], key, klen ) == 0 )
+                    std::strncmp( s.c_str() + start, key, klen ) == 0 )
                 {
                     size_t k = j + 1;
                     skipWs( s, k, end );

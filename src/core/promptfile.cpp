@@ -2,7 +2,9 @@
 #include "core/promptfile.h"
 
 #include "core/hostenv.h"
+#include "core/strutil.h"      // clearAll, eraseFrom, eraseAt: Borland has no clear()
 
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -60,13 +62,13 @@ bool loadPromptsFile( const std::string &path, std::string &error )
     }
 
     AgentPrompts &p = agentPrompts();
-    p.extra.clear();
+    clearAll( p.extra );
 
     std::string line;
     std::size_t count = 0;
     for ( ; ; )
     {
-        line.erase();
+        clearAll( line );
         int c;
         for ( ; ; )
         {
@@ -83,7 +85,7 @@ bool loadPromptsFile( const std::string &path, std::string &error )
         // shows in the preview. buildSystemMessage drops blanks from
         // what the model reads.
         if( !line.empty() && line[ line.size() - 1 ] == '\r' )
-            line.erase( line.size() - 1 );
+            eraseFrom( line, line.size() - 1 );
         if( eof && line.empty() )
             break;                        // no phantom last line
         p.extra.push_back( line );

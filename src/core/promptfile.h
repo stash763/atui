@@ -26,6 +26,7 @@
 #ifndef ATUI_CORE_PROMPTFILE_H
 #define ATUI_CORE_PROMPTFILE_H
 
+#include <cstddef>
 #include <string>
 
 namespace atui {

@@ -3,6 +3,7 @@
 
 #include "http_simple.h"
 #include "json_extract.h"
+#include "core/strutil.h"      // clearAll, eraseFrom, eraseAt: Borland has no clear()
 
 namespace atui {
 namespace net {
@@ -12,8 +13,8 @@ bool fetchModels( const std::string &baseUrl,
                   std::vector<std::string> &models,
                   std::string &err )
 {
-    models.clear();
-    err.clear();
+    core::clearAll( models );
+    core::clearAll( err );
     if( baseUrl.empty() )
     {
         err = "no server URL set";

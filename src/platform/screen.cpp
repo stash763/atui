@@ -4,6 +4,7 @@
 #include "platform/screen.h"
 
 #include "tui/ascii_fold.h"
+#include "core/strutil.h"      // clearAll, eraseFrom, eraseAt: Borland has no clear()
 
 #include <cstdio>
 #include <cstring>
@@ -63,9 +64,9 @@ void formatOne( const WindowInfo &win, const char *indent,
     out += ' ';
     out += geom;
     out += ' ';
-    out += win.title.empty() ? "\"\"" : quoted( atui::tui::foldToAscii( win.title ) );
+    out += win.title.empty() ? "\"\"" : quoted( atui::tui::foldToAscii( win.title ) ).c_str();
     out += "  class:";
-    out += win.cls.empty() ? "-" : atui::tui::foldToAscii( win.cls );
+    out += win.cls.empty() ? "-" : atui::tui::foldToAscii( win.cls ).c_str();
     if( win.active )
         out += "  ACTIVE";
     if( win.iconic )
@@ -91,7 +92,7 @@ void findWindows( const std::vector<WindowInfo> &list,
                   const std::string &query,
                   std::vector< const WindowInfo * > &out )
 {
-    out.clear();
+    core::clearAll( out );
     if( query.empty() )
         return;
 

@@ -5,9 +5,11 @@
 #include "core/clock.h"      // utcBreakdown: Watcom has no gmtime_r
 #include "core/paths.h"
 #include "core/strutil.h"
+#include "core/int64.h"     // UInt64: the FNV-1a constants need a 64-bit literal
 
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -17,9 +19,16 @@
 
 #if defined(_WIN32)
 #include <io.h>
-#include <process.h>    // _getpid lives here, not in <io.h> (measured: MSVC 19.16)
+#include <process.h>    // getpid lives here, not in <io.h> (measured: MSVC 19.16)
 #include <sys/types.h>
+#if defined(__BORLANDC__)
+// Borland's CRT has the POSIX spelling and no underscore form: `_getpid` is "Call
+// to undefined function" there while `getpid` compiles (measured, and it is the
+// same two words the OS/2 branch below uses -- that library has no _getpid either).
+#define ATUI_PID() ((long)getpid())
+#else
 #define ATUI_PID() ((long)_getpid())
+#endif
 #elif defined(__OS2__)
 // Watcom on OS/2 defines neither _WIN32 nor __unix__, and has no <unistd.h>
 // either (measured: the compiler cannot open it).  getpid is in <process.h>.
@@ -64,14 +73,14 @@ std::mutex &cs()
 // FNV-1a, 64-bit (offset basis 14695981039346656037, prime 1099511628211). This
 // is a "has the file changed underneath me" test and is not security-relevant,
 // which is why it can be eight lines of arithmetic rather than a dependency.
-inline unsigned long long fnvInit() { return 14695981039346656037ULL; }
-inline void fnvByte( unsigned long long &h, char c )
+inline core::UInt64 fnvInit() { return ATUI_U64( 14695981039346656037 ); }
+inline void fnvByte( core::UInt64 &h, char c )
 {
     h ^= (unsigned char) c;
-    h *= 1099511628211ULL;
+    h *= ATUI_U64( 1099511628211 );
 }
 
-std::string hex( unsigned long long v )
+std::string hex( core::UInt64 v )
 {
     char buf[ 24 ];
     std::snprintf( buf, sizeof buf, "%016llx", v );
@@ -128,7 +137,7 @@ bool copyFile( const std::string &src, const std::string &dst,
     }
 
     char buf[ kChunk ];
-    unsigned long long h = fnvInit();
+    core::UInt64 h = fnvInit();
     long total = 0;
     bool ok = true;
     for( ;; )
@@ -173,7 +182,7 @@ std::string hashFile( const std::string &path )
     std::ifstream in( path.c_str(), std::ios::in | std::ios::binary );
     if( !in ) return std::string();
     char buf[ kChunk ];
-    unsigned long long h = fnvInit();
+    core::UInt64 h = fnvInit();
     for( ;; )
     {
         in.read( buf, kChunk );
@@ -340,7 +349,7 @@ void removeEntryFiles( const Entry &e )
 
 void readEntries( std::vector<Entry> &out )
 {
-    out.clear();
+    clearAll( out );
     const std::string d = dir();
     if( !isDirectory( d ) ) return;
 
@@ -595,7 +604,7 @@ bool begin( const std::string &target, const std::string &tool,
         if( !copyFile( out.target, out.preImage, out.hashBefore, out.bytesBefore,
                        error ) )
         {
-            out.preImage.clear();
+            clearAll( out.preImage );
             return false;
         }
     }
@@ -625,7 +634,7 @@ bool begin( const std::string &target, const std::string &tool,
     if( !writeInf( e, "pending", error ) )
     {
         std::remove( out.preImage.c_str() );
-        out.preImage.clear();
+        clearAll( out.preImage );
         return false;
     }
     return true;
@@ -681,7 +690,7 @@ void interrupted( std::vector<Entry> &out )
         std::lock_guard< std::mutex > lock( cs() );
         readEntries( all );
     }
-    out.clear();
+    clearAll( out );
     for( std::size_t i = 0; i < all.size(); ++i )
         if( all[i].pending ) out.push_back( all[i] );
 }

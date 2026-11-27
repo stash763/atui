@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "tui/md_style.h"
+#include "core/strutil.h"      // clearAll, eraseFrom, eraseAt: Borland has no clear()
 
 namespace atui {
 namespace tui {
@@ -40,7 +41,7 @@ struct SynState
     bool escapedNewline;  // bash: a trailing backslash continues a string
 
     SynState() : mode( 0 ), escapedNewline( false ) {}
-    void reset() { mode = 0; term.clear(); escapedNewline = false; }
+    void reset() { mode = 0; core::clearAll( term ); escapedNewline = false; }
 };
 
 // Tokenize one source line, appending styled spans to `out`. `st` carries state

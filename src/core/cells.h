@@ -30,6 +30,7 @@
 #ifndef ATUI_CORE_CELLS_H
 #define ATUI_CORE_CELLS_H
 
+#include <cstddef>
 #include <string>
 
 namespace atui {

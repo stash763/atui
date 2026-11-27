@@ -4,6 +4,9 @@
 
 #include "core/strutil.h"      // toString: Watcom has no std::to_string
 
+#include <cstddef>
+#include <cstdio>              // std::fprintf, std::fflush: this file names std::
+#include <cstdlib>             // std::getenv, std::strtol
 #include <stdio.h>             // fprintf, for the request dump below
 #include <stdlib.h>            // strtol
 #include <cstring>             // strncmp
@@ -245,9 +248,9 @@ bool HttpStream::start( const std::string &method,
     // Reset everything a previous request may have left behind: this object is
     // reused turn after turn, and a leftover `remaining_` would end the next answer
     // as soon as it started.
-    request_.clear();
+    core::clearAll( request_ );
     sent_ = 0;
-    buf_.clear();
+    core::clearAll( buf_ );
     status_ = 0;
     chunked_ = false;
     remaining_ = -1;
@@ -257,7 +260,7 @@ bool HttpStream::start( const std::string &method,
 
     request_ += method;
     request_ += " ";
-    request_ += ( path.empty() ? "/" : path );
+    request_ += ( path.empty() ? "/" : path.c_str() );
     request_ += " HTTP/1.1\r\n";
     request_ += "Host: ";
     request_ += host;
@@ -525,7 +528,7 @@ bool HttpStream::consume()
         if ( end == std::string::npos )
             return bufferIsSane();
         const std::string head = buf_.substr( 0, end );
-        buf_.erase( 0, end + 4 );
+        core::eraseAt( buf_, 0, end + 4 );
         if ( !parseHead( head ) )
             return false;
     }
@@ -540,7 +543,7 @@ bool HttpStream::consume()
                 if ( nl == std::string::npos )
                     return bufferIsSane();
                 const long size = parseChunkSize( buf_.substr( 0, nl ) );
-                buf_.erase( 0, nl + 2 );
+                core::eraseAt( buf_, 0, nl + 2 );
                 if ( size < 0 )
                 {
                     finish( false, "the server's chunked answer is not well formed" );
@@ -568,7 +571,7 @@ bool HttpStream::consume()
                     take = (std::size_t) chunkLeft_;
                 if ( sink_ != 0 )
                     sink_->onBody( &buf_[0], take );
-                buf_.erase( 0, take );
+                core::eraseAt( buf_, 0, take );
                 chunkLeft_ -= (long) take;
                 if ( chunkLeft_ == 0 )
                     state_ = stChunkEnd;
@@ -582,7 +585,7 @@ bool HttpStream::consume()
                 const std::size_t nl = buf_.find( "\r\n" );
                 if ( nl == std::string::npos )
                     return bufferIsSane();     // and a close here is a good end
-                buf_.erase( 0, nl + 2 );
+                core::eraseAt( buf_, 0, nl + 2 );
                 if ( nl == 0 )
                 {
                     finish( true, std::string() );
@@ -592,7 +595,7 @@ bool HttpStream::consume()
             }
             if ( buf_.size() < 2 )
                 return bufferIsSane();
-            buf_.erase( 0, 2 );
+            core::eraseAt( buf_, 0, 2 );
             state_ = stChunkSize;
         }
     }
@@ -606,7 +609,7 @@ bool HttpStream::consume()
         {
             if ( sink_ != 0 )
                 sink_->onBody( &buf_[0], take );
-            buf_.erase( 0, take );
+            core::eraseAt( buf_, 0, take );
             remaining_ -= (long) take;
         }
         if ( remaining_ == 0 )
@@ -622,7 +625,7 @@ bool HttpStream::consume()
     {
         if ( sink_ != 0 )
             sink_->onBody( &buf_[0], buf_.size() );
-        buf_.clear();
+        core::clearAll( buf_ );
     }
     return true;
 }

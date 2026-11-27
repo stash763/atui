@@ -1,6 +1,7 @@
 // Implementation of the install-location and filesystem helpers. See paths.h.
 #include "paths.h"
 
+#include <cstddef>
 #include <cstdlib>
 #include <cctype>
 #include <cstdio>
@@ -22,8 +23,18 @@
 #include <direct.h>
 #include <io.h>
 #include <sys/stat.h>
+#if defined(__BORLANDC__)
+// Borland's C library has the POSIX names and not the MS ones: `access`, `chdir`
+// and `getcwd` compile and `_access`, `_chdir` and `_getcwd` are each "Call to
+// undefined function" (measured, all three; `_mkdir` and `mkdir` are both there).
+// MSVC reserves the underscore forms, which is why the branch below names them --
+// and why this one, like the OS/2 branch above, does not.
+#define ATUI_MKDIR( p )      mkdir( p )
+#define ATUI_ACCESS( p, m )  access( ( p ), ( m ) )
+#else
 #define ATUI_MKDIR( p )      _mkdir( p )
 #define ATUI_ACCESS( p, m )  _access( ( p ), ( m ) )
+#endif
 #else
 #include <sys/stat.h>
 #include <unistd.h>
@@ -109,8 +120,11 @@ std::string anchorOf( const std::string &path )
             while( at < path.size() && isSep( path[at] ) ) ++at;
             if( at >= path.size() ) break;
             const std::size_t end = path.find_first_of( kSeps, at );
-            names.push_back( ( end == std::string::npos )
-                ? path.substr( at ) : path.substr( at, end - at ) );
+            // named rather than pushed inline: Borland will not bind the const
+            // reference push_back takes to a conditional expression.
+            const std::string name =
+                ( end == std::string::npos ) ? path.substr( at ) : path.substr( at, end - at );
+            names.push_back( name );
             at = ( end == std::string::npos ) ? path.size() : end + 1;
         }
 
@@ -172,7 +186,7 @@ std::string installDir()
 
 bool isDirectory( const std::string &path )
 {
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(__BORLANDC__)
     struct _stat st;
     if( ::_stat( path.c_str(), &st ) != 0 ) return false;
     return ( st.st_mode & _S_IFDIR ) != 0;
@@ -180,6 +194,13 @@ bool isDirectory( const std::string &path )
     // POSIX, and Watcom's <sys/stat.h>: both have struct stat and S_IFDIR.  The
     // bit is tested rather than S_ISDIR() called, because the macro is a later
     // convenience while the bit is the fact.
+    //
+    // Borland 5.02 lands here too, and not by preference: its <sys/stat.h> puts
+    // struct _stat, _S_IFDIR and the rest of the _-prefixed names behind
+    // `#ifdef __MSC`, which bcc32 does not define (measured: "Undefined
+    // structure '_stat'" for `struct _stat st`, "Undefined symbol '_S_IFDIR'").
+    // struct stat, ::stat and S_IFDIR are what it does declare, which is what
+    // the other era toolchain declares too.
     struct stat st;
     if( ::stat( path.c_str(), &st ) != 0 ) return false;
     return ( st.st_mode & S_IFDIR ) != 0;
@@ -211,9 +232,10 @@ bool isWritableFile( const std::string &path )
 bool setWorkingDirectory( const std::string &path )
 {
     if( path.empty() ) return false;
-#if defined(_WIN32)
+#if defined( _WIN32 ) && !defined( __BORLANDC__ )
     return ::_chdir( path.c_str() ) == 0;
 #else
+    // POSIX, Watcom, and Borland, whose <direct.h> has chdir and no _chdir.
     return ::chdir( path.c_str() ) == 0;
 #endif
 }
@@ -226,11 +248,11 @@ std::string absolutePath( const std::string &path )
     if( path.size() > 1 && path[1] == ':' ) return path;   // "C:\dir\file"
 #endif
     char buf[ 512 ];
-#if defined(_WIN32)
+#if defined( _WIN32 ) && !defined( __BORLANDC__ )
     if( !_getcwd( buf, sizeof buf ) ) return path;
 #else
     // OS/2 lands here too: Watcom's <direct.h> declares getcwd( char *, size_t ),
-    // the same shape POSIX uses.
+    // the same shape POSIX uses.  So does Borland's, which has no _getcwd.
     if( !::getcwd( buf, sizeof buf ) ) return path;
 #endif
     std::string cwd( buf );
@@ -265,15 +287,17 @@ long fileSize( const std::string &path )
 
 bool canFlushToDisk()
 {
-#if defined(_WIN32)
+#if defined( _WIN32 ) && !defined( __BORLANDC__ )
     return true;                        // _commit()
 #elif defined(__unix__) || defined(__APPLE__)
     return true;                        // fsync()
 #else
     // Including OS/2, where the call would be DosForceAsyncWt() rather than a C
-    // library one (Watcom's <io.h> has no commit(): measured).  Saying false is
-    // the truth about what flushToDisk does here, and the status line passes it
-    // on: writes are durable against atui's own exit, not against a power cut.
+    // library one (Watcom's <io.h> has no commit(): measured), and including
+    // Borland, whose C library has neither commit() nor _commit() (measured:
+    // both are "Call to undefined function").  Saying false is the truth about
+    // what flushToDisk does here, and the status line passes it on: writes are
+    // durable against atui's own exit, not against a power cut.
     return false;
 #endif
 }
@@ -285,7 +309,7 @@ void flushToDisk( std::FILE *file )
     // operating system was given. Ignored results are deliberate - there is no
     // action for a failure here, and `fclose` reports what matters about the file.
     (void) std::fflush( file );
-#if defined(_WIN32)
+#if defined( _WIN32 ) && !defined( __BORLANDC__ )
     (void) _commit( _fileno( file ) );
 #elif defined(__unix__) || defined(__APPLE__)
     (void) ::fsync( ::fileno( file ) );

@@ -46,6 +46,7 @@
 // way out; the tools and the transcript above never see PM's origin.
 #include "platform/screen.h"
 #include "platform/bmpout.h"
+#include "core/strutil.h"      // clearAll, eraseFrom, eraseAt: Borland has no clear()
 
 #if defined( ATUI_HAVE_OS2_PM )
 
@@ -438,7 +439,7 @@ CaptureResult captureWindow( const std::string &handle,
 
 bool listWindows( std::vector<WindowInfo> &out, bool children )
 {
-    out.clear();
+    core::clearAll( out );
     if( anchor() == 0 )
         return false;
 

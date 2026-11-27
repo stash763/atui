@@ -6,6 +6,7 @@
 #include "tools/json_args.h"
 #include "tools/permissions.h"   // canonicalPath(): open the file that was approved
 
+#include <cstddef>
 #include <cstdio>
 #include <string>
 
@@ -22,7 +23,7 @@ bool readFile( const std::string &path, std::string &out )
     // edit must see the file's own bytes, newlines included.
     std::FILE *f = std::fopen( path.c_str(), "rb" );
     if( !f ) return false;
-    out.clear();
+    core::clearAll( out );
     char buf[ 4096 ];
     for( ;; )
     {
@@ -261,7 +262,14 @@ std::string EditFileTool::approvalSummary( const std::string &argumentsJson ) co
     jsonStringArg( argumentsJson, "new_text", newText );
     jsonBoolArg( argumentsJson, "all", all );
 
-    std::string s = "Edit file \"" + ( path.empty() ? "?" : path ) + "\"";
+    // Named, and with `.c_str()` on the string arm: Borland 5.02 will not bind
+    // a const reference to the result of a conditional expression ("Reference
+    // initialized with 'std::basic_string<...>', needs lvalue of type the
+    // same"), and it will not make the two arms one type by converting the
+    // pointer to a string either ("Two operands must evaluate to the same
+    // type").  Given char pointers on both sides it means what it says.
+    const std::string shown = path.empty() ? "?" : path.c_str();
+    std::string s = "Edit file \"" + shown + "\"";
     s += all ? " — replace ALL matches:" : " — replace first match:";
     s += "\n  - old: " + clip( oldText, 80 );
     s += "\n  + new: " + clip( newText, 80 );
@@ -278,7 +286,7 @@ std::string EditFileTool::callPreview( const std::string &argumentsJson ) const
     jsonBoolArg( argumentsJson, "all", all );
 
     std::string s = "edit_file \"";
-    s += path.empty() ? "?" : clip( path, 120 );
+    s += path.empty() ? "?" : clip( path, 120 ).c_str();   // char pointers: see above
     s += "\"";
     s += all ? " (all matches)" : " (first match)";
     if( !oldText.empty() || !newText.empty() )

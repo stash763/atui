@@ -8,6 +8,7 @@
 #ifndef ATUI_NET_PROVIDER_H
 #define ATUI_NET_PROVIDER_H
 
+#include <cstddef>
 #include <string>
 #include <vector>
 

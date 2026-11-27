@@ -48,7 +48,6 @@
 #include <ctime>
 #include <algorithm>
 #include <fstream>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -782,7 +781,7 @@ public:
         blocks_ = blocks;
         restartLayout_ = true;
         ans_.valid = false;
-        ans_.rows.clear();
+        core::clearAll( ans_.rows );
         follow_ = true;
         changedNow_( 0 );
     }
@@ -1125,8 +1124,8 @@ private:
         if( restartLayout_ || first == 0 || first > rowsEnd_.size() )
         {
             first = 0;
-            lines_.clear();
-            rowsEnd_.clear();
+            core::clearAll( lines_ );
+            core::clearAll( rowsEnd_ );
         }
         else
         {
@@ -1235,8 +1234,12 @@ private:
                                                  (int) b, foldable ) );
                 if( foldable )
                 {
+                    // The std::string roundabout in the first arm: the two arms
+                    // of a conditional have to be one type, and Borland 5.02
+                    // stops at "Two operands must evaluate to the same type"
+                    // instead of building the string the way the standard says.
                     std::string hint = bl.expanded
-                        ? "  (click to collapse)"
+                        ? std::string( "  (click to collapse)" )
                         : "  .. " + atui::core::toString(
                               (unsigned long) (rl.size() - shown) )
                           + " more lines (click to expand)";
@@ -1266,7 +1269,7 @@ private:
                     ans_.block   = b;
                     ans_.width   = width;
                     ans_.settled = 0;
-                    ans_.rows.clear();
+                    core::clearAll( ans_.rows );
                     ans_.scan.init();
                 }
                 size_t bound = ans_.scan.feed( bl.text );
@@ -1276,7 +1279,7 @@ private:
                     // prefix of this answer is final and the cache is off:
                     // render the whole answer, as before settling existed.
                     ans_.settled = 0;
-                    ans_.rows.clear();
+                    core::clearAll( ans_.rows );
                     std::vector<Line> md = atui::tui::render(
                         atui::tui::foldForTerminal( bl.text ), width );
                     for( size_t i = 0; i < md.size(); ++i )
@@ -1528,7 +1531,7 @@ public:
         buf_ = t;
         if( cursor_ > buf_.size() ) cursor_ = buf_.size();
     }
-    void clear() { buf_.clear(); cursor_ = 0; top_ = 0; }
+    void clear() { core::clearAll( buf_ ); cursor_ = 0; top_ = 0; }
 
     // Number of wrapped rows the current text needs at the given width.
     int rowCount( int w )
@@ -1626,10 +1629,10 @@ public:
             case kbHome:  cursor_ = 0; break;
             case kbEnd:   cursor_ = buf_.size(); break;
             case kbBack:
-                if( cursor_ > 0 ) { size_t p = prevChar( cursor_ ); buf_.erase( p, cursor_ - p ); cursor_ = p; }
+                if( cursor_ > 0 ) { size_t p = prevChar( cursor_ ); core::eraseAt( buf_, p, cursor_ - p ); cursor_ = p; }
                 break;
             case kbDel:
-                if( cursor_ < buf_.size() ) { buf_.erase( cursor_, nextChar( cursor_ ) - cursor_ ); }
+                if( cursor_ < buf_.size() ) { core::eraseAt( buf_, cursor_, nextChar( cursor_ ) - cursor_ ); }
                 break;
             case kbUp:    moveVert( -1, w ); break;
             case kbDown:  moveVert(  1, w ); break;
@@ -1783,8 +1786,8 @@ protected:
     // from anywhere other than this function.
     void rewrap( int w )
     {
-        rows_.clear();
-        rowOfs_.clear();
+        core::clearAll( rows_ );
+        core::clearAll( rowOfs_ );
         if( w < 1 ) w = 1;
         if( buf_.empty() ) { rows_.push_back( std::string() ); rowOfs_.push_back( 0 ); return; }
         // The app's wrap, in columns, with the byte offset of every row kept so the caret
@@ -3763,7 +3766,7 @@ void ProvidersDialog::refreshModels()
     // (measured; its member list stops at push_back).
     while( !u.empty() && ( u[u.size() - 1] == ' ' || u[u.size() - 1] == '\r' ||
                            u[u.size() - 1] == '\n' ) )
-        u.erase( u.size() - 1 );
+        core::eraseFrom( u, u.size() - 1 );
 
     std::vector<std::string> ids;
     std::string err;
@@ -4086,7 +4089,7 @@ extern "C" int pmProvRefresh( int index, const char *url, const char *key,
     while( !u.empty()
            && ( u[u.size()-1] == ' ' || u[u.size()-1] == '\r'
                 || u[u.size()-1] == '\n' ) )
-        u.erase( u.size() - 1 );
+        core::eraseFrom( u, u.size() - 1 );
     const std::string k( key != 0 ? key : "" );
     std::vector<std::string> ids;
     std::string why;
@@ -4962,7 +4965,7 @@ UndoDialog::UndoDialog()
 // (which is what the journal already gives), capped at what fits on screen.
 void UndoDialog::loadList()
 {
-    items.clear();
+    core::clearAll( items );
     atui::core::journal::entries( items );
 
     std::vector<atui::core::journal::Entry> ordered;
@@ -5064,7 +5067,14 @@ void UndoDialog::act( bool discardIt )
     // The transcript records what happened to a file, not what didn't: a declination
     // is already on screen in the dialog.
     if( g_transcript_ && r != urDeclined ) g_transcript_->appendStatus( message );
-    setStatus( r == urDone ? message : "Not restored: " + message );
+    // Named, not passed inline: Borland 5.02 will not bind the const reference
+    // setStatus takes to the result of a conditional expression ("Reference
+    // initialized with 'std::basic_string<...>', needs lvalue of type the same"),
+    // and the same is true of every call in this file that hands a conditional
+    // holding two strings to a function.  The name is the fix; the conditional
+    // means the same thing on every compiler.
+    const std::string status = r == urDone ? message : "Not restored: " + message;
+    setStatus( status );
     loadList();
 }
 
@@ -5116,7 +5126,7 @@ static std::vector<atui::core::journal::Entry> g_undoSnap_;
 
 extern "C" int pmUndoCount( void )
 {
-    g_undoSnap_.clear();
+    core::clearAll( g_undoSnap_ );
     std::vector<atui::core::journal::Entry> items;
     atui::core::journal::entries( items );
     std::vector<atui::core::journal::Entry> ordered;
@@ -5515,15 +5525,18 @@ extern "C" int pmSessionsActive( void )
 
 extern "C" int pmSessionsNew( const char *title )
 {
-    return (int) sessionNew_( title ? std::string( title ) : std::string() );
+    // Named for the reason at the first `status` above: a conditional of two
+    // strings will not bind to the const reference the call takes, on Borland.
+    const std::string name = title ? std::string( title ) : std::string();
+    return (int) sessionNew_( name );
 }
 
 extern "C" int pmSessionsRename( int i, const char *title )
 {
     if( i < 0 )
         return soNoRow;
-    return (int) sessionRename_( (std::size_t) i,
-                                 title ? std::string( title ) : std::string() );
+    const std::string name = title ? std::string( title ) : std::string();
+    return (int) sessionRename_( (std::size_t) i, name );
 }
 
 extern "C" int pmSessionsDelete( int i )
@@ -5627,8 +5640,9 @@ void maybeRecoverInterruptedWrites_()
         const RestoreResult r = restoreEntry_( e, true, message );
         if( g_transcript_ )
         {
-            g_transcript_->appendStatus( r == urDone ? message
-                                                    : "not restored: " + message );
+            const std::string status = r == urDone ? message
+                                                   : "not restored: " + message;
+            g_transcript_->appendStatus( status );   // named: see the first `status`
         }
         // A restore that failed is worth a box of its own: the transcript line
         // scrolls, and "the copy is still at <path>" is the sentence that keeps
@@ -5682,7 +5696,7 @@ int run_app()
             // this: the Enter key, pressed from the command line.
             pmPromptSubmit( g_startupMessage.c_str() );
         }
-        g_startupMessage.clear();
+        core::clearAll( g_startupMessage );
     }
 
     app.run();

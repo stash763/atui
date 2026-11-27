@@ -3,6 +3,7 @@
 
 #include "core/strutil.h"
 
+#include <cstddef>
 #include <stdlib.h>
 
 namespace atui {
@@ -29,7 +30,7 @@ std::string lowerCase( const std::string &s )
 bool parseHttpUrl( const std::string &url, HttpEndpoint &out, std::string &reason )
 {
     out = HttpEndpoint();
-    reason.clear();
+    core::clearAll( reason );
 
     const std::string text = url;
     if ( text.empty() )
