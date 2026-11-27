@@ -124,8 +124,20 @@ private:
 // 'std::basic_string<...>'", and the word clear does not appear in the library's
 // vector.h, string.h, map.h or set.h at all).  Watcom has them, so this is a gap
 // in one era library and not the other.  [container.requirements] defines clear()
-// as erase( begin(), end() ) and every library here has that, so one spelling
-// serves the whole tree -- strings, vectors, maps, whatever it is emptied of.
+// as erase( begin(), end() ), and for a string or a vector that is the spelling
+// every target here takes -- which is worth saying because it is the one that has
+// to be linear: what gets emptied through here includes a captured screen.
+//
+// A map wants its own name and its own body, and that is measurement rather than
+// taste.  Open Watcom 1.9's std::map has no range erase: it has the key form and
+// the iterator form, and erase( begin(), end() ) is "number of arguments for
+// function 'RedBlackTree::erase' is incorrect" (tools/os2/maperase.cpp).  What is
+// left is a loop of erase( begin() ), which every target has -- and which keeps
+// the map's own comparator, unlike assigning a default-constructed map.  One name
+// with an overload for std::map was tried first and both era compilers refuse it:
+// Borland cannot parse the template's parameter list ("Extra argument in template
+// class name 'map'") and Watcom resolves the call to the generic template, which
+// is the same error by another route (tools/os2/clearall_forms.cpp).
 //
 // The same library has erase() but only in its iterator form: erase( pos ) and
 // erase( pos, len ) are "Could not find a match for ...::erase(unsigned int)"
@@ -138,6 +150,16 @@ template< class C >
 inline void clearAll( C &c )
 {
     c.erase( c.begin(), c.end() );
+}
+
+// A map, emptied.  Not clearAll: the range erase that a string and a vector have
+// on every target is not in every map on every target, and neither era compiler
+// will let one name carry both bodies.  See the note above.
+template< class M >
+inline void clearMap( M &m )
+{
+    while ( !m.empty() )
+        m.erase( m.begin() );
 }
 
 void eraseFrom( std::string &s, std::size_t from );

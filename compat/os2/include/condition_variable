@@ -41,6 +41,15 @@
 #ifndef ATUI_OS2_COMPAT_CONDITION_VARIABLE
 #define ATUI_OS2_COMPAT_CONDITION_VARIABLE
 
+/* How a timed wait answers here: a bool, where the standard answers
+   std::cv_status -- a name this header does not provide either, and Open Watcom
+   1.9 has no std::cv_status of its own (measured: "nested type class 'cv_status'
+   has not been declared").  tools/approval.cpp asks for this macro instead of
+   testing a compiler's name, which is what the Borland shim publishes too; the
+   first version of that test said __BORLANDC__ and so sent Watcom down the
+   standard path into a name that does not exist. */
+#define ATUI_WAIT_FOR_ANSWERS_BOOL 1
+
 #include <chrono>
 #include <mutex>
 #include <os2.h>

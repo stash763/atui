@@ -107,7 +107,7 @@ void rememberPlan( const std::string &key, const EffectPlan &plan )
 void clearPlanCache()
 {
     std::lock_guard< std::mutex > lock( cacheMutex() );
-    core::clearAll( cache().plans );
+    core::clearMap( cache().plans );
     core::clearAll( cache().order );
 }
 

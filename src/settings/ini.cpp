@@ -89,7 +89,7 @@ bool IniFile::load()
     std::ifstream in( path_.c_str(), std::ios::in );
     if( !in ) return false;
 
-    core::clearAll( data_ );
+    core::clearMap( data_ );
     std::string line, section = "general";
     while( core::readLine( in, line ) )
     {

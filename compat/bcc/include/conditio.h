@@ -58,6 +58,15 @@
 #ifndef ATUI_BCC_COMPAT_CONDITION_VARIABLE_H
 #define ATUI_BCC_COMPAT_CONDITION_VARIABLE_H
 
+/* How a timed wait answers on this target: a bool, where the standard answers
+   std::cv_status.  Published as a macro so that the one caller that cares asks
+   the header rather than guessing from the compiler's name -- tools/approval.cpp
+   tested __BORLANDC__ and every other compiler was assumed to have cv_status,
+   which broke the OS/2 build, because this shim exists there too and Watcom has
+   no std::cv_status either ("nested type class 'cv_status' has not been
+   declared", measured with the 1.9 compiler). */
+#define ATUI_WAIT_FOR_ANSWERS_BOOL 1
+
 #include <chrono>
 #include <mutex>
 #include <windows.h>

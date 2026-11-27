@@ -30,17 +30,24 @@ private:
 // important property, that the mutex is free while the thread is asleep and held
 // when the answer is read, is easier to see in the open than inside a template.
 // Did the wait end because something was posted?  The standard's two-argument
-// wait_for answers that with std::cv_status; the implementation this file uses on
-// Borland -- compat/bcc/include/conditio.h, because the compiler has no member
-// templates and so cannot take the predicate form -- answers it with a bool, and
-// `std::cv_status` is not a name in that library at all (measured).  Asked as one
-// function, the loop below reads the same on every compiler and there is one line
-// where the two answers are reconciled rather than one per wait.
+// wait_for answers that with std::cv_status; the implementations this file uses
+// on the era targets -- compat/bcc/include/conditio.h and
+// compat/os2/include/condition_variable, the first because that compiler has no
+// member templates and so cannot take the predicate form -- answer with a bool,
+// and neither library has a `std::cv_status` to name (measured on both: Borland
+// has no such member, Watcom says "nested type class 'cv_status' has not been
+// declared").  So the question is put to the header that answers it: whichever of
+// those two is on the include path publishes ATUI_WAIT_FOR_ANSWERS_BOOL, and a
+// test on one compiler's name is not the same thing as a test on the capability
+// -- the first version of this line tested __BORLANDC__ and the OS/2 build failed
+// eight errors later.  Asked as one function, the loop below reads the same on
+// every compiler and there is one line where the two answers are reconciled
+// rather than one per wait.
 inline bool notifiedInTime( std::condition_variable     &cv,
                             std::unique_lock< std::mutex > &lock,
                             core::Int64                  timeoutMs )
 {
-#if defined( __BORLANDC__ )
+#if defined( ATUI_WAIT_FOR_ANSWERS_BOOL )
     return cv.wait_for( lock, std::chrono::milliseconds( timeoutMs ) );
 #else
     return std::cv_status::no_timeout ==
